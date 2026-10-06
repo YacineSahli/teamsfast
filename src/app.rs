@@ -59,6 +59,8 @@ pub struct TeamsFastApp {
     pending_open_refresh: bool,
     last_open_refresh: Instant,
     typing: Option<(String, Instant)>,
+    offline: Option<String>,
+    last_offline_retry: Instant,
 
     textures: HashMap<String, (egui::TextureHandle, [usize; 2])>,
     lightbox: Option<String>,
@@ -181,6 +183,8 @@ impl TeamsFastApp {
             tray: spawn_tray(cc.egui_ctx.clone()),
             window_hidden: false,
             pending_theme: settings_load.theme.clone(),
+            offline: None,
+            last_offline_retry: Instant::now() - Duration::from_secs(60),
             catalog: theme::theme_catalog(cc.egui_ctx.clone()),
             palette: Palette::dark(),
             selected_theme: settings_load.theme.clone(),
@@ -230,6 +234,13 @@ impl TeamsFastApp {
                     self.search_open = true;
                 }
                 Event::SelfName(name) => self.self_name = name,
+                Event::Offline(err) => {
+                    self.offline = Some(err.clone());
+                    self.status = "Offline — showing cached data".into();
+                    self.error = None;
+                    self.state = State::Ready;
+                    // Retry the session periodically; on success Ready fires.
+                }
                 Event::SelfId(id) => self.self_id = Some(id),
                 Event::LoginResult(Ok(())) => self.status = "Signed in".into(),
                 Event::LoginResult(Err(e)) => {
@@ -415,6 +426,13 @@ impl TeamsFastApp {
                 self.typing = None;
             }
         }
+        // Offline: retry the session every 20 s (network may be back).
+        if self.offline.is_some() && self.last_offline_retry.elapsed() >= Duration::from_secs(20)
+        {
+            self.last_offline_retry = Instant::now();
+            self.cmd.send(Command::CheckReady).ok();
+        }
+
         // Debounced open-chat refresh on live activity.
         if self.pending_open_refresh
             && self.last_open_refresh.elapsed() >= Duration::from_millis(900)

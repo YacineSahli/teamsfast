@@ -84,6 +84,9 @@ pub enum Event {
     SelfName(String),
     /// Our own Entra object id (for own-message detection).
     SelfId(String),
+    /// Network unavailable (or token refresh failed) but cached content
+    /// exists — the UI stays usable instead of demanding a sign-in.
+    Offline(String),
     NeedLogin(String),
     Chats(Vec<ChatInfo>),
     Messages {
@@ -201,6 +204,24 @@ impl Session {
     }
 }
 
+/// Token/session setup failed. With cached content that is an OFFLINE
+/// situation (stay usable), not a sign-in demand.
+fn offline_or_login(ses: &Session, tx: &Sender<Event>, error: String) {
+    let has_cache = ses
+        .archive
+        .as_ref()
+        .and_then(|a| a.load_chats().ok())
+        .map(|c| !c.is_empty())
+        .unwrap_or(false);
+    if has_cache {
+        let _ = tx.send(Event::Offline(format!(
+            "Offline — showing cached data ({error})"
+        )));
+    } else {
+        let _ = tx.send(Event::NeedLogin(error));
+    }
+}
+
 async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
     let mut ses = Session::new();
     let mut trouter_started = false;
@@ -235,7 +256,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                         }
                         send!(Event::Ready);
                     }
-                    Err(e) => send!(Event::NeedLogin(e)),
+                    Err(e) => offline_or_login(&ses, &tx, e),
                 }
             }
             Command::CheckReady => match ready_session(&mut ses).await {
@@ -248,11 +269,11 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                     }
                     send!(Event::Ready);
                 }
-                Err(e) => send!(Event::NeedLogin(e)),
+                Err(e) => offline_or_login(&ses, &tx, e),
             },
             Command::LoadChats => {
                 let Some(c) = ses.client.as_ref() else {
-                    send!(Event::NeedLogin("not signed in".into()));
+                    send!(Event::Offline("offline — showing cached data".into()));
                     continue;
                 };
                 match list_chats_data(c, 40).await {
