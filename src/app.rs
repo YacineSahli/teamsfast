@@ -328,6 +328,7 @@ impl TeamsFastApp {
                         }
                     }
                     self.chats = chats;
+                    self.sort_chats();
                     self.status = format!("{n} chats");
                 }
                 Event::Messages {
@@ -526,15 +527,7 @@ impl TeamsFastApp {
             );
         }
         // Re-sort by recency so the active chat bubbles to the top.
-        self.chats.sort_by(|a, b| {
-            let k = |c: &ChatInfo| {
-                c.last_message_time
-                    .as_deref()
-                    .and_then(|t| t.trim().parse::<u64>().ok())
-                    .unwrap_or(0)
-            };
-            k(b).cmp(&k(a))
-        });
+        self.sort_chats();
         let open = self.selected.as_deref() == Some(chat_id.as_str());
         if open {
             self.pending_open_refresh = true;
@@ -543,7 +536,9 @@ impl TeamsFastApp {
             let entry = self.unread.entry(chat_id.clone()).or_insert((false, 0));
             entry.0 = true;
             entry.1 = entry.1.saturating_add(1);
-            self.notify_desktop(chat_id, sender, preview);
+            if !self.settings.muted_chats.contains(&chat_id) {
+                self.notify_desktop(chat_id, sender, preview);
+            }
         }
     }
 
@@ -629,8 +624,24 @@ impl TeamsFastApp {
         self.apply_selected_theme();
     }
 
-    fn rename_chat(&mut self, id: &str, name: String) {
-        if let Some(c) = self.chats.iter_mut().find(|c| c.id == id) {
+    /// Sort chats: pinned first, then by last activity (newest first).
+    fn sort_chats(&mut self) {
+        self.chats.sort_by(|a, b| {
+            let pa = self.settings.pinned_chats.iter().any(|p| p == &a.id);
+            let pb = self.settings.pinned_chats.iter().any(|p| p == &b.id);
+            pb.cmp(&pa).then_with(|| {
+                let k = |c: &ChatInfo| {
+                    c.last_message_time
+                        .as_deref()
+                        .and_then(|t| t.trim().parse::<u64>().ok())
+                        .unwrap_or(0)
+                };
+                k(b).cmp(&k(a))
+            })
+        });
+    }
+
+    fn rename_chat(&mut self, id: &str, name: String) {        if let Some(c) = self.chats.iter_mut().find(|c| c.id == id) {
             if c.name.is_empty() || c.name == "[Direct message]" || c.name == "Direct message" {
                 c.name = name.clone();
             }
@@ -849,6 +860,52 @@ impl TeamsFastApp {
             }
             Action::OpenThemeFolder => open_folder(theme::themes_dir()),
             Action::OpenStateFolder => open_folder(theme::state_dir()),
+            // ---- chat list row ops ----
+            Action::TogglePin(id) => {
+                if self.settings.pinned_chats.contains(&id) {
+                    self.settings.pinned_chats.retain(|c| c != &id);
+                } else {
+                    self.settings.pinned_chats.push(id);
+                }
+                theme::save_settings(&self.settings);
+                self.sort_chats();
+            }
+            Action::ToggleMute { chat_id, muted } => {
+                if muted {
+                    if !self.settings.muted_chats.contains(&chat_id) {
+                        self.settings.muted_chats.push(chat_id.clone());
+                    }
+                } else {
+                    self.settings.muted_chats.retain(|c| c != &chat_id);
+                }
+                theme::save_settings(&self.settings);
+                self.cmd
+                    .send(Command::SetChatMuted {
+                        chat_id,
+                        muted,
+                    })
+                    .ok();
+            }
+            Action::MarkUnread(id) => {
+                self.unread.insert(id.clone(), (true, 0));
+                self.cmd.send(Command::MarkUnread(id)).ok();
+            }
+            Action::HideChat(id) => {
+                self.chats.retain(|c| c.id != id);
+                if self.selected.as_deref() == Some(id.as_str()) {
+                    self.selected = None;
+                    self.messages.clear();
+                }
+                self.cmd.send(Command::SetChatHidden(id)).ok();
+            }
+            Action::LeaveChat(id) => {
+                self.chats.retain(|c| c.id != id);
+                if self.selected.as_deref() == Some(id.as_str()) {
+                    self.selected = None;
+                    self.messages.clear();
+                }
+                self.cmd.send(Command::LeaveChat(id)).ok();
+            }
         }
     }
 
@@ -1074,6 +1131,18 @@ impl eframe::App for TeamsFastApp {
                     pal: &self.palette,
                     unread: &self.unread,
                     show_badges: self.settings.unread_badges,
+                    pinned: &self
+                        .settings
+                        .pinned_chats
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::HashSet<String>>(),
+                    muted: &self
+                        .settings
+                        .muted_chats
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::HashSet<String>>(),
                 };
                 let mut loading = self.loading_teams;
                 let mut search = std::mem::take(&mut self.sidebar_search);
