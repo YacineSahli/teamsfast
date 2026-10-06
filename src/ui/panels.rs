@@ -5,6 +5,7 @@ use crate::backend::Command;
 use crate::ui::conversation::Action;
 use egui::{RichText, ScrollArea};
 use ost::api::SearchHitInfo;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Search results overlay panel. Returns true when closed.
 pub fn search_panel(
@@ -12,9 +13,10 @@ pub fn search_panel(
     hits: &[SearchHitInfo],
     more: bool,
     searching: bool,
-    cmd: &tokio::sync::mpsc::UnboundedSender<Command>,
+    cmd: &UnboundedSender<Command>,
     running_query: &str,
     note: Option<&str>,
+    actions: &mut Vec<Action>,
 ) -> bool {
     let mut close = false;
     ui.horizontal(|ui| {
@@ -67,7 +69,9 @@ pub fn search_panel(
                 ui.label(RichText::new(&h.timestamp).small().weak());
             }
             if response.clicked() && !target.is_empty() {
-                cmd.send(Command::OpenChat(target)).ok();
+                // ACTION, not raw command: App must update `selected` or the
+                // incoming history is dropped on the selected-mismatch guard.
+                actions.push(Action::OpenChat(target));
             }
             ui.separator();
         }

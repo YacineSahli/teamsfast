@@ -184,15 +184,7 @@ impl TeamsFastApp {
     // ---------------------------------------------------------------- events
 
     fn drain_events(&mut self) {
-        let mut first = true;
         while let Ok(ev) = self.events.try_recv() {
-            if first {
-                eprintln!("DBG ui: first event received");
-                first = false;
-            }
-            if matches!(ev, Event::Messages { .. }) {
-                eprintln!("DBG ui: Messages event arrived");
-            }
             match ev {
                 Event::Status(s) => self.status = s,
                 Event::SearchUnavailable(note) => {
@@ -251,7 +243,6 @@ impl TeamsFastApp {
                     older_link,
                 } => {
                     if self.selected.as_deref() != Some(chat_id.as_str()) {
-                        eprintln!("DBG ui: Messages DROPPED (selected mismatch)");
                         continue;
                     }
                     eprintln!("DBG ui: Messages APPLIED n={}", messages.len());
@@ -722,16 +713,20 @@ impl eframe::App for TeamsFastApp {
                 .default_size(330.0)
                 .resizable(true)
                 .show(ui, |ui| {
-                    let cmd = self.cmd.clone();
+                    let mut actions: Vec<Action> = Vec::new();
                     search_panel(
                         ui,
                         &self.search_hits,
                         self.search_more,
                         self.searching,
-                        &cmd,
+                        &self.cmd,
                         &self.search_query,
                         self.search_note.as_deref(),
+                        &mut actions,
                     );
+                    for a in actions {
+                        self.apply(a);
+                    }
                 });
         }
 

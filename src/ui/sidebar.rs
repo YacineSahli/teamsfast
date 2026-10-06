@@ -69,7 +69,7 @@ pub fn sidebar(
 
             ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 for chat in ctx.chats {
-                    chat_row(ui, ctx, chat);
+                    chat_row(ui, ctx, chat, actions);
                 }
             });
         }
@@ -95,7 +95,7 @@ pub fn sidebar(
                     for ch in &team.channels {
                         let sel = ctx.selected == Some(&ch.id);
                         if ui.selectable_label(sel, format!("# {}", ch.name)).clicked() {
-                            ctx.cmd.send(Command::OpenChat(ch.id.clone())).ok();
+                            actions.push(Action::OpenChat(ch.id.clone()));
                         }
                     }
                 }
@@ -122,7 +122,12 @@ fn display_name(chat: &ChatInfo) -> String {
 /// the content painted inside a child Ui afterwards. Registering the click
 /// AFTER painting (`.allocate_ui(..).response.interact(..)`) gets shadowed
 /// by the hover-sense labels inside, and clicks silently do nothing.
-fn chat_row(ui: &mut Ui, ctx: &SidebarCtx<'_>, chat: &ChatInfo) -> egui::Rect {
+fn chat_row(
+    ui: &mut Ui,
+    ctx: &SidebarCtx<'_>,
+    chat: &ChatInfo,
+    actions: &mut Vec<Action>,
+) -> egui::Rect {
     let selected = ctx.selected == Some(&chat.id);
     let label = display_name(chat);
     let time = format_chat_time(&chat.last_message_time);
@@ -194,7 +199,10 @@ fn chat_row(ui: &mut Ui, ctx: &SidebarCtx<'_>, chat: &ChatInfo) -> egui::Rect {
     }
 
     if response.clicked() {
-        ctx.cmd.send(Command::OpenChat(chat.id.clone())).ok();
+        // Push the ACTION (App::apply updates `selected` first). Sending the
+        // raw Command here bypasses App state and the history gets dropped
+        // on a selected-mismatch guard.
+        actions.push(Action::OpenChat(chat.id.clone()));
     }
     rect
 }
@@ -238,6 +246,8 @@ mod tests {
 
         let egui_ctx = egui::Context::default();
         let mut row_rect: Option<egui::Rect> = None;
+        let actions_out = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Action>::new()));
+        let actions_capture = actions_out.clone();
 
         // Frame 1: lay out two rows.
         let mut out = egui_ctx.run_ui(
@@ -249,7 +259,9 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let r = chat_row(ui, &ctx, &chats[1]); // "Ada Lovelace"
+                let mut actions = Vec::new();
+                let r = chat_row(ui, &ctx, &chats[1], &mut actions); // "Ada Lovelace"
+                *actions_out.borrow_mut() = actions;
                 row_rect = Some(r);
             },
         );
@@ -319,7 +331,9 @@ mod tests {
             ..Default::default()
         };
         let mut out = egui_ctx.run_ui(input, |ui| {
-            chat_row(ui, &ctx, &chats[0]);
+            let mut actions = Vec::new();
+            chat_row(ui, &ctx, &chats[0], &mut actions);
+            assert!(actions.is_empty(), "no action for stray click");
         });
         out.textures_delta.clear();
         assert!(cmd_rx.try_recv().is_err(), "no command for stray click");
