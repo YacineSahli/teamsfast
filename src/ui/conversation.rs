@@ -12,10 +12,12 @@
 
 use crate::model::{format_day_label, format_message_time};
 use crate::ui::widgets::{avatar, parse_html, render_segments};
-use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense};
+use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense, Stroke};
 use ost::api::MessageInfo;
 use std::collections::HashSet;
 use std::sync::mpsc::Sender;
+
+const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 
 /// UI-intent actions produced by views, applied by `App`.
 #[derive(Debug, Clone)]
@@ -87,7 +89,7 @@ pub struct ConvCtx<'a> {
 pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        avatar(ui, &ctx.chat_name, 30.0);
+        avatar(ui, &ctx.chat_name, 32.0);
         ui.add_space(2.0);
         ui.heading(RichText::new(&ctx.chat_name).strong().size(17.0));
         if let Some(user) = ctx.typing_user {
@@ -129,9 +131,11 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             let is_new_day = !day.is_empty() && day != last_day;
             if is_new_day {
                 let label = day.clone();
+                ui.add_space(10.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(label).small().weak());
                 });
+                ui.add_space(10.0);
                 last_day = day;
             }
             let own = is_own(m, ctx);
@@ -260,26 +264,18 @@ fn message_row(
     own: bool,
     grouped: bool,
 ) {
-    let avail = ui.available_width() - 12.0;
     if own {
-        // Right-aligned row: avatar pinned at the right edge, bubble in an
-        // explicitly-sized slot to its left. (set_max_width inside a
-        // right_to_left layout SHIFTS content left instead of capping it.)
-        let cap = ((avail - 44.0) * 0.8).min(620.0);
-        ui.allocate_ui(egui::vec2(avail, 10.0), |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                // In right_to_left order the FIRST item sits at the far
-                // right: the avatar mirrors the incoming layout.
-                if !grouped {
-                    avatar(ui, ctx.self_name, 32.0);
-                } else {
-                    ui.add_space(36.0);
-                }
-                ui.allocate_ui(egui::vec2(cap, 10.0), |ui| {
-                    ui.vertical(|ui| {
-                        bubble(ui, ctx, m, true, grouped);
-                    });
-                });
+        // Right-aligned row: RTL places the avatar at the far right; the
+        // bubble column sits to its left. Every part inside the column is
+        // laid out right-anchored (see bubble_parts).
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            if !grouped {
+                avatar(ui, ctx.self_name, 32.0);
+            } else {
+                ui.add_space(32.0);
+            }
+            ui.vertical(|ui| {
+                bubble_parts(ui, ctx, m, own, grouped);
             });
         });
     } else {
@@ -296,86 +292,104 @@ fn message_row(
                 if !grouped {
                     ui.label(RichText::new(sender_label(m, ctx)).small().strong());
                 }
-                bubble(ui, ctx, m, false, grouped);
+                bubble_parts(ui, ctx, m, own, grouped);
             });
         });
     }
     ui.add_space(3.0);
 }
 
-fn bubble(
+/// Reactions, reply quote, bubble, timestamp, hover toolbar — one message's
+/// full body. For own messages the parent vertical lives inside an RTL row,
+/// so every part is wrapped in an RTL row to anchor at the column's RIGHT
+/// edge (mirror of the incoming side).
+fn bubble_parts(
     ui: &mut egui::Ui,
     ctx: &mut ConvCtx<'_>,
     m: &MessageInfo,
     own: bool,
     grouped: bool,
 ) {
+
+    // Reactions chips
+    if !m.reactions.is_empty() {
+        if own {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                reaction_chips(ui, ctx, m);
+            });
+        } else {
+            ui.horizontal(|ui| {
+                reaction_chips(ui, ctx, m);
+            });
+        }
+    }
+    // Reply quote preview
+    if m.reply_to.is_some() {
+        if own {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                quote_preview(ui, ctx, m);
+            });
+        } else {
+            quote_preview(ui, ctx, m);
+        }
+    }
+    // The bubble itself
+    let row_id = egui::Id::new(("msg", &m.id));
     let fill = if own {
         Color32::from_rgb(0x3b, 0x3e, 0xcf)
     } else {
         Color32::from_rgb(0x2b, 0x2d, 0x31)
     };
-    let row_id = egui::Id::new(("msg", &m.id));
-
-    ui.vertical(|ui| {
-        if !m.reactions.is_empty() {
-            ui.horizontal(|ui| {
-                for r in &m.reactions {
-                    if Frame::default()
-                        .fill(Color32::from_rgb(0x38, 0x3a, 0x45))
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(egui::Margin::symmetric(5, 1))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(format!("{} {}", r.emoji, r.count)).small(),
-                            )
-                        })
-                        .response
-                        .clicked()
-                    {
-                        ctx.actions.push(Action::React {
-                            message_id: m.id.clone(),
-                            emoji: r.emoji.clone(),
-                            remove: true,
+    let bubble_rect = if own {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            Frame::default()
+                .fill(fill)
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .show(ui, |ui| {
+                    let segments = parse_html(&m.raw);
+                    let file_hits: std::rc::Rc<
+                        std::cell::RefCell<Vec<(String, String)>>,
+                    > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                    let hits2 = file_hits.clone();
+                    render_segments(
+                        ui,
+                        &segments,
+                        |ui, url| show_image(ui, ctx, url),
+                        |ui, name, url| {
+                            if ui
+                                .button(RichText::new(format!("📎 {name}")).small())
+                                .on_hover_text("Download and open")
+                                .clicked()
+                            {
+                                hits2
+                                    .borrow_mut()
+                                    .push((name.to_string(), url.to_string()));
+                            }
+                        },
+                    );
+                    for (name, url) in file_hits.borrow().iter() {
+                        ctx.actions.push(Action::DownloadFile {
+                            name: name.clone(),
+                            url: url.clone(),
                         });
                     }
-                }
-            });
-        }
-
-        if let Some(pid) = &m.reply_to {
-            if let Some(parent) = ctx.messages.iter().find(|p| &p.id == pid) {
-                Frame::default()
-                    .fill(Color32::from_rgb(0x25, 0x27, 0x30))
-                    .corner_radius(CornerRadius::same(4))
-                    .inner_margin(egui::Margin::symmetric(6, 2))
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "{}: {}",
-                                sender_label(parent, ctx),
-                                crate::ui::widgets::segs_to_plain(&parse_html(&parent.raw))
-                                    .lines()
-                                    .next()
-                                    .unwrap_or("")
-                            ))
-                            .small()
-                            .weak(),
-                        );
-                    });
-            }
-        }
-
-        let file_hits: std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let hits2 = file_hits.clone();
-        let segments = parse_html(&m.raw);
-        let bubble = Frame::default()
+                })
+                .response
+                .rect
+        })
+        .inner
+    } else {
+        Frame::default()
             .fill(fill)
             .corner_radius(CornerRadius::same(8))
             .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
-                let hits2 = hits2.clone();
+                let segments = parse_html(&m.raw);
+                let file_hits: std::rc::Rc<
+                    std::cell::RefCell<Vec<(String, String)>>,
+                > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                let hits2 = file_hits.clone();
                 render_segments(
                     ui,
                     &segments,
@@ -386,28 +400,175 @@ fn bubble(
                             .on_hover_text("Download and open")
                             .clicked()
                         {
-                            hits2.borrow_mut().push((name.to_string(), url.to_string()));
+                            hits2
+                                .borrow_mut()
+                                .push((name.to_string(), url.to_string()));
                         }
                     },
                 );
-            });
-        for (name, url) in file_hits.borrow().iter() {
-            ctx.actions.push(Action::DownloadFile {
-                name: name.clone(),
-                url: url.clone(),
-            });
-        }
+            })
+            .response
+            .rect
+    };
 
-        let hov = ui
-            .interact(bubble.response.rect, row_id, Sense::hover())
-            .hovered();
-        if !grouped {
+    if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() && own {
+        eprintln!("DBG bubble own rect={bubble_rect:?}");
+    }
+
+    // Hover state: over the bubble OR the floating bar (sticky).
+    let hover_id = egui::Id::new(("msg-hover", &m.id));
+    let bubble_hovered = ui
+        .interact(bubble_rect, row_id, Sense::hover())
+        .hovered();
+    let was_open = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
+    let open = was_open || bubble_hovered;
+
+    if !grouped {
+        if own {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format_message_time(&m.timestamp)).small().weak(),
+                );
+            });
+        } else {
             ui.label(RichText::new(format_message_time(&m.timestamp)).small().weak());
         }
-        if hov {
-            hover_toolbar(ui, ctx, m, own);
+    }
+
+    if open {
+        let anchor = egui::pos2(
+            (bubble_rect.right() - 8.0).max(ui.clip_rect().left() + 8.0),
+            (bubble_rect.top() - 40.0).max(ui.clip_rect().top() + 2.0),
+        );
+        let actions_sink: std::rc::Rc<std::cell::RefCell<Vec<Action>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink2 = actions_sink.clone();
+        let bar = egui::Area::new(row_id.with("toolbar"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(anchor)
+            .show(ui.ctx(), |ui| {
+                let sink = sink2.clone();
+                Frame::default()
+                    .fill(Color32::from_rgb(0x26, 0x28, 0x33))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x47)))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(5, 3))
+                    .show(ui, |ui| {
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                for e in QUICK_REACTIONS {
+                                    if ui
+                                        .button(RichText::new(e).size(18.0))
+                                        .on_hover_text("React")
+                                        .clicked()
+                                    {
+                                        sink.borrow_mut().push(Action::React {
+                                            message_id: m.id.clone(),
+                                            emoji: (*e).to_string(),
+                                            remove: false,
+                                        });
+                                    }
+                                }
+                                if ui.button(RichText::new("Reply").size(13.0)).clicked() {
+                                    sink.borrow_mut().push(Action::Reply {
+                                        message_id: m.id.clone(),
+                                        sender: sender_label(m, ctx),
+                                        snippet: crate::ui::widgets::segs_to_plain(
+                                            &parse_html(&m.raw),
+                                        )
+                                        .lines()
+                                        .next()
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    });
+                                }
+                                if own {
+                                    if ui.button(RichText::new("Edit").size(13.0)).clicked() {
+                                        let current = crate::ui::widgets::segs_to_plain(
+                                            &parse_html(&m.raw),
+                                        );
+                                        sink.borrow_mut().push(Action::StartEdit {
+                                            message_id: m.id.clone(),
+                                            current,
+                                        });
+                                    }
+                                    if ui
+                                        .button(RichText::new("Delete").size(13.0))
+                                        .clicked()
+                                    {
+                                        sink.borrow_mut().push(Action::DeleteMessage(
+                                            m.id.clone(),
+                                        ));
+                                    }
+                                }
+                                if ui.button(RichText::new("Copy").size(13.0)).clicked() {
+                                    ui.ctx().copy_text(crate::ui::widgets::segs_to_plain(
+                                        &parse_html(&m.raw),
+                                    ));
+                                }
+                            },
+                        );
+                    });
+            })
+            .response;
+        ui.ctx().data_mut(|d| {
+            d.insert_temp::<bool>(hover_id, bubble_hovered || bar.hovered());
+        });
+    } else {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp::<bool>(hover_id, false));
+    }
+}
+
+/// Reaction count chips (click = remove your reaction).
+fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
+    for r in &m.reactions {
+        if Frame::default()
+            .fill(Color32::from_rgb(0x38, 0x3a, 0x45))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(5, 1))
+            .show(ui, |ui| {
+                ui.label(RichText::new(format!("{} {}", r.emoji, r.count)).small())
+            })
+            .response
+            .clicked()
+        {
+            ctx.actions.push(Action::React {
+                message_id: m.id.clone(),
+                emoji: r.emoji.clone(),
+                remove: true,
+            });
         }
-    });
+    }
+}
+
+/// Quoted-parent preview above a reply.
+fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
+    if let Some(pid) = &m.reply_to {
+        if let Some(parent) = ctx.messages.iter().find(|p| &p.id == pid) {
+            Frame::default()
+                .fill(Color32::from_rgb(0x25, 0x27, 0x30))
+                .corner_radius(CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(6, 2))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{}: {}",
+                            sender_label(parent, ctx),
+                            crate::ui::widgets::segs_to_plain(&parse_html(&parent.raw))
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                });
+        }
+    }
 }
 
 /// Inline image: textured when loaded, fetch requested once, placeholder
