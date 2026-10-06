@@ -20,6 +20,7 @@ pub struct Palette {
     pub on_accent: Color32,
     pub danger: Color32,
     pub warning: Color32,
+    pub outline: Color32,
     pub link: Color32,
     pub ok: Color32,
     pub bubble_in: Color32,
@@ -42,6 +43,7 @@ impl Palette {
             on_accent: Color32::WHITE,
             danger: Color32::from_rgb(0xe0, 0x7a, 0x7a),
             warning: Color32::from_rgb(0xd1, 0xa5, 0x4a),
+            outline: Color32::from_rgb(0x3a, 0x3d, 0x47),
             link: Color32::from_rgb(0x69, 0xa1, 0xe8),
             ok: Color32::from_rgb(0x6f, 0xd1, 0x94),
             bubble_in: Color32::from_rgb(0x2b, 0x2d, 0x31),
@@ -64,6 +66,7 @@ impl Palette {
             on_accent: Color32::WHITE,
             danger: Color32::from_rgb(0xc0, 0x3a, 0x3a),
             warning: Color32::from_rgb(0x9a, 0x6a, 0x10),
+            outline: Color32::from_rgb(0xc5, 0xca, 0xd3),
             link: Color32::from_rgb(0x2a, 0x6c, 0xd8),
             ok: Color32::from_rgb(0x1a, 0x7f, 0x4d),
             bubble_in: Color32::from_rgb(0xe8, 0xea, 0xef),
@@ -95,6 +98,7 @@ impl Palette {
         v.widgets.hovered.bg_fill = self.surface_hover;
         v.widgets.active.bg_fill = self.accent;
         v.hyperlink_color = self.link;
+        v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.outline);
         v.override_text_color = Some(self.text);
         ctx.set_visuals(v);
     }
@@ -123,6 +127,7 @@ impl fastframe_theme::Palette for Palette {
             "on_accent" => self.on_accent = color,
             "danger" => self.danger = color,
             "warning" => self.warning = color,
+            "outline" => self.outline = color,
             "link" => self.link = color,
             "ok" => self.ok = color,
             "bubble_in" => self.bubble_in = color,

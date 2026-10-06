@@ -37,9 +37,29 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
         }
     }
 
+    // Cached history paints instantly (also works offline).
+    if let Some(archive) = ses.archive.as_ref()
+        && let Ok(cached) = archive.load_messages(&chat_id, 50)
+        && !cached.is_empty()
+    {
+        let _ = tx.send(Event::Messages {
+            older_link: None,
+            prepend: false,
+            chat_id: chat_id.clone(),
+            messages: cached,
+            members: HashMap::new(),
+            resolved_name: None,
+        });
+    }
+
     match read_messages_page(c, &chat_id, 50, None).await {
         Ok(page) => {
             let cursor = page.backward_link.clone().unwrap_or_default();
+            if let Some(archive) = ses.archive.as_ref()
+                && let Err(e) = archive.save_messages(&chat_id, &page.messages)
+            {
+                log::warn!("archive save messages: {e:#}");
+            }
             ses.older_links.insert(chat_id.clone(), cursor.clone());
             let _ = tx.send(Event::Messages {
                 older_link: Some(cursor),
@@ -51,6 +71,7 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
             });
         }
         Err(e) => {
+            // Keep whatever the archive rendered; report the failure.
             let _ = tx.send(Event::Error(format!("history: {e:#}")));
         }
     }
@@ -238,6 +259,11 @@ async fn refetch(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
         return;
     };
     if let Ok(page) = read_messages_page(c, chat_id, 50, None).await {
+        if let Some(archive) = ses.archive.as_ref()
+            && let Err(e) = archive.save_messages(chat_id, &page.messages)
+        {
+            log::warn!("archive save messages: {e:#}");
+        }
         let _ = tx.send(Event::Messages {
             older_link: page.backward_link,
             prepend: false,
