@@ -11,6 +11,7 @@
 //! history pages downward via "Load earlier messages".
 
 use crate::model::{format_day_label, format_message_time};
+use crate::theme::Palette;
 use crate::ui::widgets::{avatar, parse_html, render_segments};
 use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense, Stroke};
 use ost::api::MessageInfo;
@@ -82,6 +83,7 @@ pub struct ConvCtx<'a> {
     pub uploads: &'a [(String, u64, u64)],
     pub textures: &'a std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
     pub pending_images: &'a mut HashSet<String>,
+    pub pal: &'a Palette,
     pub actions: &'a mut Vec<Action>,
 }
 
@@ -347,9 +349,9 @@ fn bubble_parts(
     // The bubble itself
     let row_id = egui::Id::new(("msg", &m.id));
     let fill = if own {
-        Color32::from_rgb(0x3b, 0x3e, 0xcf)
+        ctx.pal.bubble_out
     } else {
-        Color32::from_rgb(0x2b, 0x2d, 0x31)
+        ctx.pal.bubble_in
     };
     let bubble_rect = if own {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
