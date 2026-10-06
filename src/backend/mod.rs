@@ -81,6 +81,8 @@ pub enum Event {
     Ready,
     /// Our own display name (Graph whoami).
     SelfName(String),
+    /// Our own Entra object id (for own-message detection).
+    SelfId(String),
     NeedLogin(String),
     Chats(Vec<ChatInfo>),
     Messages {
@@ -213,18 +215,25 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                     .map_err(|e| format!("{e:#}"));
                 send!(Event::LoginResult(res));
                 match ready_session(&mut ses).await {
-                    Ok(name) => {
+                    Ok((name, id)) => {
                         if let Some(n) = name {
                             send!(Event::SelfName(n));
+                        }
+                        if let Some(id) = id {
+                            send!(Event::SelfId(id));
                         }
                         send!(Event::Ready);
                     }
                     Err(e) => send!(Event::NeedLogin(e)),
                 }
-            }            Command::CheckReady => match ready_session(&mut ses).await {
-                Ok(name) => {
+            }
+            Command::CheckReady => match ready_session(&mut ses).await {
+                Ok((name, id)) => {
                     if let Some(n) = name {
                         send!(Event::SelfName(n));
+                    }
+                    if let Some(id) = id {
+                        send!(Event::SelfId(id));
                     }
                     send!(Event::Ready);
                 }
@@ -321,20 +330,40 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
 }
 
 /// Build a TeamsClient from cached tokens; returns our display name when the
-/// Graph whoami works.
-async fn ready_session(ses: &mut Session) -> Result<Option<String>, String> {
+/// Graph whoami works. `self_id` falls back to the JWT `oid` claim so own
+/// message detection survives a transient Graph hiccup.
+async fn ready_session(ses: &mut Session) -> Result<(Option<String>, Option<String>), String> {
     let c = TeamsClient::new().await.map_err(|e| format!("{e:#}"))?;
     ses.client = Some(c);
-    let name = match ses.client.as_ref() {
-        Some(c) => ost::api::whoami_data(c)
-            .await
-
-            .ok()
-            .map(|me| {
+    match ses.client.as_ref() {
+        Some(c) => match ost::api::whoami_data(c).await {
+            Ok(me) => {
                 ses.self_id = Some(me.id.clone());
-                me.display_name
-            }),
-        None => None,
-    };
-    Ok(name)
+                Ok((Some(me.display_name), ses.self_id.clone()))
+            }
+            Err(e) => {
+                log::warn!("whoami failed ({e:#}); using JWT oid for own-detection");
+                ses.self_id = cached_jwt_oid();
+                Ok((None, ses.self_id.clone()))
+            }
+        },
+        None => Ok((None, None)),
+    }
+}
+
+/// Extract the Entra object id from the cached AAD access token (JWT `oid`).
+fn cached_jwt_oid() -> Option<String> {
+    use base64::Engine;
+    let cfg = ost::config::Config::load_cached().ok()?;
+    let token = cfg.get_graph_token()?.token;
+    let payload = token.split('.').nth(1)?;
+    let clean = payload.trim_end_matches('=');
+    let bytes = (0..=2)
+        .find_map(|pad| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(format!("{clean}{}", "=".repeat(pad)))
+                .ok()
+        })?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get("oid").and_then(|x| x.as_str()).map(String::from)
 }

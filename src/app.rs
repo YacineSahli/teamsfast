@@ -78,6 +78,30 @@ fn textures_key(url: &str) -> Option<String> {
     Some(url.to_string())
 }
 
+/// Spawn the tray on a blocking-pool thread of a runtime that lives for the
+/// whole process. ksni's blocking API needs: no async-worker context (its
+/// nested block_on is illegal there) plus a tokio reactor for its spawned
+/// tasks — a blocking-pool thread of a persistent multi-thread runtime
+/// satisfies both.
+fn spawn_tray(waker: egui::Context) -> Option<fastframe_tray::Tray> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let started = std::thread::Builder::new()
+        .name("tray".into())
+        .spawn(move || {
+            // No tokio runtime on this thread: ksni/zbus bring their own
+            // (zbus >= 5.19 fixed the executor's ambient-reactor panic).
+            let tray =
+                fastframe_tray::Tray::spawn(crate::tray::config(), move || {
+                    waker.request_repaint()
+                });
+            let _ = tx.send(tray);
+        });
+    if started.is_err() {
+        return None;
+    }
+    rx.recv_timeout(Duration::from_secs(3)).unwrap_or(None)
+}
+
 impl TeamsFastApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
@@ -122,10 +146,7 @@ impl TeamsFastApp {
             failed_images: HashSet::new(),
             queued_textures: Vec::new(),
             egui_ctx: Some(cc.egui_ctx.clone()),
-            tray: fastframe_tray::Tray::spawn(crate::tray::config(), {
-                let waker = cc.egui_ctx.clone();
-                move || waker.request_repaint()
-            }),
+            tray: spawn_tray(cc.egui_ctx.clone()),
             window_hidden: false,
             cmd,
             events: rx,
@@ -163,7 +184,15 @@ impl TeamsFastApp {
     // ---------------------------------------------------------------- events
 
     fn drain_events(&mut self) {
+        let mut first = true;
         while let Ok(ev) = self.events.try_recv() {
+            if first {
+                eprintln!("DBG ui: first event received");
+                first = false;
+            }
+            if matches!(ev, Event::Messages { .. }) {
+                eprintln!("DBG ui: Messages event arrived");
+            }
             match ev {
                 Event::Status(s) => self.status = s,
                 Event::SearchUnavailable(note) => {
@@ -172,6 +201,7 @@ impl TeamsFastApp {
                     self.search_open = true;
                 }
                 Event::SelfName(name) => self.self_name = name,
+                Event::SelfId(id) => self.self_id = Some(id),
                 Event::LoginResult(Ok(())) => self.status = "Signed in".into(),
                 Event::LoginResult(Err(e)) => {
                     self.status = "Sign-in failed".into();
@@ -181,6 +211,12 @@ impl TeamsFastApp {
                     self.state = State::Ready;
                     self.status = "Connected".into();
                     self.cmd.send(Command::LoadChats).ok();
+                    // QA hook: TEAMSFAST_OPEN=<chat_id> opens it on launch.
+                    if let Ok(id) = std::env::var("TEAMSFAST_OPEN") {
+                        if !id.trim().is_empty() {
+                            self.open_chat(id.trim().to_string());
+                        }
+                    }
                 }
                 Event::NeedLogin(e) => {
                     self.state = State::NeedLogin;
@@ -215,8 +251,10 @@ impl TeamsFastApp {
                     older_link,
                 } => {
                     if self.selected.as_deref() != Some(chat_id.as_str()) {
+                        eprintln!("DBG ui: Messages DROPPED (selected mismatch)");
                         continue;
                     }
+                    eprintln!("DBG ui: Messages APPLIED n={}", messages.len());
                     if prepend {
                         let mut merged = messages;
                         merged.extend(self.messages.drain(..));
@@ -284,7 +322,8 @@ impl TeamsFastApp {
                     self.queued_textures.push((url, rgba, size));
                 }
                 Event::ImageFailed(url) => {
-                    self.pending_images.remove(&url);
+                    // Keep the url in pending_images: no infinite refetch
+                    // loop for URLs that never decode.
                 }
                 Event::UploadProgress {
                     name,
@@ -677,21 +716,26 @@ impl eframe::App for TeamsFastApp {
                 }
             });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            if self.state != State::Ready {
-                ui.centered_and_justified(|ui| match self.state {
-                    State::Boot => ui.label("Starting…"),
-                    State::NeedLogin => ui.label("Sign in to start."),
-                    State::Ready => unreachable!(),
+
+        if self.search_open {
+            egui::Panel::right("search")
+                .default_size(330.0)
+                .resizable(true)
+                .show(ui, |ui| {
+                    let cmd = self.cmd.clone();
+                    search_panel(
+                        ui,
+                        &self.search_hits,
+                        self.search_more,
+                        self.searching,
+                        &cmd,
+                        &self.search_query,
+                        self.search_note.as_deref(),
+                    );
                 });
-                return;
-            }
-            if self.selected.is_none() {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Pick a chat on the left, or press New chat (Ctrl+N).");
-                });
-                return;
-            }
+        }
+
+        if self.state == State::Ready && self.selected.is_some() {
             let chat_id = self.selected.clone().unwrap();
             let mut actions: Vec<Action> = Vec::new();
             let mut ctx = ConvCtx {
@@ -711,29 +755,27 @@ impl eframe::App for TeamsFastApp {
                 pending_images: &mut self.pending_images,
                 actions: &mut actions,
             };
-            conversation::conversation(ui, &mut ctx, &mut self.draft);
+            egui::Panel::bottom("composer").show_inside(ui, |ui| {
+                conversation::conversation_composer(ui, &mut ctx, &mut self.draft);
+            });
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                conversation::conversation_messages(ui, &mut ctx);
+            });
             drop(ctx);
             for a in actions {
                 self.apply(a);
             }
-        });
-
-        if self.search_open {
-            egui::Panel::right("search")
-                .default_size(330.0)
-                .resizable(true)
-                .show(ui, |ui| {
-                    let cmd = self.cmd.clone();
-                    search_panel(
-                        ui,
-                        &self.search_hits,
-                        self.search_more,
-                        self.searching,
-                        &cmd,
-                        &self.search_query,
-                        self.search_note.as_deref(),
-                    );
+        } else {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                ui.centered_and_justified(|ui| {
+                    let msg = match self.state {
+                        State::Boot => "Starting…",
+                        State::NeedLogin => "Sign in to start.",
+                        State::Ready => "Pick a chat on the left, or press New chat (Ctrl+N).",
+                    };
+                    ui.label(msg);
                 });
+            });
         }
 
         if self.new_chat.open {

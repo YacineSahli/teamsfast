@@ -230,9 +230,14 @@ pub fn render_segments(
                     if let Some(fname) = is_file_url(url) {
                         file(ui, &fname, url);
                     } else if text.is_empty() {
-                        ui.hyperlink(url);
+                        ui.hyperlink(shorten_link_text(url));
                     } else {
-                        ui.hyperlink_to(RichText::new(text).underline().color(Color32::from_rgb(0x69, 0xa1, 0xe8)), url);
+                        ui.hyperlink_to(
+                            RichText::new(shorten_link_text(text))
+                                .underline()
+                                .color(Color32::from_rgb(0x69, 0xa1, 0xe8)),
+                            url,
+                        );
                     }
                 }
                 Seg::Mention(t) => {
@@ -260,6 +265,22 @@ pub fn render_segments(
         }
     });
     let _ = (TextFormat::default(), epaint::Shadow::NONE);
+}
+
+/// Long unbreakable tokens (URLs) overflow egui's wrapping; shorten for display.
+fn shorten_link_text(text: &str) -> String {
+    if text.len() <= 48 {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= 48 {
+        return text.to_string();
+    }
+    format!(
+        "{}…{}",
+        chars[..30].iter().collect::<String>(),
+        chars[chars.len() - 16..].iter().collect::<String>()
+    )
 }
 
 /// Plain-text projection of segments (for previews / quoted snippets).

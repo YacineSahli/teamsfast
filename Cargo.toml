@@ -21,6 +21,8 @@ path = "src/main.rs"
 anyhow = "1"
 log = "0.4"
 serde_json = "1"
+# JWT payload decode for the self-id fallback.
+base64 = "0.22"
 
 # UI framework. Same choices as spotifast/zapfast: glow keeps the tree small.
 eframe = { version = "0.36", default-features = false, features = [

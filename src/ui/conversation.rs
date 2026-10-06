@@ -3,6 +3,12 @@
 //!
 //! Views never touch protocol state: they push [`Action`]s; `App::apply`
 //! turns them into Commands / local state changes.
+//!
+//! Ordering note: the list renders NEWEST FIRST. egui 0.36.2 on this stack
+//! paints nothing for any non-zero ScrollArea offset (stick_to_bottom,
+//! scroll_to_cursor and vertical_scroll_offset all end up clipped away), so
+//! the list opens at offset 0 — which we make the newest message. Older
+//! history pages downward via "Load earlier messages".
 
 use crate::model::{format_day_label, format_message_time};
 use crate::ui::widgets::{avatar, parse_html, render_segments};
@@ -77,60 +83,69 @@ pub struct ConvCtx<'a> {
     pub actions: &'a mut Vec<Action>,
 }
 
-/// Returns `true` when the composer should keep focus.
-pub fn conversation(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, draft: &mut String) -> bool {
-    let mut keep_focus = false;
-
+/// Conversation header + message list (the center panel).
+pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
+        avatar(ui, &ctx.chat_name, 30.0);
+        ui.add_space(2.0);
         ui.heading(RichText::new(&ctx.chat_name).strong().size(17.0));
+        if let Some(user) = ctx.typing_user {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{user} is typing…"))
+                        .small()
+                        .color(Color32::from_rgb(0x8a, 0x88, 0xff)),
+                );
+            });
+        }
     });
-    ui.add_space(2.0);
-    if let Some(user) = ctx.typing_user {
-        ui.label(
-            RichText::new(format!("{user} is typing…"))
-                .small()
-                .color(Color32::from_rgb(0x8a, 0x88, 0xff)),
-        );
-    }
     ui.separator();
 
-    ScrollArea::vertical()
-        .auto_shrink(false)
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            if ctx.older_link.is_some() {
+    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        let n = ctx.messages.len();
+        let mut last_day = String::new();
+        // Newest first: messages[0] is the oldest, messages[n-1] the newest.
+        for (ri, m) in ctx.messages.iter().rev().enumerate() {
+            let i = n - 1 - ri; // original index; i+1 is the message NEWER than this one
+            let day = format_day_label(&m.timestamp);
+            let is_new_day = !day.is_empty() && day != last_day;
+            if is_new_day {
+                let label = day.clone();
                 ui.vertical_centered(|ui| {
-                    if ctx.loading_older {
-                        ui.spinner();
-                    } else if ui
-                        .button(RichText::new("Load earlier messages").small().weak())
-                        .clicked()
-                    {
-                        ctx.actions.push(Action::LoadOlder);
-                    }
+                    ui.label(RichText::new(label).small().weak());
                 });
+                last_day = day;
             }
-            let mut last_day = String::new();
-            for (i, m) in ctx.messages.iter().enumerate() {
-                let day = format_day_label(&m.timestamp);
-                let is_new_day = !day.is_empty() && day != last_day;
-                if is_new_day {
-                    let label = day.clone();
-                    ui.vertical_centered(|ui| {
-                        ui.label(RichText::new(label).small().weak());
-                    });
-                    last_day = day;
+            let own = is_own(m, ctx);
+            // Grouped with the message directly NEWER (rendered above it).
+            let grouped = i + 1 < n
+                && ctx.messages[i + 1].sender_mri == m.sender_mri
+                && m.timestamp.get(0..16) == ctx.messages[i + 1].timestamp.get(0..16);
+            message_row(ui, ctx, m, own, grouped);
+        }
+        if ctx.older_link.is_some() {
+            ui.vertical_centered(|ui| {
+                if ctx.loading_older {
+                    ui.spinner();
+                } else if ui
+                    .button(RichText::new("Load earlier messages").small().weak())
+                    .clicked()
+                {
+                    ctx.actions.push(Action::LoadOlder);
                 }
-                let own = is_own(m, ctx);
-                let grouped = i > 0
-                    && ctx.messages[i - 1].sender_mri == m.sender_mri
-                    && m.timestamp.get(0..16) == ctx.messages[i - 1].timestamp.get(0..16);
-                message_row(ui, ctx, m, own, grouped);
-            }
-        });
+            });
+        }
+    });
+}
 
-    ui.separator();
+/// Composer + banners (the bottom panel).
+pub fn conversation_composer(
+    ui: &mut egui::Ui,
+    ctx: &mut ConvCtx<'_>,
+    draft: &mut String,
+) -> bool {
+    let mut keep_focus = false;
 
     if let Some((_, who, snippet)) = &ctx.reply {
         Frame::default()
@@ -166,29 +181,39 @@ pub fn conversation(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, draft: &mut String
     for (name, sent, total) in ctx.uploads {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("⬆ {name}")).small());
-            let frac = if *total > 0 { *sent as f32 / *total as f32 } else { 0.0 };
+            let frac = if *total > 0 {
+                *sent as f32 / *total as f32
+            } else {
+                0.0
+            };
             ui.add(egui::ProgressBar::new(frac).desired_height(8.0));
         });
     }
 
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
         if ui.button("📎").on_hover_text("Attach a file").clicked() {
             ctx.actions.push(Action::Attach);
         }
-        let ready = !draft.trim().is_empty();
-        let btn = ui.add_enabled(ready, egui::Button::new("Send"));
         let response = ui.add(
             egui::TextEdit::singleline(draft)
-                .hint_text(if ctx.edit.is_some() { "Edit message…" } else { "Type a message" })
+                .hint_text(if ctx.edit.is_some() {
+                    "Edit message…"
+                } else {
+                    "Type a message"
+                })
                 .desired_width(ui.available_width() - 64.0),
         );
+        let ready = !draft.trim().is_empty();
+        let btn = ui.add_enabled(ready, egui::Button::new("Send"));
         let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if (btn.clicked() || enter) && ready {
             let text = draft.trim().to_string();
             draft.clear();
             keep_focus = true;
             if let Some((mid, _)) = ctx.edit.clone() {
-                ctx.actions.push(Action::ApplyEdit { message_id: mid, text });
+                ctx.actions
+                    .push(Action::ApplyEdit { message_id: mid, text });
             } else if let Some((pid, who, snip)) = ctx.reply.clone() {
                 ctx.actions.push(Action::SendReply {
                     parent_id: pid,
@@ -224,42 +249,63 @@ fn sender_label(m: &MessageInfo, ctx: &ConvCtx<'_>) -> String {
     "Unknown".into()
 }
 
-fn message_row(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool, grouped: bool) {
-    if !own {
+fn message_row(
+    ui: &mut egui::Ui,
+    ctx: &mut ConvCtx<'_>,
+    m: &MessageInfo,
+    own: bool,
+    grouped: bool,
+) {
+    let avail = ui.available_width() - 12.0;
+    if own {
+        // Right-aligned row: avatar pinned at the right edge, bubble in an
+        // explicitly-sized slot to its left. (set_max_width inside a
+        // right_to_left layout SHIFTS content left instead of capping it.)
+        let cap = ((avail - 44.0) * 0.8).min(620.0);
+        ui.allocate_ui(egui::vec2(avail, 10.0), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                // In right_to_left order the FIRST item sits at the far
+                // right: the avatar mirrors the incoming layout.
+                if !grouped {
+                    avatar(ui, ctx.self_name, 32.0);
+                } else {
+                    ui.add_space(36.0);
+                }
+                ui.allocate_ui(egui::vec2(cap, 10.0), |ui| {
+                    ui.vertical(|ui| {
+                        bubble(ui, ctx, m, true, grouped);
+                    });
+                });
+            });
+        });
+    } else {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(6.0);
             if grouped {
-                ui.add_space(36.0);
+                ui.add_space(38.0);
             } else {
                 avatar(ui, &sender_label(m, ctx), 32.0);
                 ui.add_space(3.0);
             }
             ui.vertical(|ui| {
+                ui.set_max_width((ui.available_width() * 0.8).min(620.0));
                 if !grouped {
                     ui.label(RichText::new(sender_label(m, ctx)).small().strong());
                 }
                 bubble(ui, ctx, m, false, grouped);
             });
         });
-    } else {
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(6.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                ui.vertical(|ui| {
-                    bubble(ui, ctx, m, true, grouped);
-                });
-                if !grouped {
-                    avatar(ui, ctx.self_name, 32.0);
-                } else {
-                    ui.add_space(36.0);
-                }
-            });
-        });
     }
     ui.add_space(3.0);
 }
 
-fn bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool, grouped: bool) {
+fn bubble(
+    ui: &mut egui::Ui,
+    ctx: &mut ConvCtx<'_>,
+    m: &MessageInfo,
+    own: bool,
+    grouped: bool,
+) {
     let fill = if own {
         Color32::from_rgb(0x3b, 0x3e, 0xcf)
     } else {
@@ -271,17 +317,15 @@ fn bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool, 
         if !m.reactions.is_empty() {
             ui.horizontal(|ui| {
                 for r in &m.reactions {
-                    let mine = false; // precise "did I react" needs reactor list; toggle-off via remove
-                    let _ = mine;
                     if Frame::default()
-                        .fill(if r.count > 0 {
-                            Color32::from_rgb(0x38, 0x3a, 0x45)
-                        } else {
-                            Color32::TRANSPARENT
-                        })
+                        .fill(Color32::from_rgb(0x38, 0x3a, 0x45))
                         .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(5, 1))
-                        .show(ui, |ui| ui.label(RichText::new(format!("{} {}", r.emoji, r.count)).small()))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(format!("{} {}", r.emoji, r.count)).small(),
+                            )
+                        })
                         .response
                         .clicked()
                     {
@@ -321,6 +365,7 @@ fn bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool, 
         let file_hits: std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let hits2 = file_hits.clone();
+        let segments = parse_html(&m.raw);
         let bubble = Frame::default()
             .fill(fill)
             .corner_radius(CornerRadius::same(8))
@@ -329,7 +374,7 @@ fn bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool, 
                 let hits2 = hits2.clone();
                 render_segments(
                     ui,
-                    &parse_html(&m.raw),
+                    &segments,
                     |ui, url| show_image(ui, ctx, url),
                     |ui, name, url| {
                         if ui
@@ -361,6 +406,8 @@ fn bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool, 
     });
 }
 
+/// Inline image: textured when loaded, fetch requested once, placeholder
+/// otherwise (failed URLs stay in `pending_images` so they never retry).
 fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
     if let Some((tex, size)) = ctx.textures.get(url) {
         let max_w = 340.0f32;
@@ -380,7 +427,7 @@ fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
-                ui.label(RichText::new("🖼 loading image…").weak().small());
+                ui.label(RichText::new("🖼 image unavailable").weak().small());
             });
         false
     }
@@ -408,8 +455,8 @@ fn hover_toolbar(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own:
                     }
                 }
                 if ui
-                    .button(RichText::new("↩").small())
-                    .on_hover_text("Reply")
+                    .small_button("Reply")
+                    .on_hover_text("Quote and reply")
                     .clicked()
                 {
                     ctx.actions.push(Action::Reply {
@@ -423,30 +470,18 @@ fn hover_toolbar(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own:
                     });
                 }
                 if own {
-                    if ui
-                        .button(RichText::new("✎").small())
-                        .on_hover_text("Edit")
-                        .clicked()
-                    {
+                    if ui.small_button("Edit").on_hover_text("Edit").clicked() {
                         let current = crate::ui::widgets::segs_to_plain(&parse_html(&m.raw));
                         ctx.actions.push(Action::StartEdit {
                             message_id: m.id.clone(),
                             current,
                         });
                     }
-                    if ui
-                        .button(RichText::new("🗑").small())
-                        .on_hover_text("Delete")
-                        .clicked()
-                    {
+                    if ui.small_button("Delete").on_hover_text("Delete").clicked() {
                         ctx.actions.push(Action::DeleteMessage(m.id.clone()));
                     }
                 }
-                if ui
-                    .button(RichText::new("⧉").small())
-                    .on_hover_text("Copy")
-                    .clicked()
-                {
+                if ui.small_button("Copy").on_hover_text("Copy text").clicked() {
                     ui.ctx()
                         .copy_text(crate::ui::widgets::segs_to_plain(&parse_html(&m.raw)));
                 }
