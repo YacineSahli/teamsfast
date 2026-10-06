@@ -107,15 +107,19 @@ pub async fn load_older(ses: &mut Session, tx: &Sender<Event>, chat_id: &str) {
     }
 }
 
-pub async fn send(ses: &mut Session, tx: &Sender<Event>, chat_id: &str, text: &str) {
+pub async fn send(ses: &mut Session, tx: &Sender<Event>, chat_id: &str, text: &str, cmid: &str) {
     let Some(c) = client(ses) else {
+        let _ = tx.send(Event::SendFailed {
+            chat_id: chat_id.to_string(),
+            cmid: cmid.to_string(),
+            error: "not signed in".into(),
+        });
         return;
     };
     // Idempotent send: the clientmessageid lets us verify the message
     // actually landed — topic-type channels accept the POST but drop the
     // message, which would otherwise look like a silent failure.
-    let cmid = ost::api::new_client_message_id();
-    let sent = ost::api::send_message_with_client_id(c, chat_id, text, &cmid).await;
+    let sent = ost::api::send_message_with_client_id(c, chat_id, text, cmid).await;
     match sent {
         Ok(_) => {
             let _ = tx.send(Event::ActionOk {
@@ -123,15 +127,17 @@ pub async fn send(ses: &mut Session, tx: &Sender<Event>, chat_id: &str, text: &s
                 action: MsgAction::Replied,
             });
             if let Ok(page) = read_messages_page(c, chat_id, 50, None).await {
-                let landed =
-                    ost::api::find_by_client_id(&page.messages, &cmid).is_some();
+                let landed = ost::api::find_by_client_id(&page.messages, cmid).is_some();
                 let cursor = page.backward_link.clone().unwrap_or_default();
                 ses.older_links.insert(chat_id.to_string(), cursor.clone());
                 if !landed {
-                    let _ = tx.send(Event::Error(
-                        "The message may not have been delivered: this conversation (a topic channel) did not show it after posting."
-                            .into(),
-                    ));
+                    let _ = tx.send(Event::SendFailed {
+                        chat_id: chat_id.to_string(),
+                        cmid: cmid.to_string(),
+                        error:
+                            "The message may not have been delivered: this conversation (a topic channel) did not show it after posting."
+                                .into(),
+                    });
                 }
                 let _ = tx.send(Event::Messages {
                     older_link: Some(cursor),
@@ -144,7 +150,35 @@ pub async fn send(ses: &mut Session, tx: &Sender<Event>, chat_id: &str, text: &s
             }
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("send: {e:#}")));
+            let _ = tx.send(Event::SendFailed {
+                chat_id: chat_id.to_string(),
+                cmid: cmid.to_string(),
+                error: format!("{e:#}"),
+            });
+        }
+    }
+}
+
+/// `Command::ReadReceipts` — who has read up to which message.
+pub async fn fetch_receipts(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::read_receipts_data(c, chat_id).await {
+        Ok(receipts) => {
+            let pairs: Vec<(String, String)> = receipts
+                .into_iter()
+                .filter(|r| !r.user.is_empty())
+                .map(|r| (r.user, r.message_id))
+                .collect();
+            let _ = tx.send(Event::ReadReceipts {
+                chat_id: chat_id.to_string(),
+                receipts: pairs,
+            });
+        }
+        Err(e) => {
+            // Receipts are a nicety — never surface as a hard error.
+            log::debug!("receipts: {e:#}");
         }
     }
 }

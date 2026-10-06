@@ -85,6 +85,25 @@ pub enum Action {
     MarkUnread(String),
     HideChat(String),
     LeaveChat(String),
+    // ---- message ops ----
+    /// Forward text to another chat (opens the picker).
+    Forward(String),
+    /// Locally pin/unpin a message in this chat.
+    TogglePinMessage { chat_id: String, message_id: String },
+    /// Retry a failed send by its clientmessageid.
+    RetrySend(String),
+    /// Discard a failed/pending send bubble.
+    DismissSend(String),
+    /// Refetch the newest page (scrolls home / jump to latest).
+    JumpLatest,
+}
+
+/// An own message on its way out (or failed, awaiting Retry) — the view
+/// mirrors App's PendingSend without importing App.
+pub struct PendingBubble {
+    pub cmid: String,
+    pub text: String,
+    pub error: Option<String>,
 }
 
 /// Everything the conversation view reads from the App.
@@ -101,6 +120,12 @@ pub struct ConvCtx<'a> {
     pub edit: Option<(String, String)>,
     pub reply: Option<(String, String, String)>,
     pub uploads: &'a [(String, u64, u64)],
+    /// Own sends in flight / failed for this chat.
+    pub pending: &'a [PendingBubble],
+    /// message id → user mris that have read it ("Seen by").
+    pub receipts: &'a std::collections::HashMap<String, Vec<String>>,
+    /// Locally pinned message ids in this chat.
+    pub pinned: &'a [String],
     pub textures: &'a std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
     pub pending_images: &'a mut HashSet<String>,
     /// Emoji raster cache: cluster -> texture (colour, from bundled Noto).
@@ -116,6 +141,52 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         avatar(ui, &ctx.chat_name, 32.0);
         ui.add_space(2.0);
         ui.heading(RichText::new(&ctx.chat_name).strong().size(17.0));
+        // Pinned messages menu.
+        if !ctx.pinned.is_empty() {
+            ui.menu_button(
+                crate::theme::Icon::Pin.image(ctx.pal.secondary, 14.0),
+                |ui| {
+                    ui.set_min_width(260.0);
+                    ui.strong("Pinned");
+                    ui.separator();
+                    let mut shown = 0;
+                    for id in ctx.pinned {
+                        if let Some(m) = ctx.messages.iter().find(|m| &m.id == id) {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{}: {}",
+                                    sender_label(m, ctx),
+                                    crate::ui::widgets::segs_to_plain(&parse_html(&m.raw))
+                                        .lines()
+                                        .next()
+                                        .unwrap_or("")
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                            shown += 1;
+                        }
+                    }
+                    if shown == 0 {
+                        ui.label(
+                            RichText::new("Pinned messages are outside the loaded page.")
+                                .small()
+                                .weak(),
+                        );
+                    }
+                },
+            );
+        }
+        // Jump to latest: history is paged above, so re-anchor to the tail.
+        if ctx.older_link.is_some() {
+            if ui
+                .small_button(RichText::new("⇩ Latest").small())
+                .on_hover_text("Reload the newest messages")
+                .clicked()
+            {
+                ctx.actions.push(Action::JumpLatest);
+            }
+        }
         if let Some(user) = ctx.typing_user {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
@@ -166,7 +237,98 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 && m.timestamp.get(0..16) == ctx.messages[i - 1].timestamp.get(0..16);
             message_row(ui, ctx, m, own, grouped);
         }
+        // Own sends in flight / failed: translucent bubble, Retry on error.
+        for p in ctx.pending {
+            pending_bubble(ui, ctx, p);
+        }
     });
+}
+
+/// Own message bubble for a send that hasn't been confirmed by the server
+/// yet (translucent) or that failed (danger border + Retry / Discard).
+fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
+    ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            ui.vertical(|ui| {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::TOP),
+                    |ui| {
+                        let (fill, stroke) = match &p.error {
+                            None => (
+                                ctx.pal.bubble_out,
+                                egui::Stroke::NONE,
+                            ),
+                            Some(_) => (
+                                ctx.pal.bubble_out,
+                                egui::Stroke::new(1.0, ctx.pal.danger),
+                            ),
+                        };
+                        egui::Frame::default()
+                            .fill({
+                                // 55% alpha while pending.
+                                let [r, g, b, _] = fill.to_srgba_unmultiplied();
+                                Color32::from_rgba_unmultiplied(r, g, b, 140)
+                            })
+                            .stroke(stroke)
+                            .corner_radius(egui::CornerRadius {
+                                nw: 10,
+                                ne: 10,
+                                sw: 10,
+                                se: 2,
+                            })
+                            .inner_margin(egui::Margin::symmetric(10, 5))
+                            .show(ui, |ui| {
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::TOP),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&p.text).color(ctx.pal.text),
+                                            )
+                                            .selectable(false),
+                                        );
+                                    },
+                                );
+                            });
+                        match &p.error {
+                            None => {
+                                ui.label(
+                                    RichText::new("sending…")
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                            Some(err) => {
+                                ui.label(
+                                    RichText::new("not sent")
+                                        .small()
+                                        .color(ctx.pal.danger),
+                                )
+                                .on_hover_text(err);
+                                if ui
+                                    .small_button(RichText::new("Retry").small())
+                                    .clicked()
+                                {
+                                    ctx.actions.push(Action::RetrySend(p.cmid.clone()));
+                                }
+                                if ui
+                                    .small_button(RichText::new("Discard").small())
+                                    .clicked()
+                                {
+                                    ctx.actions
+                                        .push(Action::DismissSend(p.cmid.clone()));
+                                }
+                            }
+                        }
+                    },
+                );
+            });
+            ui.add_space(6.0);
+            avatar(ui, ctx.self_name, 32.0);
+        });
+    });
+    ui.add_space(9.0);
 }
 
 /// Composer + banners (the bottom panel).
@@ -579,11 +741,38 @@ fn bubble_parts(
     let open = in_bubble || in_bar;
 
     if !grouped {
+        let pinned = ctx.pinned.contains(&m.id);
+        let seen_by: Option<String> = ctx.receipts.get(&m.id).map(|users| {
+            let names: Vec<String> = users
+                .iter()
+                .map(|u| ctx.members.get(u).cloned().unwrap_or_else(|| "Someone".into()))
+                .collect();
+            names.join(", ")
+        });
         if own {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(names) = seen_by {
+                    ui.label(
+                        RichText::new("Seen")
+                            .small()
+                            .weak()
+                            .color(Color32::from_rgb(0x6f, 0xd1, 0x94)),
+                    )
+                    .on_hover_text(format!("Seen by {names}"));
+                }
                 ui.label(
                     RichText::new(format_message_time(&m.timestamp)).small().weak(),
                 );
+                if pinned {
+                    ui.add(
+                        egui::Image::from_bytes(
+                            crate::theme::Icon::Pin.uri(),
+                            crate::theme::Icon::Pin.bytes(),
+                        )
+                        .tint(ctx.pal.secondary)
+                        .fit_to_exact_size(egui::Vec2::splat(10.0)),
+                    );
+                }
             });
         } else {
             ui.label(RichText::new(format_message_time(&m.timestamp)).small().weak());
@@ -665,6 +854,42 @@ fn bubble_parts(
                                         .next()
                                         .unwrap_or("")
                                         .to_string(),
+                                    });
+                                }
+                                // Forward to another chat.
+                                if ui
+                                    .add(egui::Button::new(
+                                        crate::theme::Icon::Forward
+                                            .image(Color32::WHITE, 15.0),
+                                    ))
+                                    .on_hover_text("Forward")
+                                    .clicked()
+                                {
+                                    sink.borrow_mut().push(Action::Forward(
+                                        crate::ui::widgets::segs_to_plain(&parse_html(&m.raw)),
+                                    ));
+                                }
+                                // Local pin toggle.
+                                let pinned_here = ctx.pinned.contains(&m.id);
+                                let pin_icon = if pinned_here {
+                                    crate::theme::Icon::PinOff
+                                } else {
+                                    crate::theme::Icon::Pin
+                                };
+                                if ui
+                                    .add(egui::Button::new(
+                                        pin_icon.image(Color32::WHITE, 15.0),
+                                    ))
+                                    .on_hover_text(if pinned_here {
+                                        "Unpin message"
+                                    } else {
+                                        "Pin message"
+                                    })
+                                    .clicked()
+                                {
+                                    sink.borrow_mut().push(Action::TogglePinMessage {
+                                        chat_id: ctx.chat_id.clone(),
+                                        message_id: m.id.clone(),
                                     });
                                 }
                                 if own {

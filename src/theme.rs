@@ -227,6 +227,9 @@ pub struct Settings {
     /// Locally known muted chat ids (server state mirrored for icons).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub muted_chats: Vec<String>,
+    /// Locally pinned messages: chat id → message ids (top-of-view pins).
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub pinned_messages: std::collections::HashMap<String, Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -256,6 +259,7 @@ impl Default for Settings {
             unread_badges: true,
             pinned_chats: Vec::new(),
             muted_chats: Vec::new(),
+            pinned_messages: std::collections::HashMap::new(),
         })
     }
 }
