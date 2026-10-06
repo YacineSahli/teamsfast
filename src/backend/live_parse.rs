@@ -192,7 +192,7 @@ pub fn strip_html(s: &str) -> String {
     if depth == 0 {
         out.push_str(rest);
     }
-    out
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -308,9 +308,9 @@ mod tests {
 
     #[test]
     fn strip_html_cases() {
-        assert_eq!(strip_html("<div>Hello <b>world</b></div>"), "Hello world ");
+        assert_eq!(strip_html("<div>Hello <b>world</b></div>"), "Hello world");
         assert_eq!(strip_html("a &amp; b &lt;c&gt;"), "a & b <c>");
         assert_eq!(strip_html("plain"), "plain");
-        assert_eq!(strip_html("<img src=\"x\"> pic"), " pic");
+        assert_eq!(strip_html("<img src=\"x\"> pic"), "pic");
     }
 }

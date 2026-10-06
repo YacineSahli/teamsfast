@@ -195,6 +195,66 @@ pub fn is_file_url(url: &str) -> Option<String> {
     }
 }
 
+/// Drop leading LineBreaks (Teams HTML starts with <div>) and collapse
+/// consecutive ones — they otherwise render as invisible empty rows that
+/// push text to the bottom of every bubble.
+fn strip_leading_breaks(segs: Vec<Seg>) -> Vec<Seg> {
+    let mut segs = segs;
+    while matches!(segs.first(), Some(Seg::LineBreak)) {
+        segs.remove(0);
+    }
+    segs
+}
+
+/// Drop whitespace-only text that also contains a newline: it is the
+/// `\r\n` between block tags (`</p>\r\n<p>`), which would otherwise add a
+/// phantom empty line ON TOP of the LineBreak the tags already produce.
+fn strip_block_noise(segs: Vec<Seg>) -> Vec<Seg> {
+    // 1. Collapse whitespace runs (incl. newlines) inside text — Teams HTML
+    //    is whitespace-liberal ("tool     that"). Block separation is
+    //    carried by LineBreak segments, not raw whitespace.
+    // 2. Drop text that becomes empty (the \r\n between </p> and <p>).
+    let segs: Vec<Seg> = segs
+        .into_iter()
+        .filter_map(|seg| match seg {
+            Seg::Text(t) => {
+                let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
+                if collapsed.is_empty() {
+                    None
+                } else {
+                    Some(Seg::Text(collapsed))
+                }
+            }
+            other => Some(other),
+        })
+        .collect();
+    // 3. Collapse consecutive LineBreaks to one (blank paragraphs render as
+    //    a single gap, like Teams), and trim leading/trailing breaks.
+    let mut out: Vec<Seg> = Vec::with_capacity(segs.len());
+    for seg in segs {
+        if matches!(seg, Seg::LineBreak)
+            && matches!(out.last(), Some(Seg::LineBreak) | None)
+        {
+            continue;
+        }
+        out.push(seg);
+    }
+    while matches!(out.last(), Some(Seg::LineBreak) | Some(Seg::Text(_)))
+        && out.len() > 1
+    {
+        match out.last() {
+            Some(Seg::LineBreak) => {
+                out.pop();
+            }
+            Some(Seg::Text(t)) if t.trim().is_empty() => {
+                out.pop();
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
 /// Render segments inside a wrapped flow. `image` is called for each inline
 /// image URL (the app decides whether it is already loaded / must fetch);
 /// `file` for downloadable file links (name, url).
@@ -204,20 +264,26 @@ pub fn render_segments(
     mut image: impl FnMut(&mut Ui, &str) -> bool,
     mut file: impl FnMut(&mut Ui, &str, &str),
 ) {
+    let segs = strip_block_noise(strip_leading_breaks(segs.to_vec()));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for seg in segs {
+        let mut row_has_content = false;
+        for seg in &segs {
             match seg {
                 Seg::Text(t) => {
                     ui.label(RichText::new(t));
+                    row_has_content = true;
                 }
                 Seg::Bold(t) => {
                     ui.label(RichText::new(t).strong());
+                    row_has_content = true;
                 }
                 Seg::Italic(t) => {
                     ui.label(RichText::new(t).italics());
+                    row_has_content = true;
                 }
                 Seg::Code(t) => {
+                    row_has_content = true;
                     Frame::default()
                         .fill(Color32::from_rgb(0x2b, 0x2d, 0x31))
                         .corner_radius(CornerRadius::same(4))
@@ -227,6 +293,7 @@ pub fn render_segments(
                         });
                 }
                 Seg::Link { text, url } => {
+                    row_has_content = true;
                     if let Some(fname) = is_file_url(url) {
                         file(ui, &fname, url);
                     } else if text.is_empty() {
@@ -241,6 +308,7 @@ pub fn render_segments(
                     }
                 }
                 Seg::Mention(t) => {
+                    row_has_content = true;
                     ui.label(
                         RichText::new(format!("@{t}"))
                             .color(Color32::from_rgb(0x8a, 0x88, 0xff))
@@ -248,6 +316,7 @@ pub fn render_segments(
                     );
                 }
                 Seg::Quote(t) => {
+                    row_has_content = true;
                     Frame::default()
                         .stroke(Stroke::new(2.0, Color32::from_rgb(0x69, 0xa1, 0xe8)))
                         .inner_margin(egui::Margin::symmetric(6, 2))
@@ -256,10 +325,14 @@ pub fn render_segments(
                         });
                 }
                 Seg::Image { url } => {
+                    row_has_content = true;
                     image(ui, url);
                 }
                 Seg::LineBreak => {
-                    ui.end_row();
+                    if row_has_content {
+                        ui.end_row();
+                        row_has_content = false;
+                    }
                 }
             }
         }
