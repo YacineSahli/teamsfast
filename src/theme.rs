@@ -241,6 +241,9 @@ pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
     egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
+    // Register the bundled Noto Color Emoji BEFORE the plugin so both the
+    // text pipeline and the raster cache have a colour font.
+    crate::emoji::setup();
     ctx.add_plugin(fastframe_emoji::EmojiPlugin::default());
     std::thread::spawn(fastframe_emoji::warm_up);
     apply_style(ctx);
@@ -281,6 +284,27 @@ pub fn apply_style(ctx: &egui::Context) {
     v.hyperlink_color = Color32::from_rgb(0x69, 0xa1, 0xe8);
     v.override_text_color = Some(Color32::from_rgb(0xe8, 0xea, 0xed));
     ctx.set_visuals(v);
+}
+
+/// Render `emoji` to RGBA at `height` px through the installed emoji font
+/// (bypasses egui's text pipeline, so bar/chip emoji are always full colour).
+pub fn raster_emoji(emoji: &str, height: u32) -> Option<(Vec<u8>, [usize; 2])> {
+    crate::emoji::setup();
+    let emoji_font = fastframe_emoji::get();
+    if std::env::var_os("TEAMSFAST_EMOJI_PROBE").is_some() {
+        for h in [16u32, 24, 32, 48, 64, 96, 128, 136, 160] {
+            let r = emoji_font.render(emoji, h);
+            log::warn!("EMOJI PROBE {emoji:?} @{h}px -> {}", r.is_some());
+        }
+        log::warn!("EMOJI PROBE available={}", fastframe_emoji::available());
+    }
+    match emoji_font.render(emoji, height) {
+        Some(p) => Some((p.rgba, p.size)),
+        None => {
+            log::warn!("emoji raster failed for {emoji:?} at {height}px");
+            None
+        }
+    }
 }
 
 fastframe_icons::icons! {

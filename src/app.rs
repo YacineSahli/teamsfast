@@ -63,6 +63,8 @@ pub struct TeamsFastApp {
     last_offline_retry: Instant,
 
     textures: HashMap<String, (egui::TextureHandle, [usize; 2])>,
+    emoji_textures: HashMap<String, egui::TextureHandle>,
+    reaction_popup: Option<(String, Vec<String>)>,
     lightbox: Option<String>,
     pending_images: HashSet<String>,
     queued_textures: Vec<(String, Vec<u8>, [usize; 2])>,
@@ -175,6 +177,8 @@ impl TeamsFastApp {
             last_open_refresh: Instant::now() - Duration::from_secs(10),
             typing: None,
             textures: HashMap::new(),
+            emoji_textures: HashMap::new(),
+            reaction_popup: None,
             lightbox: None,
             pending_images: HashSet::new(),
             failed_images: HashSet::new(),
@@ -668,6 +672,9 @@ impl TeamsFastApp {
             Action::OpenImage(url) => {
                 self.lightbox = textures_key(&url);
             }
+            Action::ShowReactions { emoji, names } => {
+                self.reaction_popup = Some((emoji, names));
+            }
             Action::DownloadFile { name, url } => {
                 self.cmd.send(Command::DownloadFile { url, name }).ok();
             }
@@ -943,6 +950,7 @@ impl eframe::App for TeamsFastApp {
                 uploads: &self.uploads,
                 textures: &self.textures,
                 pending_images: &mut self.pending_images,
+                emoji_textures: &mut self.emoji_textures,
                 pal: &self.palette,
                 actions: &mut actions,
             };
@@ -1018,6 +1026,23 @@ impl eframe::App for TeamsFastApp {
         }
         if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.apply(Action::OpenSearch);
+        }
+
+        if let Some((emoji, names)) = self.reaction_popup.clone() {
+            egui::Window::new(format!("Reactions {emoji}"))
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    if names.is_empty() {
+                        ui.label("No reactions.");
+                    }
+                    for n in &names {
+                        ui.label(n);
+                    }
+                    if ui.button("Close").clicked() {
+                        self.reaction_popup = None;
+                    }
+                });
         }
 
         if let Some(url) = self.lightbox.clone() {

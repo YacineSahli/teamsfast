@@ -15,7 +15,7 @@ use crate::theme::Palette;
 use crate::ui::widgets::{avatar, parse_html, render_segments};
 use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense, Stroke};
 use ost::api::MessageInfo;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
 
 const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
@@ -57,6 +57,10 @@ pub enum Action {
     FetchImage(String),
     OpenImage(String),
     DownloadFile { name: String, url: String },
+    ShowReactions {
+        emoji: String,
+        names: Vec<String>,
+    },
     OpenSearch,
     ShowNewChat,
     CreateOneToOne(String),
@@ -83,6 +87,8 @@ pub struct ConvCtx<'a> {
     pub uploads: &'a [(String, u64, u64)],
     pub textures: &'a std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
     pub pending_images: &'a mut HashSet<String>,
+    /// Emoji raster cache: cluster -> texture (colour, from bundled Noto).
+    pub emoji_textures: &'a mut HashMap<String, egui::TextureHandle>,
     pub pal: &'a Palette,
     pub actions: &'a mut Vec<Action>,
 }
@@ -383,7 +389,7 @@ fn bubble_parts(
     grouped: bool,
 ) {
 
-    // Reactions chips
+    // Reactions chips (hover = who reacted; click = full list popup)
     if !m.reactions.is_empty() {
         if own {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -568,34 +574,58 @@ fn bubble_parts(
         }
     }
 
+    // Floating action bar: anchored ABOVE the bubble, right-aligned to its
+    // right edge, clamped inside the panel. Content-sized (no with_layout
+    // stretch), colour emoji images, always fully clickable.
+    let pointer2 = ui.input(|i| i.pointer.latest_pos());
+    let bar_rect_prev: Option<egui::Rect> = ui.ctx().data(|d| d.get_temp(hover_id));
+    let expand = |r: egui::Rect, by: f32| {
+        egui::Rect::from_min_max(
+            egui::pos2(r.left() - by, r.top() - by),
+            egui::pos2(r.right() + by, r.bottom() + by),
+        )
+    };
+    let in_bubble = pointer2
+        .map(|p| expand(bubble_rect, 2.0).contains(p))
+        .unwrap_or(false);
+    let in_bar = pointer2
+        .zip(bar_rect_prev)
+        .map(|(p, r)| expand(r, 8.0).contains(p))
+        .unwrap_or(false);
+    let open = in_bubble || in_bar;
+
     if open {
-        let anchor = egui::pos2(
-            (bubble_rect.right() - 8.0).max(ui.clip_rect().left() + 8.0),
-            (bubble_rect.top() - 40.0).max(ui.clip_rect().top() + 2.0),
-        );
+        let clip = ui.clip_rect();
+        // Emoji row (6 x 32) + separator + Reply/Edit/Delete/Copy.
+        const BAR_W: f32 = 396.0;
+        let anchor_x = (bubble_rect.right() - BAR_W + 10.0)
+            .max(clip.left() + 8.0)
+            .min(clip.right() - BAR_W - 8.0);
+        let anchor_y = (bubble_rect.top() - 44.0).max(clip.top() + 2.0);
+        let anchor = egui::pos2(anchor_x, anchor_y);
         let actions_sink: std::rc::Rc<std::cell::RefCell<Vec<Action>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let sink2 = actions_sink.clone();
+        let sink = actions_sink.clone();
         let bar = egui::Area::new(row_id.with("toolbar"))
             .order(egui::Order::Tooltip)
             .fixed_pos(anchor)
             .show(ui.ctx(), |ui| {
-                let sink = sink2.clone();
-                Frame::default()
-                    .fill(Color32::from_rgb(0x26, 0x28, 0x33))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x47)))
-                    .corner_radius(CornerRadius::same(8))
-                    .inner_margin(egui::Margin::symmetric(5, 3))
-                    .show(ui, |ui| {
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
+                ui.horizontal(|ui| {
+                    Frame::default()
+                        .fill(Color32::from_rgb(0x26, 0x28, 0x33))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x47)))
+                        .corner_radius(CornerRadius::same(10))
+                        .inner_margin(egui::Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
                                 for e in QUICK_REACTIONS {
-                                    if ui
-                                        .button(RichText::new(e).size(18.0))
-                                        .on_hover_text("React")
-                                        .clicked()
-                                    {
+                                    let btn = egui::Button::new(
+                                        emoji_widget(ui, ctx, e, 20.0),
+                                    )
+                                    .fill(Color32::TRANSPARENT)
+                                    .min_size(egui::vec2(32.0, 28.0));
+                                    if ui.add(btn).on_hover_text("React").clicked() {
                                         sink.borrow_mut().push(Action::React {
                                             message_id: m.id.clone(),
                                             emoji: (*e).to_string(),
@@ -603,7 +633,12 @@ fn bubble_parts(
                                         });
                                     }
                                 }
-                                if ui.button(RichText::new("Reply").size(13.0)).clicked() {
+                                ui.separator();
+                                if ui
+                                    .button(RichText::new("Reply").small())
+                                    .on_hover_text("Quote and reply")
+                                    .clicked()
+                                {
                                     sink.borrow_mut().push(Action::Reply {
                                         message_id: m.id.clone(),
                                         sender: sender_label(m, ctx),
@@ -618,13 +653,7 @@ fn bubble_parts(
                                 }
                                 if own {
                                     if ui
-                                        .add(
-                                            egui::Button::new(
-                                                crate::theme::Icon::Pencil
-                                                    .image(Color32::WHITE, 16.0),
-                                            ),
-                                        )
-                                        .on_hover_text("Edit")
+                                        .button(RichText::new("Edit").small())
                                         .clicked()
                                     {
                                         let current = crate::ui::widgets::segs_to_plain(
@@ -636,13 +665,7 @@ fn bubble_parts(
                                         });
                                     }
                                     if ui
-                                        .add(
-                                            egui::Button::new(
-                                                crate::theme::Icon::Trash
-                                                    .image(Color32::WHITE, 16.0),
-                                            ),
-                                        )
-                                        .on_hover_text("Delete")
+                                        .button(RichText::new("Delete").small())
                                         .clicked()
                                     {
                                         sink.borrow_mut().push(Action::DeleteMessage(
@@ -651,12 +674,10 @@ fn bubble_parts(
                                     }
                                 }
                                 if ui
-                                    .add(
-                                        egui::Button::new(
-                                            crate::theme::Icon::Copy
-                                                .image(Color32::WHITE, 16.0),
-                                        ),
-                                    )
+                                    .add(egui::Button::new(
+                                        crate::theme::Icon::Copy
+                                            .image(Color32::WHITE, 15.0),
+                                    ))
                                     .on_hover_text("Copy text")
                                     .clicked()
                                 {
@@ -664,12 +685,13 @@ fn bubble_parts(
                                         &parse_html(&m.raw),
                                     ));
                                 }
-                            },
-                        );
-                    });
+                            });
+                        });
+                });
             })
             .response;
-        ui.ctx().data_mut(|d| d.insert_temp::<egui::Rect>(hover_id, bar.rect));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp::<egui::Rect>(hover_id, bar.rect));
     } else if bar_rect_prev.is_some() {
         ui.ctx().data_mut(|d| d.remove::<egui::Rect>(hover_id));
     }
@@ -698,24 +720,30 @@ fn connector_card(ui: &mut egui::Ui) {
         });
 }
 
-/// Reaction count chips (click = remove your reaction).
+/// Reaction count chips: colour emoji + names on hover; click opens the
+/// full reactor list (and removes your own reaction when you were in it).
 fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
     for r in &m.reactions {
-        if Frame::default()
+        let names: Vec<String> = r.reactors.iter().map(|x| x.name.clone()).collect();
+        let tip = if names.is_empty() {
+            format!("{} reaction{}", r.count, if r.count == 1 { "" } else { "s" })
+        } else {
+            format!("{} by {}", r.emoji, names.join(", "))
+        };
+        let chip = Frame::default()
             .fill(Color32::from_rgb(0x38, 0x3a, 0x45))
             .corner_radius(CornerRadius::same(10))
-            .inner_margin(egui::Margin::symmetric(5, 1))
+            .inner_margin(egui::Margin::symmetric(6, 2))
             .show(ui, |ui| {
-                ui.label(RichText::new(format!("{} {}", r.emoji, r.count)).small())
+                ui.horizontal(|ui| {
+                    emoji_widget(ui, ctx, &r.emoji, 15.0);
+                    ui.label(RichText::new(r.count.to_string()).small());
+                });
             })
-            .response
-            .clicked()
-        {
-            ctx.actions.push(Action::React {
-                message_id: m.id.clone(),
-                emoji: r.emoji.clone(),
-                remove: true,
-            });
+            .response;
+        let chip = chip.on_hover_text(tip);
+        if chip.clicked() {
+            ctx.actions.push(Action::ShowReactions { emoji: r.emoji.clone(), names });
         }
     }
 }
@@ -742,6 +770,36 @@ fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
                         .weak(),
                     );
                 });
+        }
+    }
+}
+
+/// Full-colour emoji as an egui widget (bundled Noto raster — never the
+/// monochrome fallback font that hit-tests/bars were getting).
+fn emoji_widget(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, cluster: &str, px: f32) {
+    if !ctx.emoji_textures.contains_key(cluster) {
+        if let Some((rgba, size)) = crate::theme::raster_emoji(cluster, 64) {
+            let img = egui::ColorImage::from_rgba_unmultiplied(
+                [size[0], size[1]],
+                &rgba,
+            );
+            let tex = ui
+                .ctx()
+                .load_texture(format!("emoji:{cluster}"), img, Default::default());
+            ctx.emoji_textures.insert(cluster.to_string(), tex);
+        }
+    }
+    match ctx.emoji_textures.get(cluster) {
+        Some(tex) => {
+            let scale = px / tex.size()[1].max(1) as f32;
+            let size = egui::vec2(
+                tex.size()[0] as f32 * scale,
+                tex.size()[1] as f32 * scale,
+            );
+            ui.add(egui::Image::new((tex.id(), size)));
+        }
+        None => {
+            ui.label(RichText::new(cluster).size(px));
         }
     }
 }

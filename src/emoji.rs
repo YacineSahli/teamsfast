@@ -4,7 +4,7 @@
 /// Bundled Noto Color Emoji (OFL; see assets/fonts/NotoColorEmoji-LICENSE.txt).
 const BUNDLED: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 
-fn setup() {
+pub fn setup() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         fastframe_emoji::EmojiSetup::default()
