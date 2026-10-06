@@ -185,12 +185,14 @@ impl eframe::App for TeamsFastApp {
                 ScrollArea::vertical().show(ui, |ui| {
                     for chat in &self.chats {
                         let selected = self.selected.as_deref() == Some(chat.id.as_str());
-                        let label = if chat.name.is_empty() {
-                            let mut s: String = chat.id.chars().take(24).collect();
-                            s.push('…');
-                            s
-                        } else {
-                            chat.name.clone()
+                        let label = match chat.name.as_str() {
+                            "" => {
+                                let mut s: String = chat.id.chars().take(24).collect();
+                                s.push('…');
+                                s
+                            }
+                            "[Direct message]" => "Direct message".into(),
+                            other => other.to_string(),
                         };
                         ui.horizontal(|ui| {
                             if ui

@@ -72,6 +72,13 @@ fn sort_chats(chats: &mut [ChatInfo]) {
     chats.sort_by(|a, b| chat_recency(b).cmp(&chat_recency(a)));
 }
 
+/// Drop Teams' activity feeds (Mentions, Notifications, Threads, Calllogs…).
+/// They come mixed into `view=mychats` with `48:*` ids; real conversations
+/// (1:1, group, meeting, channel) never do. You cannot send to a feed.
+fn filter_pseudo_chats(chats: &mut Vec<ChatInfo>) {
+    chats.retain(|c| !c.id.starts_with("48:"));
+}
+
 async fn worker(tx: Sender<Event>, mut rx: UnboundedReceiver<Command>) {
     let mut client: Option<TeamsClient> = None;
     let mut trouter_started = false;
@@ -116,6 +123,7 @@ async fn worker(tx: Sender<Event>, mut rx: UnboundedReceiver<Command>) {
                 };
                 match list_chats_data(c, 40).await {
                     Ok(mut chats) => {
+                        filter_pseudo_chats(&mut chats);
                         sort_chats(&mut chats);
                         let _ = tx.send(Event::Chats(chats));
                     }
