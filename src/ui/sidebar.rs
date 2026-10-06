@@ -133,8 +133,9 @@ fn chat_row(
     let time = format_chat_time(&chat.last_message_time);
 
     let avail = ui.available_width() - 6.0;
-    let (rect, response) =
+    let (rect, mut response) =
         ui.allocate_exact_size(egui::vec2(avail, 44.0), egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     // Row background: selection / hover.
     let bg = if selected {
@@ -170,10 +171,13 @@ fn chat_row(
                         // Reserve the right column so long names can never
                         // collide with the timestamp/group tag.
                         let name_w = (ui.available_width() - 70.0).max(60.0);
-                        ui.add_sized(
-                            [name_w, 16.0],
-                            egui::Label::new(RichText::new(&label).strong()).truncate(),
-                        );
+                        ui.allocate_ui(egui::vec2(name_w, 16.0), |ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(&label).strong())
+                                    .truncate()
+                                    .selectable(false),
+                            );
+                        });
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
@@ -191,13 +195,16 @@ fn chat_row(
                             egui::Label::new(
                                 RichText::new(clean_preview(p)).small().weak(),
                             )
-                            .truncate(),
+                            .truncate()
+                            .selectable(false),
                         );
                     }
                 });
             });
     }
 
+    // Rows act as whole buttons: non-selectable labels (egui text selection
+    // would otherwise swallow clicks on the name/preview).
     if response.clicked() {
         // Push the ACTION (App::apply updates `selected` first). Sending the
         // raw Command here bypasses App state and the history gets dropped

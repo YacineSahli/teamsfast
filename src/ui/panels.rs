@@ -50,8 +50,9 @@ pub fn search_panel(
             // Allocate the clickable row FIRST, paint content inside —
             // late `.interact()` gets shadowed by hover-sense labels.
             let avail = ui.available_width() - 4.0;
-            let (rect, response) =
+            let (rect, mut response) =
                 ui.allocate_exact_size(egui::vec2(avail, 36.0), egui::Sense::click());
+            response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
             if response.hovered() {
                 ui.painter().rect_filled(
                     rect,
@@ -64,10 +65,25 @@ pub fn search_panel(
             {
                 let ui = &mut child;
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(&h.sender).strong().size(12.5));
-                ui.add(egui::Label::new(RichText::new(&h.preview).small()).truncate());
-                ui.label(RichText::new(&h.timestamp).small().weak());
+                ui.label(
+                    RichText::new(&h.sender)
+                        .strong()
+                        .size(12.5)
+                        .color(egui::Color32::from_rgb(0x8a, 0x88, 0xff)),
+                );
+                ui.add(
+                    egui::Label::new(RichText::new(&h.preview).small())
+                        .truncate()
+                        .selectable(false),
+                );
+                ui.label(
+                    RichText::new(&h.timestamp)
+                        .small()
+                        .weak()
+                        .color(egui::Color32::from_rgb(0x9a, 0x9d, 0xa3)),
+                );
             }
+
             if response.clicked() && !target.is_empty() {
                 // ACTION, not raw command: App must update `selected` or the
                 // incoming history is dropped on the selected-mismatch guard.

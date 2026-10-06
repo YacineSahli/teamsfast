@@ -205,15 +205,22 @@ pub fn avatar_color(name: &str) -> Color32 {
     PALETTE[(h % PALETTE.len() as u64) as usize]
 }
 
-/// 1–2 letter initials for an avatar.
+/// 1–2 letter initials for an avatar. Skips punctuation-only words so
+/// "MI - ACME" yields "MD", not "M-".
 pub fn initials(name: &str) -> String {
-    let parts: Vec<&str> = name.split_whitespace().collect();
-    match parts.as_slice() {
-        [first, last, ..] => {
-            format!("{}{}", first.chars().next().unwrap_or('?'), last.chars().next().unwrap_or('?'))
-                .to_uppercase()
-        }
-        [one] => one.chars().take(2).collect::<String>().to_uppercase(),
+    let words: Vec<&str> = name
+        .split_whitespace()
+        .filter(|w| w.chars().any(|c| c.is_alphabetic()))
+        .collect();
+    let first_alpha = |w: &str| -> char {
+        w.chars()
+            .find(|c| c.is_alphabetic())
+            .unwrap_or('?')
+            .to_ascii_uppercase()
+    };
+    match words.as_slice() {
+        [first, second, ..] => format!("{}{}", first_alpha(first), first_alpha(second)),
+        [one] => one.chars().filter(|c| c.is_alphabetic()).take(2).collect(),
         _ => "?".into(),
     }
 }
