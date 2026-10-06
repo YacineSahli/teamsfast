@@ -4,6 +4,7 @@ use crate::backend::{self, Command, Event};
 use crate::theme::{self, Palette};
 use crate::ui::conversation::{self, Action, ConvCtx};
 use crate::ui::panels::{new_chat_dialog, search_panel, NewChatState};
+use crate::ui::settings::{SettingsInfo, SettingsUi};
 use crate::ui::sidebar::{sidebar, SideView};
 use crate::ui::widgets::avatar;
 use egui::{Color32, RichText};
@@ -62,6 +63,20 @@ pub struct TeamsFastApp {
     offline: Option<String>,
     last_offline_retry: Instant,
 
+    /// Unread state per chat: (is-unread, approximate count).
+    unread: HashMap<String, (bool, u32)>,
+    /// Settings window state + cached archive row counts for its display.
+    settings_ui: SettingsUi,
+    archive_stats: (usize, usize),
+    /// True while the settings window is open (open-edge detection).
+    settings_was_open: bool,
+    /// Hide the window on the first frame (start-in-tray).
+    pending_hide: bool,
+    /// Notification clicks: chat ids delivered by notify threads.
+    notif_clicks: Receiver<String>,
+    /// The sender side cloned into every notification thread.
+    notif_tx: Sender<String>,
+
     textures: HashMap<String, (egui::TextureHandle, [usize; 2])>,
     emoji_textures: HashMap<String, egui::TextureHandle>,
     reaction_popup: Option<(String, Vec<String>)>,
@@ -86,6 +101,16 @@ pub struct TeamsFastApp {
 
 fn textures_key(url: &str) -> Option<String> {
     Some(url.to_string())
+}
+
+/// Open a folder in the desktop file manager (created first).
+fn open_folder(path: PathBuf) {
+    if let Err(e) = std::fs::create_dir_all(&path) {
+        log::warn!("create {}: {e:#}", path.display());
+    }
+    if let Err(e) = open::that_detached(&path) {
+        log::warn!("open {}: {e:#}", path.display());
+    }
 }
 
 /// File picker. GNOME's xdg portal rejects unregistered dev binaries
@@ -143,6 +168,9 @@ impl TeamsFastApp {
         if settings_load.auto_live {
             cmd.send(Command::StartTrouter).ok();
         }
+        // Interface zoom from settings.
+        cc.egui_ctx.set_zoom_factor(settings_load.zoom);
+        let (notif_tx, notif_rx) = std::sync::mpsc::channel::<String>();
         Self {
             state: State::Boot,
             status: "Starting…".into(),
@@ -192,9 +220,16 @@ impl TeamsFastApp {
             catalog: theme::theme_catalog(cc.egui_ctx.clone()),
             palette: Palette::dark(),
             selected_theme: settings_load.theme.clone(),
-            settings: settings_load,
+            unread: HashMap::new(),
+            settings_ui: SettingsUi::default(),
+            archive_stats: (0, 0),
+            settings_was_open: false,
+            pending_hide: settings_load.start_in_tray,
+            notif_clicks: notif_rx,
+            notif_tx,
             cmd,
             events: rx,
+            settings: settings_load,
         }
     }
 
@@ -260,6 +295,10 @@ impl TeamsFastApp {
                         if !id.trim().is_empty() {
                             self.open_chat(id.trim().to_string());
                         }
+                    }
+                    // QA hook: TEAMSFAST_SETTINGS=1 opens the settings window.
+                    if std::env::var("TEAMSFAST_SETTINGS").as_deref() == Ok("1") {
+                        self.settings_ui.open = true;
                     }
                 }
                 Event::NeedLogin(e) => {
@@ -411,6 +450,16 @@ impl TeamsFastApp {
                         self.typing = Some((user, Instant::now()));
                     }
                 }
+                Event::Unread(map) => {
+                    // Server-side refresh: merge, keeping locally-bumped
+                    // entries only when the map lacks the chat.
+                    for (id, v) in map {
+                        self.unread.insert(id, v);
+                    }
+                }
+                Event::ArchiveStats(chats, messages) => {
+                    self.archive_stats = (chats, messages);
+                }
                 Event::Error(e) => self.error = Some(e),
             }
         }
@@ -474,40 +523,84 @@ impl TeamsFastApp {
         if open {
             self.pending_open_refresh = true;
         } else {
-            let title = self
-                .chats
-                .iter()
-                .find(|c| c.id == chat_id)
-                .map(|c| {
-                    if c.name.is_empty() || c.name == "[Direct message]" {
-                        "Direct message".to_string()
-                    } else {
-                        c.name.clone()
-                    }
-                })
-                .unwrap_or_else(|| "Teams".into());
-            let body = format!("{sender}: {preview}");
-            std::thread::Builder::new()
-                .name("notify".into())
-                .spawn(move || {
-                    let _ = notify_rust::Notification::new()
-                        .summary(&title)
-                        .body(&body)
-                        .timeout(6000)
-                        .show();
-                })
-                .ok();
+            // Unread badge for the chat.
+            let entry = self.unread.entry(chat_id.clone()).or_insert((false, 0));
+            entry.0 = true;
+            entry.1 = entry.1.saturating_add(1);
+            self.notify_desktop(chat_id, sender, preview);
         }
     }
 
-    /// Apply the selected theme file's palette (fallback: built-in dark).
+    /// Desktop notification for an incoming message (respects settings).
+    /// Clicking it opens that conversation and raises the window.
+    fn notify_desktop(&self, chat_id: String, sender: String, preview: String) {
+        if !self.settings.notify {
+            return;
+        }
+        if self.settings.skip_focused
+            && !self.window_hidden
+            && self
+                .egui_ctx
+                .as_ref()
+                .map(|c| c.input(|i| i.focused))
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let title = self
+            .chats
+            .iter()
+            .find(|c| c.id == chat_id)
+            .map(|c| {
+                if c.name.is_empty() || c.name == "[Direct message]" {
+                    "Direct message".to_string()
+                } else {
+                    c.name.clone()
+                }
+            })
+            .unwrap_or_else(|| "Teams".into());
+        let body = if self.settings.notify_preview {
+            format!("{sender}: {preview}")
+        } else {
+            sender
+        };
+        let click_tx = self.notif_tx.clone();
+        std::thread::Builder::new()
+            .name("notify".into())
+            .spawn(move || {
+                let shown = notify_rust::Notification::new()
+                    .summary(&title)
+                    .body(&body)
+                    .action("default", "Open")
+                    .timeout(6000)
+                    .show();
+                if let Ok(handle) = shown {
+                    // Blocks until the notification is clicked or dismissed;
+                    // "default" = body click on every freedesktop server.
+                    handle.wait_for_action(|action| {
+                        if action == "default" {
+                            let _ = click_tx.send(chat_id);
+                        }
+                    });
+                }
+            })
+            .ok();
+    }
+
+    /// Apply the selected theme file's palette (fallback: built-in dark or
+    /// light, per settings).
     fn apply_selected_theme(&mut self) {
+        let builtin = if self.settings.builtin == "light" {
+            Palette::light()
+        } else {
+            Palette::dark()
+        };
         self.palette = self
             .selected_theme
             .as_deref()
             .and_then(|name| self.catalog.find(name))
             .map(|t| t.palette.clone())
-            .unwrap_or_else(Palette::dark);
+            .unwrap_or(builtin);
         if let Some(ctx) = self.egui_ctx.as_ref() {
             self.palette.apply_visuals(ctx);
         }
@@ -538,6 +631,9 @@ impl TeamsFastApp {
         self.older_link = None;
         self.edit = None;
         self.reply = None;
+        // Opening the conversation reads it: badge off (the mark-read the
+        // history load triggers persists the new horizon).
+        self.unread.insert(id.clone(), (false, 0));
         self.selected_title = self
             .chats
             .iter()
@@ -691,6 +787,52 @@ impl TeamsFastApp {
             Action::Refresh => {
                 self.cmd.send(Command::LoadChats).ok();
             }
+            // ---- settings / account / storage ----
+            Action::OpenSettings => self.settings_ui.open = true,
+            Action::SetTheme(file) => match file {
+                Some(f) => self.select_theme(f),
+                None => {
+                    self.selected_theme = None;
+                    self.settings.theme = None;
+                    self.settings.builtin = "dark".into();
+                    theme::save_settings(&self.settings);
+                    self.apply_selected_theme();
+                }
+            },
+            Action::SetBuiltinLight(light) => {
+                self.selected_theme = None;
+                self.settings.theme = None;
+                self.settings.builtin = if light { "light" } else { "dark" }.into();
+                theme::save_settings(&self.settings);
+                self.apply_selected_theme();
+            }
+            Action::SignIn => {
+                self.error = None;
+                self.status = "Sign-in started — see the terminal for the device code.".into();
+                self.cmd.send(Command::StartLogin).ok();
+            }
+            Action::SignOut => {
+                self.chats.clear();
+                self.messages.clear();
+                self.members.clear();
+                self.teams.clear();
+                self.unread.clear();
+                self.selected = None;
+                self.selected_title.clear();
+                self.state = State::NeedLogin;
+                self.status = "Signing out…".into();
+                self.cmd.send(Command::SignOut).ok();
+            }
+            Action::ClearArchive => {
+                self.chats.clear();
+                self.messages.clear();
+                self.unread.clear();
+                self.archive_stats = (0, 0);
+                self.status = "Local archive cleared".into();
+                self.cmd.send(Command::ClearArchive).ok();
+            }
+            Action::OpenThemeFolder => open_folder(theme::themes_dir()),
+            Action::OpenStateFolder => open_folder(theme::state_dir()),
         }
     }
 
@@ -744,6 +886,15 @@ impl TeamsFastApp {
                     if search.clicked() {
                         self.apply(Action::OpenSearch);
                     }
+                    let gear = ui
+                        .add(egui::Button::new(
+                            crate::theme::Icon::Settings
+                                .image(self.palette.text, 16.0),
+                        ))
+                        .on_hover_text("Settings (Ctrl+,)");
+                    if gear.clicked() {
+                        self.settings_ui.open = true;
+                    }
                 }
             }
             ui.separator();
@@ -761,50 +912,6 @@ impl TeamsFastApp {
                         .color(Color32::from_rgb(0x6f, 0xd1, 0x94)),
                 );
             }
-            ui.separator();
-            let names: Vec<String> = self
-                .catalog
-                .picker_themes()
-                .map(|t| theme::display_name(&t.filename).to_string())
-                .collect();
-            let current = self
-                .selected_theme
-                .as_deref()
-                .map(theme::display_name)
-                .unwrap_or("Theme: TeamsFast Dark")
-                .to_string();
-            egui::ComboBox::from_id_salt("theme-picker")
-                .selected_text(RichText::new(current).small())
-                .width(120.0)
-                .show_ui(ui, |ui| {
-                    for name in &names {
-                        let selected = self
-                            .selected_theme
-                            .as_deref()
-                            .map(|f| theme::display_name(f) == *name)
-                            .unwrap_or(false);
-                        if ui.selectable_label(selected, name).clicked() {
-                            let file = self
-                                .catalog
-                                .themes()
-                                .iter()
-                                .find(|t| theme::display_name(&t.filename) == *name)
-                                .map(|t| t.filename.clone());
-                            if let Some(f) = file {
-                                self.select_theme(f);
-                            }
-                        }
-                    }
-                    if ui.selectable_label(false, "TeamsFast Dark").clicked() {
-                        self.selected_theme = None;
-                        self.settings.theme = None;
-                        theme::save_settings(&self.settings);
-                        self.palette = Palette::dark();
-                        if let Some(ctx) = self.egui_ctx.as_ref() {
-                            self.palette.apply_visuals(ctx);
-                        }
-                    }
-                });
             if !self.self_name.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new(&self.self_name).weak().small());
@@ -825,6 +932,36 @@ impl eframe::App for TeamsFastApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.sync_tray(ui);
+
+        // Start-in-tray: hide on the first rendered frame.
+        if self.pending_hide {
+            self.pending_hide = false;
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.window_hidden = true;
+        }
+
+        // Close-to-tray: cancel the close and hide instead.
+        if ui.input(|i| i.viewport().close_requested()) && self.settings.close_to_tray {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.window_hidden = true;
+        }
+
+        // Notification clicks: open that conversation and raise the window.
+        let mut clicked: Option<String> = None;
+        while let Ok(id) = self.notif_clicks.try_recv() {
+            clicked = Some(id);
+        }
+        if let Some(id) = clicked {
+            self.apply(Action::OpenChat(id));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.window_hidden = false;
+        }
 
         // Theme catalog: poll for scans/edits; re-apply the selected palette.
         if self.catalog.poll() {
@@ -1021,11 +1158,52 @@ impl eframe::App for TeamsFastApp {
                 });
         }
 
+        // Settings window (own pass so it can borrow settings + catalog).
+        let settings_just_opened = self.settings_ui.open && !self.settings_was_open;
+        self.settings_was_open = self.settings_ui.open;
+        if settings_just_opened {
+            // Refresh the storage numbers once per window open.
+            self.cmd.send(Command::ArchiveStats).ok();
+        }
+        if self.settings_ui.open {
+            let themes: Vec<(String, String)> = self
+                .catalog
+                .picker_themes()
+                .map(|t| (t.filename.clone(), theme::display_name(&t.filename).to_string()))
+                .collect();
+            let info = SettingsInfo {
+                self_name: &self.self_name,
+                signed_in: self.state == State::Ready,
+                live: self.trouter_on,
+                offline: self.offline.is_some(),
+                themes: &themes,
+                chats_cached: self.archive_stats.0,
+                messages_cached: self.archive_stats.1,
+            };
+            let mut actions = Vec::new();
+            let mut st = std::mem::take(&mut self.settings_ui);
+            crate::ui::settings::settings_window(
+                ui,
+                &mut st,
+                &mut self.settings,
+                &info,
+                &self.palette,
+                &mut actions,
+            );
+            self.settings_ui = st;
+            for a in actions {
+                self.apply(a);
+            }
+        }
+
         if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::N)) {
             self.apply(Action::ShowNewChat);
         }
         if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.apply(Action::OpenSearch);
+        }
+        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Comma)) {
+            self.settings_ui.open = true;
         }
 
         if let Some((emoji, names)) = self.reaction_popup.clone() {

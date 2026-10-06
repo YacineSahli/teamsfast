@@ -65,6 +65,13 @@ pub enum Command {
     CreateOneToOne(String),
     CreateGroup { topic: String, members: Vec<String> },
     StartTrouter,
+    /// Wipe tokens (keyring + file) and disconnect — the UI returns to the
+    /// sign-in screen.
+    SignOut,
+    /// Empty the local encrypted archive (chats + messages).
+    ClearArchive,
+    /// Row counts of the local archive (for the settings screen).
+    ArchiveStats,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +145,11 @@ pub enum Event {
     },
     /// Someone is typing in a chat.
     Typing { chat_id: String, user: String },
+    /// Unread state per chat: (is-unread, approximate count from cache).
+    /// Count 0 with unread=true means the messages aren't cached yet.
+    Unread(std::collections::HashMap<String, (bool, u32)>),
+    /// Archive row counts for the settings screen.
+    ArchiveStats(usize, usize),
     Error(String),
 }
 
@@ -285,7 +297,9 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                                 log::warn!("archive save chats: {e:#}");
                             }
                         }
+                        let unread = unread_map(&ses, &chats);
                         send!(Event::Chats(chats));
+                        send!(Event::Unread(unread));
                     }
                     Err(e) => send!(Event::Error(format!("chat list: {e:#}"))),
                 }
@@ -362,8 +376,78 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 live::start(&tx);
                 send!(Event::TrouterConnected);
             }
+            Command::SignOut => {
+                // Wipe tokens from every store (keyring included) and drop
+                // the session; the cache file only survives when the
+                // keyring is unavailable (never lose tokens rule).
+                match ost::config::Config::delete_for(ost::config::DEFAULT_PROFILE) {
+                    Ok(_) => log::info!("tokens wiped for sign-out"),
+                    Err(e) => log::warn!("token wipe failed: {e:#}"),
+                }
+                ost::config::Config::invalidate_cache();
+                ses.client = None;
+                ses.self_id = None;
+                ses.older_links.clear();
+                send!(Event::NeedLogin("Signed out".into()));
+            }
+            Command::ClearArchive => {
+                if let Some(a) = ses.archive.as_mut() {
+                    match a.wipe() {
+                        Ok(n) => send!(Event::Status(format!(
+                            "local archive cleared ({n} rows)"
+                        ))),
+                        Err(e) => send!(Event::Error(format!("clear archive: {e:#}"))),
+                    }
+                }
+            }
+            Command::ArchiveStats => {
+                if let Some(a) = ses.archive.as_ref()
+                    && let Ok((chats, messages)) = a.stats()
+                {
+                    send!(Event::ArchiveStats(chats, messages));
+                }
+            }
         }
     }
+}
+
+/// Unread state for every chat: the flag compares the chat's last activity
+/// against our stored read horizon; the count asks the archive how many
+/// cached messages are newer (0 when the new messages aren't cached yet).
+fn unread_map(ses: &Session, chats: &[ChatInfo]) -> std::collections::HashMap<String, (bool, u32)> {
+    let mut out = std::collections::HashMap::new();
+    let Some(archive) = ses.archive.as_ref() else {
+        return out;
+    };
+    let horizons = archive.read_horizons().unwrap_or_default();
+    for chat in chats {
+        let last_ms = chat
+            .last_message_time
+            .as_deref()
+            .and_then(crate::model::to_epoch_ms)
+            .unwrap_or(0);
+        let horizon = horizons.get(&chat.id).copied().unwrap_or(0);
+        if last_ms == 0 || last_ms <= horizon {
+            continue;
+        }
+        let count = ms_to_teams_iso(horizon)
+            .and_then(|iso| archive.count_after(&chat.id, &iso).ok())
+            .unwrap_or(0) as u32;
+        out.insert(chat.id.clone(), (true, count));
+    }
+    out
+}
+
+/// Epoch ms → the Teams ISO shape cached in the archive
+/// (`2026-10-06T10:12:37.6750000Z`), so lexicographic SQL compares line up.
+pub(crate) fn ms_to_teams_iso(ms: u64) -> Option<String> {
+    let ts = jiff::Timestamp::from_millisecond(ms as i64).ok()?;
+    let zdt = ts.to_zoned(jiff::tz::TimeZone::UTC);
+    Some(format!(
+        "{}.{:07}Z",
+        zdt.strftime("%Y-%m-%dT%H:%M:%S"),
+        (ms % 1000) * 10_000
+    ))
 }
 
 /// Build a TeamsClient from cached tokens; returns our display name when the

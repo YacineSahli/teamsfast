@@ -77,10 +77,24 @@ pub fn format_day_label(ts: &str) -> String {
     }
 }
 
+/// Normalize a Teams timestamp (epoch-ms string or ISO-8601) to epoch
+/// milliseconds — the key for read-horizon comparisons.
+pub fn to_epoch_ms(raw: &str) -> Option<u64> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if let Ok(ms) = t.parse::<u64>() {
+        return Some(ms);
+    }
+    t.parse::<jiff::Timestamp>()
+        .ok()
+        .map(|ts| ts.as_millisecond().max(0) as u64)
+}
+
 /// `"14:32"` for a chat-list timestamp (epoch-milliseconds string or ISO);
 /// empty when unparsable.
-pub fn format_chat_time(ms_opt: &Option<String>) -> String {
-    let raw = ms_opt.as_deref().unwrap_or("").trim();
+pub fn format_chat_time(ms_opt: &Option<String>) -> String {    let raw = ms_opt.as_deref().unwrap_or("").trim();
     if raw.is_empty() {
         return String::new();
     }
@@ -269,9 +283,18 @@ mod tests {
     #[test]
     fn chat_time_iso_with_offset() {
         tz_brussels();
-        // 10:12Z + 8h = 18:12 same calendar day → HH:MM.
-        let out = format_chat_time(&Some("2026-10-06T10:12:37.6750000Z".into()));
-        assert!(out.contains("12:12"), "expected 12:12 in {out:?}");
+        // Clock-independent: an ISO stamp from 30 minutes ago always falls
+        // on the same local calendar day (except across a DST shift edge,
+        // where the day bucket may differ — then only the digits matter).
+        let now = jiff::Zoned::now();
+        let past = now.clone() - jiff::Span::new().minutes(30);
+        let iso = past.timestamp().to_string();
+        let expected = format!("{:02}:{:02}", past.hour(), past.minute());
+        let out = format_chat_time(&Some(iso));
+        assert!(
+            out.contains(&expected),
+            "expected {expected:?} in {out:?} (iso={iso})"
+        );
     }
 
     #[test]

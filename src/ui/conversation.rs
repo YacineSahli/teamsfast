@@ -69,6 +69,16 @@ pub enum Action {
         members: Vec<String>,
     },
     Refresh,
+    // ---- app-level actions (settings, account, storage) ----
+    OpenSettings,
+    /// Theme file selection: Some(filename) or None for the built-in.
+    SetTheme(Option<String>),
+    SetBuiltinLight(bool),
+    SignIn,
+    SignOut,
+    ClearArchive,
+    OpenThemeFolder,
+    OpenStateFolder,
 }
 
 /// Everything the conversation view reads from the App.

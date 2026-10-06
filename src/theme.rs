@@ -186,32 +186,92 @@ pub use fastframe_theme::display_name;
 pub type Catalog = fastframe_theme::Catalog<Palette>;
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
 
-/// Persisted app settings: the selected theme file, and whether the live
-/// connection starts automatically.
+/// Persisted app settings. Every field defaults so older settings files
+/// keep loading as new preferences appear.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
+    /// Selected theme filename in `~/.config/teamsfast/themes/` (or a
+    /// shared preset); None = the built-in dark palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Built-in palette when `theme` is None: "light" or "dark".
+    #[serde(default = "default_builtin")]
+    pub builtin: String,
+    /// Start the live (trouter) connection automatically.
     #[serde(default = "default_true")]
     pub auto_live: bool,
+    /// Desktop notifications for incoming messages.
+    #[serde(default = "default_true")]
+    pub notify: bool,
+    /// Show the message body in notifications (off = sender only).
+    #[serde(default = "default_true")]
+    pub notify_preview: bool,
+    /// Skip notifications while the window is focused.
+    #[serde(default = "default_true")]
+    pub skip_focused: bool,
+    /// Interface zoom factor (egui zoom; 1.0 = native).
+    #[serde(default = "default_zoom")]
+    pub zoom: f32,
+    /// Launch with the window hidden to the tray.
+    #[serde(default)]
+    pub start_in_tray: bool,
+    /// The window close button hides to the tray instead of quitting.
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+    /// Unread count badges on chat rows.
+    #[serde(default = "default_true")]
+    pub unread_badges: bool,
 }
 
 fn default_true() -> bool {
     true
 }
 
+fn default_builtin() -> String {
+    "dark".into()
+}
+
+fn default_zoom() -> f32 {
+    1.0
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        serde_json::from_str("{}").unwrap_or(Self {
+            theme: None,
+            builtin: default_builtin(),
+            auto_live: true,
+            notify: true,
+            notify_preview: true,
+            skip_focused: true,
+            zoom: 1.0,
+            start_in_tray: false,
+            close_to_tray: true,
+            unread_badges: true,
+        })
+    }
+}
+
 pub fn settings_path() -> std::path::PathBuf {
     themes_dir().parent().unwrap().join("settings.json")
+}
+
+/// State-directory root (`~/.local/state/teamsfast`): logs + archive.
+pub fn state_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state"))
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("teamsfast")
 }
 
 pub fn load_settings() -> Settings {
     std::fs::read_to_string(settings_path())
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or(Settings {
-            theme: None,
-            auto_live: true,
-        })
+        .unwrap_or_default()
 }
 
 pub fn save_settings(settings: &Settings) {
@@ -308,7 +368,8 @@ pub fn raster_emoji(emoji: &str, height: u32) -> Option<(Vec<u8>, [usize; 2])> {
 }
 
 fastframe_icons::icons! {
-    /// Every icon the interface draws — all from the shared Lucide set.
+    /// Every icon the interface draws — Lucide outlines, from the shared
+    /// fastframe set or the app's own `assets/icons/` files.
     pub enum Icon {
         prefix: "teamsfast-icon-",
         directory: "../assets/icons/",
@@ -316,16 +377,46 @@ fastframe_icons::icons! {
         Send => "send",
         Reply => "reply",
         Smile => "smile",
+        Activity => "activity",
+        Archive => "archive",
+        AtSign => "at-sign",
+        Bell => "bell",
+        BellOff => "bell-off",
+        Calendar => "calendar",
+        Download => "download",
+        FileText => "file-text",
+        Forward => "forward",
+        ListTodo => "list-todo",
+        MessageSquare => "message-square",
+        Phone => "phone",
+        SquareCheck => "square-check",
+        Video => "video",
         ArrowLeft => lucide "arrow-left",
+        Check => lucide "check",
         CircleAlert => lucide "circle-alert",
+        CircleCheck => lucide "circle-check",
+        Clock => lucide "clock",
         Copy => lucide "copy",
+        Ellipsis => lucide "ellipsis",
         ExternalLink => lucide "external-link",
+        Info => lucide "info",
+        Lock => lucide "lock",
+        LogOut => lucide "log-out",
+        Mic => lucide "mic",
+        Moon => lucide "moon",
         Pencil => lucide "pencil",
+        Pin => lucide "pin",
+        PinOff => lucide "pin-off",
         Plus => lucide "plus",
         Refresh => lucide "refresh-cw",
         Search => lucide "search",
+        Settings => lucide "settings",
+        Sun => lucide "sun",
         Trash => lucide "trash-2",
+        User => lucide "user",
         Users => lucide "users",
+        Volume => lucide "volume-2",
+        VolumeX => lucide "volume-x",
         X => lucide "x",
     }
 }
