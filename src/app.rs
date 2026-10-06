@@ -7,7 +7,8 @@
 use crate::backend::{self, Command, Event};
 use egui::{Color32, RichText, ScrollArea};
 use ost::api::{ChatInfo, MessageInfo};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 #[derive(PartialEq, Clone, Copy)]
 enum State {
@@ -26,7 +27,10 @@ pub struct TeamsFastApp {
     draft: String,
     trouter_log: Vec<String>,
     trouter_on: bool,
-    cmd: Sender<Command>,
+    /// Live events arrived; refresh the open chat at most every so often.
+    pending_open_refresh: bool,
+    last_open_refresh: Instant,
+    cmd: tokio::sync::mpsc::UnboundedSender<Command>,
     events: Receiver<Event>,
 }
 
@@ -46,6 +50,8 @@ impl TeamsFastApp {
             draft: String::new(),
             trouter_log: Vec::new(),
             trouter_on: false,
+            pending_open_refresh: false,
+            last_open_refresh: Instant::now() - Duration::from_secs(10),
             cmd,
             events: rx,
         }
@@ -86,9 +92,10 @@ impl TeamsFastApp {
                     if self.trouter_log.len() > 200 {
                         self.trouter_log.drain(..100);
                     }
-                    // Live message activity: cheap trigger — refresh the open chat.
-                    if let Some(chat) = self.selected.clone() {
-                        self.cmd.send(Command::OpenChat(chat)).ok();
+                    // Debounce: live events can storm (presence, typing…).
+                    // Flag now, refetch the open chat at most ~1/s.
+                    if self.selected.is_some() {
+                        self.pending_open_refresh = true;
                     }
                 }
                 Event::TrouterConnected => {
@@ -96,6 +103,16 @@ impl TeamsFastApp {
                     self.status = "Connected (live)".into();
                 }
                 Event::Error(e) => self.error = Some(e),
+            }
+        }
+
+        // Debounced open-chat refresh on live activity.
+        if self.pending_open_refresh && self.last_open_refresh.elapsed() >= Duration::from_millis(900)
+        {
+            self.pending_open_refresh = false;
+            self.last_open_refresh = Instant::now();
+            if let Some(chat) = self.selected.clone() {
+                self.cmd.send(Command::OpenChat(chat)).ok();
             }
         }
     }
@@ -175,14 +192,29 @@ impl eframe::App for TeamsFastApp {
                         } else {
                             chat.name.clone()
                         };
-                        if ui.selectable_label(selected, RichText::new(&label).strong()).clicked()
-                        {
-                            self.selected = Some(chat.id.clone());
-                            self.messages.clear();
-                            self.cmd.send(Command::OpenChat(chat.id.clone())).ok();
-                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .selectable_label(selected, RichText::new(&label).strong())
+                                .clicked()
+                            {
+                                self.selected = Some(chat.id.clone());
+                                self.messages.clear();
+                                self.cmd.send(Command::OpenChat(chat.id.clone())).ok();
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let time = format_chat_time(&chat.last_message_time);
+                                if !time.is_empty() {
+                                    ui.label(RichText::new(time).small().weak());
+                                }
+                                if chat.is_group {
+                                    ui.label(RichText::new("group").small().weak());
+                                }
+                            });
+                        });
                         if let Some(p) = &chat.last_message_preview {
-                            ui.label(RichText::new(p).small().weak());
+                            ui.add(
+                                egui::Label::new(RichText::new(p).small().weak()).truncate(),
+                            );
                         }
                         ui.separator();
                     }
@@ -253,4 +285,43 @@ impl eframe::App for TeamsFastApp {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(500));
     }
+}
+
+/// `"14:32"` when the message is from today, `"3 Oct"` otherwise.
+/// Teams sends epoch-milliseconds strings; unparsable values hide the column.
+fn format_chat_time(t: &Option<String>) -> String {
+    let ms: u64 = match t.as_deref().and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(v) => v,
+        None => return String::new(),
+    };
+    let secs = (ms / 1000) as i64;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (ly, lm, ld) = civil_from_days(secs.div_euclid(86_400));
+    let (ny, nm, nd) = civil_from_days(now_secs.div_euclid(86_400));
+    if ly == ny && lm == nm && ld == nd {
+        let sod = secs.rem_euclid(86_400);
+        format!("{:02}:{:02}", sod / 3600, (sod % 3600) / 60)
+    } else {
+        const MON: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        format!("{} {}", ld, MON[(lm - 1) as usize % 12])
+    }
+}
+
+/// Howard Hinnant's `civil_from_days`: days since epoch to (y, m, d).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
