@@ -45,7 +45,7 @@ fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 
 # Logging to stderr; the fastframe log file arrives in Phase 1.
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
 # Inline images: decode jpg/png/webp/gif from the core's media fetch.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }

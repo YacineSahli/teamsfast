@@ -23,4 +23,5 @@ import -window root -display :77 "$OUT" 2>/dev/null
 kill "$APP" 2>/dev/null
 sleep 0.3
 kill "$XV" 2>/dev/null
-echo "shot: $(wc -c < "$OUT") bytes -> $OUT"
+cp ~/.local/state/teamsfast/teamsfast.log /tmp/qa_last_run.log 2>/dev/null
+echo "shot: $(wc -c < "$OUT") bytes -> $OUT (log: /tmp/qa_last_run.log)"

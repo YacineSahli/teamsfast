@@ -55,6 +55,18 @@ the code. Tokens are cached by the ost core in `~/.config/teams-cli/`.
 - `.upstream/better-teams` — upstream-of-record clone for future syncs.
 - `qa_shot.sh` — headless UI screenshot harness (Xvfb) used for QA.
 
+## Logs
+
+Every run writes a fresh log to `~/.local/state/teamsfast/teamsfast.log`
+(app + protocol layer, including every endpoint call and fallback), with
+panic backtraces in `panic.log` next to it. When testing for a bug report,
+just run the app, reproduce, and share that file. `--logs` prints the path;
+`RUST_LOG=trace` or `RUST_LOG=ost=trace` raises verbosity. Quick tail:
+
+```sh
+tail -f ~/.local/state/teamsfast/teamsfast.log
+```
+
 ## Debug tools
 
 ```sh
