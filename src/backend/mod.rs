@@ -72,6 +72,10 @@ pub enum Command {
     ClearArchive,
     /// Row counts of the local archive (for the settings screen).
     ArchiveStats,
+    /// Fetch our presence (poll).
+    PollPresence,
+    /// Set our presence ("available" | "brb" | "busy" | "dnd" | "away" | "offline").
+    SetPresence(String),
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +154,8 @@ pub enum Event {
     Unread(std::collections::HashMap<String, (bool, u32)>),
     /// Archive row counts for the settings screen.
     ArchiveStats(usize, usize),
+    /// Our own presence availability (e.g. "Available", "Away").
+    MyPresence(String),
     Error(String),
 }
 
@@ -407,6 +413,29 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                     send!(Event::ArchiveStats(chats, messages));
                 }
             }
+            Command::PollPresence => {
+                let Some(c) = ses.client.as_ref() else {
+                    continue;
+                };
+                match ost::api::get_presence_data(c).await {
+                    Ok(p) => send!(Event::MyPresence(p.availability)),
+                    Err(e) => log::debug!("presence poll: {e:#}"),
+                }
+            }
+            Command::SetPresence(status) => {
+                let Some(c) = ses.client.as_ref() else {
+                    continue;
+                };
+                match ost::api::set_presence_with_client(c, &status).await {
+                    Ok(()) => {
+                        send!(Event::Status(format!("status set: {status}")));
+                        if let Ok(p) = ost::api::get_presence_data(c).await {
+                            send!(Event::MyPresence(p.availability));
+                        }
+                    }
+                    Err(e) => send!(Event::Error(format!("set status: {e:#}"))),
+                }
+            }
         }
     }
 }
@@ -420,6 +449,23 @@ fn unread_map(ses: &Session, chats: &[ChatInfo]) -> std::collections::HashMap<St
         return out;
     };
     let horizons = archive.read_horizons().unwrap_or_default();
+    if horizons.is_empty() {
+        // First run (no read state ever recorded): seed every chat as read
+        // instead of flagging the whole list unread out of the box.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        for chat in chats {
+            let last_ms = chat
+                .last_message_time
+                .as_deref()
+                .and_then(crate::model::to_epoch_ms)
+                .unwrap_or(0);
+            let _ = archive.set_read(&chat.id, last_ms.max(now_ms));
+        }
+        return out;
+    }
     for chat in chats {
         let last_ms = chat
             .last_message_time
