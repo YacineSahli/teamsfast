@@ -45,28 +45,29 @@ pub fn search_panel(
             } else {
                 h.chat_id.clone()
             };
-            let label = format!(
-                "{} · {}{}",
-                h.sender,
-                h.preview,
-                h.subject
-                    .as_ref()
-                    .map(|s| format!(" ({s})"))
-                    .unwrap_or_default()
-            );
-            if ui
-                .vertical(|ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(&label).size(12.5));
-                    ui.label(RichText::new(&h.timestamp).small().weak());
-                })
-                .response
-                .interact(egui::Sense::click())
-                .clicked()
+            // Allocate the clickable row FIRST, paint content inside —
+            // late `.interact()` gets shadowed by hover-sense labels.
+            let avail = ui.available_width() - 4.0;
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(avail, 36.0), egui::Sense::click());
+            if response.hovered() {
+                ui.painter().rect_filled(
+                    rect,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                );
+            }
+            let mut child =
+                ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(3.0)));
             {
-                if !target.is_empty() {
-                    cmd.send(Command::OpenChat(target)).ok();
-                }
+                let ui = &mut child;
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(&h.sender).strong().size(12.5));
+                ui.add(egui::Label::new(RichText::new(&h.preview).small()).truncate());
+                ui.label(RichText::new(&h.timestamp).small().weak());
+            }
+            if response.clicked() && !target.is_empty() {
+                cmd.send(Command::OpenChat(target)).ok();
             }
             ui.separator();
         }

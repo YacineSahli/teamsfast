@@ -104,9 +104,8 @@ pub fn sidebar(
     }
 }
 
-fn chat_row(ui: &mut Ui, ctx: &SidebarCtx<'_>, chat: &ChatInfo) {
-    let selected = ctx.selected == Some(&chat.id);
-    let label = match chat.name.as_str() {
+fn display_name(chat: &ChatInfo) -> String {
+    match chat.name.as_str() {
         "" => {
             let mut s: String = chat.id.chars().take(24).collect();
             s.push('…');
@@ -114,53 +113,215 @@ fn chat_row(ui: &mut Ui, ctx: &SidebarCtx<'_>, chat: &ChatInfo) {
         }
         "[Direct message]" => "Direct message".into(),
         other => other.to_string(),
-    };
+    }
+}
+
+/// One chat row. Returns the row rect (for tests).
+///
+/// egui pattern note: the row's clickable Response is allocated FIRST and
+/// the content painted inside a child Ui afterwards. Registering the click
+/// AFTER painting (`.allocate_ui(..).response.interact(..)`) gets shadowed
+/// by the hover-sense labels inside, and clicks silently do nothing.
+fn chat_row(ui: &mut Ui, ctx: &SidebarCtx<'_>, chat: &ChatInfo) -> egui::Rect {
+    let selected = ctx.selected == Some(&chat.id);
+    let label = display_name(chat);
     let time = format_chat_time(&chat.last_message_time);
 
-    // Explicit-size row so the right column can never overflow the panel.
-    let avail = ui.available_width();
-    let response = ui
-        .allocate_ui(egui::vec2(avail, 40.0), |ui| {
-            ui.horizontal(|ui| {
+    let avail = ui.available_width() - 6.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(avail, 44.0), egui::Sense::click());
+
+    // Row background: selection / hover.
+    let bg = if selected {
+        egui::Color32::from_rgba_unmultiplied(0x5b, 0x5f, 0xc7, 0x50)
+    } else if response.hovered() {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if bg != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, 6.0, bg);
+    }
+    if selected {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())),
+            2.0,
+            egui::Color32::from_rgb(0x8a, 0x88, 0xff),
+        );
+    }
+
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(
+        rect.shrink2(egui::vec2(6.0, 3.0)),
+    ));
+    {
+        let ui = &mut child;
+        ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 avatar(ui, &label, 30.0);
+                ui.add_space(4.0);
                 ui.vertical(|ui| {
                     ui.set_width(ui.available_width());
-                    // Name … time, both constrained.
-                    ui.allocate_ui(egui::vec2(ui.available_width(), 17.0), |ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if !time.is_empty() {
-                                ui.label(RichText::new(time).small().weak());
-                            }
-                            if chat.is_group {
-                                ui.label(RichText::new("👥").size(13.0).weak());
-                            }
-                            ui.add(
-                                egui::Label::new(RichText::new(&label).strong()).truncate(),
-                            );
-                        });
+                    ui.horizontal(|ui| {
+                        // Reserve the right column so long names can never
+                        // collide with the timestamp/group tag.
+                        let name_w = (ui.available_width() - 70.0).max(60.0);
+                        ui.add_sized(
+                            [name_w, 16.0],
+                            egui::Label::new(RichText::new(&label).strong()).truncate(),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if !time.is_empty() {
+                                    ui.label(RichText::new(time).small().weak());
+                                }
+                                if chat.is_group {
+                                    ui.label(RichText::new("👥").size(13.0).weak());
+                                }
+                            },
+                        );
                     });
                     if let Some(p) = &chat.last_message_preview {
                         ui.add(
-                            egui::Label::new(RichText::new(clean_preview(p)).small().weak())
-                                .truncate(),
+                            egui::Label::new(
+                                RichText::new(clean_preview(p)).small().weak(),
+                            )
+                            .truncate(),
                         );
                     }
                 });
             });
-        })
-        .response
-        .interact(egui::Sense::click());
+    }
 
     if response.clicked() {
         ctx.cmd.send(Command::OpenChat(chat.id.clone())).ok();
     }
-    if selected {
-        ui.painter().rect_filled(
-            response.rect,
-            4.0,
-            egui::Color32::from_rgba_unmultiplied(0x5b, 0x5f, 0xc7, 0x40),
-        );
+    rect
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ost::api::ChatInfo;
+
+    fn test_chat(id: &str, name: &str) -> ChatInfo {
+        ChatInfo {
+            id: id.into(),
+            name: name.into(),
+            is_group: false,
+            last_message_time: None,
+            last_message_sender: None,
+            last_message_preview: Some("preview".into()),
+        }
     }
-    ui.separator();
+
+    /// Clicking a chat row must send `Command::OpenChat` with its id.
+    #[test]
+    fn clicking_a_chat_row_opens_the_chat() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter(); // UnboundedSender needs no runtime, but keep one anyway
+
+        let (cmd, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
+        let chat = test_chat("19:chat_a@thread.v2", "Ada Lovelace");
+        let chats = vec![test_chat("19:other@thread.v2", "Other"), chat];
+
+        let ctx = SidebarCtx {
+            chats: &chats,
+            selected: None,
+            teams: &[],
+            view: SideView::Chats,
+            cmd: &cmd,
+        };
+
+        let egui_ctx = egui::Context::default();
+        let mut row_rect: Option<egui::Rect> = None;
+
+        // Frame 1: lay out two rows.
+        let mut out = egui_ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 800.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let r = chat_row(ui, &ctx, &chats[1]); // "Ada Lovelace"
+                row_rect = Some(r);
+            },
+        );
+        out.textures_delta.clear();
+        let rect = row_rect.expect("row rect");
+        assert!(rect.width() > 100.0 && rect.height() >= 40.0, "sane rect");
+
+        // Frame 2: click the middle of the row.
+        let center = rect.center();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 800.0),
+            )),
+            events: vec![
+                egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut out = egui_ctx.run_ui(input, |ui| {
+            chat_row(ui, &ctx, &chats[1]);
+        });
+        out.textures_delta.clear();
+
+        let got = cmd_rx.try_recv().expect("OpenChat command must be sent");
+        match got {
+            Command::OpenChat(id) => assert_eq!(id, "19:chat_a@thread.v2"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    /// Clicking empty space next to/below the rows must NOT open a chat.
+    #[test]
+    fn clicking_off_a_row_does_nothing() {
+        let (cmd, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
+        let chats = vec![test_chat("19:a@thread.v2", "One")];
+        let ctx = SidebarCtx {
+            chats: &chats,
+            selected: None,
+            teams: &[],
+            view: SideView::Chats,
+            cmd: &cmd,
+        };
+        let egui_ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 800.0),
+            )),
+            events: vec![egui::Event::PointerButton {
+                pos: egui::pos2(150.0, 700.0), // far below the single row
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let mut out = egui_ctx.run_ui(input, |ui| {
+            chat_row(ui, &ctx, &chats[0]);
+        });
+        out.textures_delta.clear();
+        assert!(cmd_rx.try_recv().is_err(), "no command for stray click");
+    }
 }
