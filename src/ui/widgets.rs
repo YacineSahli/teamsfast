@@ -175,12 +175,34 @@ fn decode_entities(s: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
+/// URLs that point at downloadable files rather than web pages.
+pub fn is_file_url(url: &str) -> Option<String> {
+    let low = url.to_ascii_lowercase();
+    let name = url.split('/').next_back().unwrap_or("");
+    let obj_store = low.contains("asm.skype.com") || low.contains("/drive/items/");
+    let exty = ["pdf", "docx", "xlsx", "pptx", "txt", "zip", "csv", "log", "yaml", "yml", "json"]
+        .iter()
+        .any(|e| name.to_ascii_lowercase().ends_with(e));
+    if obj_store || exty {
+        let clean = name
+            .split('?')
+            .next()
+            .unwrap_or(name)
+            .to_string();
+        Some(if clean.is_empty() { "file".into() } else { clean })
+    } else {
+        None
+    }
+}
+
 /// Render segments inside a wrapped flow. `image` is called for each inline
-/// image URL (the app decides whether it is already loaded / must fetch).
+/// image URL (the app decides whether it is already loaded / must fetch);
+/// `file` for downloadable file links (name, url).
 pub fn render_segments(
     ui: &mut Ui,
     segs: &[Seg],
     mut image: impl FnMut(&mut Ui, &str) -> bool,
+    mut file: impl FnMut(&mut Ui, &str, &str),
 ) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -205,7 +227,9 @@ pub fn render_segments(
                         });
                 }
                 Seg::Link { text, url } => {
-                    if text.is_empty() {
+                    if let Some(fname) = is_file_url(url) {
+                        file(ui, &fname, url);
+                    } else if text.is_empty() {
                         ui.hyperlink(url);
                     } else {
                         ui.hyperlink_to(RichText::new(text).underline().color(Color32::from_rgb(0x69, 0xa1, 0xe8)), url);

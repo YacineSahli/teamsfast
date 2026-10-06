@@ -49,6 +49,7 @@ pub struct TeamsFastApp {
     search_hits: Vec<SearchHitInfo>,
     search_more: bool,
     search_query: String,
+    search_note: Option<String>,
 
     new_chat: NewChatState,
 
@@ -59,6 +60,7 @@ pub struct TeamsFastApp {
     typing: Option<(String, Instant)>,
 
     textures: HashMap<String, (egui::TextureHandle, [usize; 2])>,
+    lightbox: Option<String>,
     pending_images: HashSet<String>,
     queued_textures: Vec<(String, Vec<u8>, [usize; 2])>,
     #[allow(dead_code)]
@@ -67,6 +69,10 @@ pub struct TeamsFastApp {
 
     cmd: tokio::sync::mpsc::UnboundedSender<Command>,
     events: Receiver<Event>,
+}
+
+fn textures_key(url: &str) -> Option<String> {
+    Some(url.to_string())
 }
 
 impl TeamsFastApp {
@@ -100,6 +106,7 @@ impl TeamsFastApp {
             search_hits: Vec::new(),
             search_more: false,
             search_query: String::new(),
+            search_note: None,
             new_chat: NewChatState::default(),
             trouter_log: Vec::new(),
             trouter_on: false,
@@ -107,6 +114,7 @@ impl TeamsFastApp {
             last_open_refresh: Instant::now() - Duration::from_secs(10),
             typing: None,
             textures: HashMap::new(),
+            lightbox: None,
             pending_images: HashSet::new(),
             failed_images: HashSet::new(),
             queued_textures: Vec::new(),
@@ -122,6 +130,11 @@ impl TeamsFastApp {
         while let Ok(ev) = self.events.try_recv() {
             match ev {
                 Event::Status(s) => self.status = s,
+                Event::SearchUnavailable(note) => {
+                    self.search_note = Some(note);
+                    self.searching = false;
+                    self.search_open = true;
+                }
                 Event::SelfName(name) => self.self_name = name,
                 Event::LoginResult(Ok(())) => self.status = "Signed in".into(),
                 Event::LoginResult(Err(e)) => {
@@ -206,6 +219,11 @@ impl TeamsFastApp {
                     self.searching = false;
                     self.search_open = true;
                 }
+                Event::SearchUnavailable(note) => {
+                    self.search_note = Some(note);
+                    self.searching = false;
+                    self.search_open = true;
+                }
                 Event::Teams(teams) => {
                     self.teams = teams;
                     self.loading_teams = false;
@@ -256,11 +274,10 @@ impl TeamsFastApp {
                     self.status = format!("saved {}", path.display());
                 }
                 Event::Trouter(json) => {
-                    self.trouter_log.push(json.clone());
+                    self.trouter_log.push(json);
                     if self.trouter_log.len() > 200 {
                         self.trouter_log.drain(..100);
                     }
-                    self.handle_live(&json);
                 }
                 Event::TrouterConnected => {
                     self.trouter_on = true;
@@ -303,40 +320,6 @@ impl TeamsFastApp {
             self.last_open_refresh = Instant::now();
             if let Some(chat) = self.selected.clone() {
                 self.open_chat(chat);
-            }
-        }
-    }
-
-    fn handle_live(&mut self, json: &str) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
-            return;
-        };
-        let mt = v
-            .get("messagetype")
-            .or_else(|| v.get("messageType"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
-        let conv = v
-            .get("conversationId")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if conv.is_empty() {
-            return;
-        }
-        match mt {
-            "Typing" | "ControlChatState" => {
-                let user = v
-                    .get("imdisplayname")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("Someone")
-                    .to_string();
-                self.typing = Some((user, Instant::now()));
-            }
-            _ => {
-                if self.selected.as_deref() == Some(conv.as_str()) {
-                    self.pending_open_refresh = true;
-                }
             }
         }
     }
@@ -529,6 +512,12 @@ impl TeamsFastApp {
             Action::FetchImage(url) => {
                 self.cmd.send(Command::FetchImage(url)).ok();
             }
+            Action::OpenImage(url) => {
+                self.lightbox = textures_key(&url);
+            }
+            Action::DownloadFile { name, url } => {
+                self.cmd.send(Command::DownloadFile { url, name }).ok();
+            }
             Action::OpenSearch => self.search_open = true,
             Action::ShowNewChat => self.new_chat.open = true,
             Action::CreateOneToOne(peer) => {
@@ -692,6 +681,7 @@ impl eframe::App for TeamsFastApp {
                         self.searching,
                         &cmd,
                         &self.search_query,
+                        self.search_note.as_deref(),
                     );
                 });
         }
@@ -714,6 +704,18 @@ impl eframe::App for TeamsFastApp {
         }
         if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
             self.apply(Action::OpenSearch);
+        }
+
+        if let Some(url) = self.lightbox.clone() {
+            if let Some((tex, size)) = self.textures.get(&url) {
+                let (tex, size) = (tex.clone(), *size);
+                let close = crate::ui::media::lightbox(ui, &tex, size, &url);
+                if close {
+                    self.lightbox = None;
+                }
+            } else {
+                self.lightbox = None;
+            }
         }
 
         ui.ctx()

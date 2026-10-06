@@ -46,6 +46,8 @@ pub enum Action {
     MarkRead(String),
     Attach,
     FetchImage(String),
+    OpenImage(String),
+    DownloadFile { name: String, url: String },
     OpenSearch,
     ShowNewChat,
     CreateOneToOne(String),
@@ -316,15 +318,36 @@ fn bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool, 
             }
         }
 
+        let file_hits: std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let hits2 = file_hits.clone();
         let bubble = Frame::default()
             .fill(fill)
             .corner_radius(CornerRadius::same(8))
             .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
-                render_segments(ui, &parse_html(&m.raw), |ui, url| {
-                    show_image(ui, ctx, url)
-                });
+                let hits2 = hits2.clone();
+                render_segments(
+                    ui,
+                    &parse_html(&m.raw),
+                    |ui, url| show_image(ui, ctx, url),
+                    |ui, name, url| {
+                        if ui
+                            .button(RichText::new(format!("📎 {name}")).small())
+                            .on_hover_text("Download and open")
+                            .clicked()
+                        {
+                            hits2.borrow_mut().push((name.to_string(), url.to_string()));
+                        }
+                    },
+                );
             });
+        for (name, url) in file_hits.borrow().iter() {
+            ctx.actions.push(Action::DownloadFile {
+                name: name.clone(),
+                url: url.clone(),
+            });
+        }
 
         let hov = ui
             .interact(bubble.response.rect, row_id, Sense::hover())
@@ -342,8 +365,11 @@ fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
     if let Some((tex, size)) = ctx.textures.get(url) {
         let max_w = 340.0f32;
         let scale = (max_w / size[0] as f32).min(1.0);
-        let size = egui::vec2(size[0] as f32 * scale, size[1] as f32 * scale);
-        ui.add(egui::Image::new((tex.id(), size)));
+        let disp = egui::vec2(size[0] as f32 * scale, size[1] as f32 * scale);
+        let resp = ui.add(egui::Image::new((tex.id(), disp)).sense(Sense::click()));
+        if resp.clicked() {
+            ctx.actions.push(Action::OpenImage(url.to_string()));
+        }
         true
     } else {
         if ctx.pending_images.insert(url.to_string()) {

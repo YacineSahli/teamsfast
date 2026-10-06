@@ -9,6 +9,7 @@
 pub mod conv;
 pub mod directory;
 pub mod headless;
+pub mod live_parse;
 pub mod live;
 pub mod media;
 
@@ -121,6 +122,8 @@ pub enum Event {
     DownloadDone { name: String, path: PathBuf },
     Trouter(String),
     TrouterConnected,
+    /// Message search refused by Graph on this tenant (token lacks Chat.Read).
+    SearchUnavailable(String),
     /// Parsed live message push (notifications + chat-list updates).
     IncomingMessage {
         chat_id: String,

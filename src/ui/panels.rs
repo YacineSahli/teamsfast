@@ -14,6 +14,7 @@ pub fn search_panel(
     searching: bool,
     cmd: &tokio::sync::mpsc::UnboundedSender<Command>,
     running_query: &str,
+    note: Option<&str>,
 ) -> bool {
     let mut close = false;
     ui.horizontal(|ui| {
@@ -27,9 +28,15 @@ pub fn search_panel(
             }
         });
     });
+    if let Some(note) = note {
+        ui.colored_label(
+            egui::Color32::from_rgb(0xd1, 0xa5, 0x4a),
+            RichText::new(note).small(),
+        );
+    }
     ui.separator();
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        if hits.is_empty() && !searching {
+        if hits.is_empty() && !searching && note.is_none() {
             ui.label(RichText::new("No results.").weak());
         }
         for h in hits {

@@ -72,14 +72,38 @@ fn probe_chat(chat_id: &str) -> Result<()> {
     })
 }
 
-/// AGENT 1: implement — print search hits for `query` (id, sender, preview).
-fn search_probe(_query: &str) -> Result<()> {
-    eprintln!("--search not implemented yet");
-    std::process::exit(2);
+/// Print search hits for `query` (id | sender | preview).
+fn search_probe(query: &str) -> Result<()> {
+    let query = query.to_string();
+    with_client(|client| {
+        Box::pin(async move {
+            let page = ost::api::search_messages_data(client, &query, 0, 25).await?;
+            for h in &page.hits {
+                let target = if h.chat_id.is_empty() {
+                    h.channel_id.clone().unwrap_or_default()
+                } else {
+                    h.chat_id.clone()
+                };
+                println!("{} | {} | {}", target, h.sender, h.preview);
+            }
+            println!("(more: {})", page.more);
+            Ok(())
+        })
+    })
 }
 
-/// AGENT 1: implement — print teams and their channels.
+/// Print teams and their channels.
 fn teams_probe() -> Result<()> {
-    eprintln!("--teams not implemented yet");
-    std::process::exit(2);
+    with_client(|client| {
+        Box::pin(async move {
+            let teams = ost::api::list_teams_data(client).await?;
+            for t in &teams {
+                println!("TEAM {} | {}", t.id, t.name);
+                for ch in &t.channels {
+                    println!("  CH {} | {}", ch.id, ch.name);
+                }
+            }
+            Ok(())
+        })
+    })
 }
