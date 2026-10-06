@@ -13,7 +13,11 @@
 
 use anyhow::Result;
 use ost::api::client::TeamsClient;
-use ost::api::{list_chats_data, read_messages_data, send_message_with_client, ChatInfo, MessageInfo};
+use ost::api::{
+    list_chat_members_data, list_chats_data, read_messages_data, send_message_with_client, whoami_data,
+    ChatInfo, MessageInfo,
+};
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -34,9 +38,18 @@ pub enum Event {
     Status(String),
     LoginResult(Result<(), String>),
     Ready,
+    /// Our own display name (from Graph whoami), for sender attribution.
+    SelfName(String),
     NeedLogin(String),
     Chats(Vec<ChatInfo>),
-    Messages { chat_id: String, messages: Vec<MessageInfo> },
+    Messages {
+        chat_id: String,
+        messages: Vec<MessageInfo>,
+        /// Roster of the open chat: mri → display name (best effort).
+        members: HashMap<String, String>,
+        /// Roster-resolved name for a placeholder-titled chat.
+        resolved_name: Option<String>,
+    },
     Sent(String),
     Trouter(String),
     TrouterConnected,
@@ -82,6 +95,12 @@ fn filter_pseudo_chats(chats: &mut Vec<ChatInfo>) {
 async fn worker(tx: Sender<Event>, mut rx: UnboundedReceiver<Command>) {
     let mut client: Option<TeamsClient> = None;
     let mut trouter_started = false;
+    let mut self_id: Option<String> = None;
+
+    async fn fetch_self(client: &TeamsClient) -> Option<(String, String)> {
+        let me = whoami_data(client).await.ok()?;
+        Some((me.id, me.display_name))
+    }
 
     while let Some(cmd) = rx.recv().await {
         // `.await` on recv parks the root task properly, so spawned tasks
@@ -99,6 +118,10 @@ async fn worker(tx: Sender<Event>, mut rx: UnboundedReceiver<Command>) {
                 let _ = tx.send(Event::LoginResult(res));
                 match TeamsClient::new().await {
                     Ok(c) => {
+                        if let Some((id, name)) = fetch_self(&c).await {
+                            self_id = Some(id);
+                            let _ = tx.send(Event::SelfName(name));
+                        }
                         client = Some(c);
                         let _ = tx.send(Event::Ready);
                     }
@@ -109,6 +132,10 @@ async fn worker(tx: Sender<Event>, mut rx: UnboundedReceiver<Command>) {
             }
             Command::CheckReady => match TeamsClient::new().await {
                 Ok(c) => {
+                    if let Some((id, name)) = fetch_self(&c).await {
+                        self_id = Some(id);
+                        let _ = tx.send(Event::SelfName(name));
+                    }
                     client = Some(c);
                     let _ = tx.send(Event::Ready);
                 }
@@ -134,9 +161,31 @@ async fn worker(tx: Sender<Event>, mut rx: UnboundedReceiver<Command>) {
             }
             Command::OpenChat(chat_id) => {
                 let Some(c) = client.as_ref() else { continue };
+                // Roster first, best effort: names for unnamed senders ("?")
+                // and a real name for placeholder-titled chats (e.g. the
+                // @unq.gbl.spaces threads ost's resolver doesn't cover).
+                let mut members: HashMap<String, String> = HashMap::new();
+                let mut resolved_name: Option<String> = None;
+                if let Ok((_, roster)) = list_chat_members_data(c, &chat_id).await {
+                    for m in roster {
+                        if !m.display_name.is_empty() {
+                            members.insert(m.mri.clone(), m.display_name.clone());
+                        }
+                        let is_me = match self_id.as_deref() {
+                            Some(me) => {
+                                m.user_id.as_deref() == Some(me)
+                                    || m.mri == format!("8:orgid:{me}")
+                            }
+                            None => false,
+                        };
+                        if !is_me && m.mri.starts_with("8:orgid:") && !m.display_name.is_empty() {
+                            resolved_name = Some(m.display_name.clone());
+                        }
+                    }
+                }
                 match read_messages_data(c, &chat_id, 50).await {
                     Ok(messages) => {
-                        let _ = tx.send(Event::Messages { chat_id, messages });
+                        let _ = tx.send(Event::Messages { chat_id, messages, members, resolved_name });
                     }
                     Err(e) => {
                         let _ = tx.send(Event::Error(format!("history: {e:#}")));
@@ -150,7 +199,12 @@ async fn worker(tx: Sender<Event>, mut rx: UnboundedReceiver<Command>) {
                         let _ = tx.send(Event::Sent(chat_id.clone()));
                         // Re-read so the sent bubble comes from server truth.
                         if let Ok(messages) = read_messages_data(c, &chat_id, 50).await {
-                            let _ = tx.send(Event::Messages { chat_id, messages });
+                            let _ = tx.send(Event::Messages {
+                                chat_id,
+                                messages,
+                                members: HashMap::new(),
+                                resolved_name: None,
+                            });
                         }
                     }
                     Err(e) => {

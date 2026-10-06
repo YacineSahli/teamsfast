@@ -7,6 +7,7 @@
 use crate::backend::{self, Command, Event};
 use egui::{Color32, RichText, ScrollArea};
 use ost::api::{ChatInfo, MessageInfo};
+use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,10 @@ pub struct TeamsFastApp {
     draft: String,
     trouter_log: Vec<String>,
     trouter_on: bool,
+    /// Roster names for the open chat (mri → display name).
+    open_members: HashMap<String, String>,
+    /// Our own display name (Graph whoami).
+    self_name: String,
     /// Live events arrived; refresh the open chat at most every so often.
     pending_open_refresh: bool,
     last_open_refresh: Instant,
@@ -50,6 +55,8 @@ impl TeamsFastApp {
             draft: String::new(),
             trouter_log: Vec::new(),
             trouter_on: false,
+            open_members: HashMap::new(),
+            self_name: String::new(),
             pending_open_refresh: false,
             last_open_refresh: Instant::now() - Duration::from_secs(10),
             cmd,
@@ -61,6 +68,7 @@ impl TeamsFastApp {
         while let Ok(ev) = self.events.try_recv() {
             match ev {
                 Event::Status(s) => self.status = s,
+                Event::SelfName(name) => self.self_name = name,
                 Event::LoginResult(Ok(())) => self.status = "Signed in".into(),
                 Event::LoginResult(Err(e)) => {
                     self.status = "Sign-in failed".into();
@@ -81,9 +89,22 @@ impl TeamsFastApp {
                     self.chats = chats;
                     self.status = format!("{n} chats");
                 }
-                Event::Messages { chat_id, messages } => {
+                Event::Messages { chat_id, messages, members, resolved_name } => {
                     if self.selected.as_deref() == Some(chat_id.as_str()) {
                         self.messages = messages;
+                        self.open_members = members;
+                    }
+                    // Placeholder title (e.g. "[Direct message]" on an
+                    // @unq.gbl.spaces thread): use the roster-resolved name.
+                    if let (Some(name), Some(chat)) =
+                        (resolved_name, self.chats.iter_mut().find(|c| c.id == chat_id))
+                    {
+                        if chat.name.is_empty()
+                            || chat.name == "[Direct message]"
+                            || chat.name == "Direct message"
+                        {
+                            chat.name = name;
+                        }
                     }
                 }
                 Event::Sent(_) => self.status = "Sent".into(),
@@ -115,6 +136,17 @@ impl TeamsFastApp {
                 self.cmd.send(Command::OpenChat(chat)).ok();
             }
         }
+    }
+
+    /// Display name for a message sender, falling back to the roster when
+    /// history carries none (external/federated senders arrive as "?").
+    fn sender_name(&self, m: &MessageInfo) -> String {
+        if m.sender.is_empty() || m.sender == "?" {
+            if let Some(name) = self.open_members.get(&m.sender_mri) {
+                return name.clone();
+            }
+        }
+        m.sender.clone()
     }
 
     fn top_bar(&self, ui: &mut egui::Ui) {
@@ -267,8 +299,9 @@ impl eframe::App for TeamsFastApp {
             } else {
                 ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
                     for m in &self.messages {
+                        let sender = self.sender_name(m);
                         ui.horizontal_wrapped(|ui| {
-                            ui.strong(&m.sender);
+                            ui.strong(&sender);
                             ui.label(RichText::new(&m.timestamp).small().weak());
                             for r in &m.reactions {
                                 ui.label(
