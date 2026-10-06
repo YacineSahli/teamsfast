@@ -133,11 +133,9 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             let is_new_day = !day.is_empty() && day != last_day;
             if is_new_day {
                 let label = day.clone();
-                ui.add_space(10.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new(label).small().weak());
-                });
-                ui.add_space(10.0);
+                ui.add_space(6.0);
+                crate::ui::widgets::day_separator(ui, &label);
+                ui.add_space(6.0);
                 last_day = day;
             }
             let own = is_own(m, ctx);
@@ -200,9 +198,23 @@ pub fn conversation_composer(
         });
     }
 
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        if ui.button("📎").on_hover_text("Attach a file").clicked() {
+    let compose_fill = if ctx.edit.is_some() || ctx.reply.is_some() {
+        Color32::from_rgb(0x2b, 0x2d, 0x3a)
+    } else {
+        ctx.pal.surface
+    };
+    Frame::default()
+        .fill(compose_fill)
+        .stroke(egui::Stroke::new(1.0, ctx.pal.outline))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+        ui.horizontal(|ui| {
+        if ui
+            .add(egui::Button::new(RichText::new("📎").size(16.0)))
+            .on_hover_text("Attach a file")
+            .clicked()
+        {
             ctx.actions.push(Action::Attach);
         }
         let response = ui.add(
@@ -212,14 +224,18 @@ pub fn conversation_composer(
                 } else {
                     "Type a message"
                 })
-                .desired_width(ui.available_width() - 64.0),
+                .desired_width(ui.available_width() - 96.0),
         );
         let ready = !draft.trim().is_empty();
         let send_btn = if ready {
-            egui::Button::new(RichText::new("Send").strong())
-                .fill(Color32::from_rgb(0x5b, 0x5f, 0xc7))
+            egui::Button::new(
+                RichText::new(format!("Send  "))
+                    .strong()
+                    .color(ctx.pal.on_accent),
+            )
+            .fill(ctx.pal.accent)
         } else {
-            egui::Button::new("Send")
+            egui::Button::new(RichText::new("Send").weak())
         };
         let btn = ui.add(send_btn);
         let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -241,6 +257,7 @@ pub fn conversation_composer(
                 ctx.actions.push(Action::Send(text));
             }
         }
+        });
     });
 
     keep_focus
@@ -277,10 +294,14 @@ fn message_row(
         // bubble column sits to its left. Every part inside the column is
         // laid out right-anchored (see bubble_parts).
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            // In right_to_left order the FIRST item sits at the far right:
+            // the avatar mirrors the incoming layout. Grouped rows reserve
+            // the identical slot (invisible) so right edges always line up.
             if !grouped {
                 avatar(ui, ctx.self_name, 32.0);
             } else {
-                ui.add_space(32.0);
+                let (_slot_rect, _slot_resp) = ui
+                    .allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
             }
             ui.vertical(|ui| {
                 bubble_parts(ui, ctx, m, own, grouped);
@@ -304,7 +325,7 @@ fn message_row(
             });
         });
     }
-    ui.add_space(3.0);
+    ui.add_space(if grouped { 2.0 } else { 9.0 });
 }
 
 /// Reactions, reply quote, bubble, timestamp, hover toolbar — one message's
@@ -357,7 +378,12 @@ fn bubble_parts(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             Frame::default()
                 .fill(fill)
-                .corner_radius(CornerRadius::same(8))
+                .corner_radius(egui::CornerRadius {
+                    nw: 10,
+                    ne: 10,
+                    sw: 10,
+                    se: 2,
+                })
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
                     if unsupported_card {
@@ -410,7 +436,12 @@ fn bubble_parts(
     } else {
         Frame::default()
             .fill(fill)
-            .corner_radius(CornerRadius::same(8))
+            .corner_radius(egui::CornerRadius {
+                nw: 10,
+                ne: 10,
+                sw: 2,
+                se: 10,
+            })
             .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
                 if unsupported_card {

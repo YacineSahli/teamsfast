@@ -3,6 +3,17 @@
 use crate::model::{avatar_color, initials};
 use egui::{Color32, CornerRadius, FontId, Frame, RichText, Stroke, TextFormat, Ui, epaint};
 
+/// A quiet icon button (Lucide icon, ghost style) with a tooltip.
+pub fn icon_button(
+    ui: &mut Ui,
+    icon: crate::theme::Icon,
+    tip: &str,
+) -> egui::Response {
+    let btn = egui::Button::new(icon.image(ui.style().visuals.text_color(), 16.0))
+        .fill(Color32::TRANSPARENT);
+    ui.add(btn).on_hover_text(tip)
+}
+
 /// One avatar circle with initials.
 pub fn avatar(ui: &mut Ui, name: &str, size: f32) {
     let color = avatar_color(name);
@@ -371,4 +382,39 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
         }
     }
     out
+}
+
+/// Day separator: hairline rules flanking a centered date chip.
+pub fn day_separator(ui: &mut Ui, label: &str) {
+    let avail = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail, 20.0), egui::Sense::hover());
+    let y = rect.center().y;
+    let gal = ui.painter().layout(
+        label.to_string(),
+        egui::FontId::proportional(12.5),
+        ui.style().visuals.weak_text_color(),
+        avail,
+    );
+    let tw = gal.mesh_bounds.width();
+    ui.painter().galley(
+        egui::pos2(rect.center().x - tw / 2.0, y - gal.size().y / 2.0),
+        gal,
+        ui.style().visuals.weak_text_color(),
+    );
+    let stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22));
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left() + 12.0, y),
+            egui::pos2(rect.center().x - tw / 2.0 - 10.0, y),
+        ],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.center().x + tw / 2.0 + 10.0, y),
+            egui::pos2(rect.right() - 12.0, y),
+        ],
+        stroke,
+    );
 }
