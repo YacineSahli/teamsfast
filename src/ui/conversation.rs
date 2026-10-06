@@ -213,7 +213,13 @@ pub fn conversation_composer(
                 .desired_width(ui.available_width() - 64.0),
         );
         let ready = !draft.trim().is_empty();
-        let btn = ui.add_enabled(ready, egui::Button::new("Send"));
+        let send_btn = if ready {
+            egui::Button::new(RichText::new("Send").strong())
+                .fill(Color32::from_rgb(0x5b, 0x5f, 0xc7))
+        } else {
+            egui::Button::new("Send")
+        };
+        let btn = ui.add(send_btn);
         let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if (btn.clicked() || enter) && ready {
             let text = draft.trim().to_string();
@@ -333,6 +339,11 @@ fn bubble_parts(
             quote_preview(ui, ctx, m);
         }
     }
+    // Unsupported connector-card fallback: MS returns a plain-text stub for
+    // cards our client can't render — show a muted card instead of the raw
+    // "Card - access it on ..." line.
+    let unsupported_card = m.raw.contains("cards.unsupported");
+
     // The bubble itself
     let row_id = egui::Id::new(("msg", &m.id));
     let fill = if own {
@@ -347,33 +358,48 @@ fn bubble_parts(
                 .corner_radius(CornerRadius::same(8))
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
-                    let segments = parse_html(&m.raw);
-                    let file_hits: std::rc::Rc<
-                        std::cell::RefCell<Vec<(String, String)>>,
-                    > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-                    let hits2 = file_hits.clone();
-                    render_segments(
-                        ui,
-                        &segments,
-                        |ui, url| show_image(ui, ctx, url),
-                        |ui, name, url| {
-                            if ui
-                                .button(RichText::new(format!("📎 {name}")).small())
-                                .on_hover_text("Download and open")
-                                .clicked()
-                            {
-                                hits2
-                                    .borrow_mut()
-                                    .push((name.to_string(), url.to_string()));
+                    if unsupported_card {
+                        connector_card(ui);
+                        return;
+                    }
+                    // Own bubbles live in an RTL row — reset to LTR inside
+                    // the frame so text is left-aligned, not centered.
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::TOP),
+                        |ui| {
+                            let segments = parse_html(&m.raw);
+                            let file_hits: std::rc::Rc<
+                                std::cell::RefCell<Vec<(String, String)>>,
+                            > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                            let hits2 = file_hits.clone();
+                            render_segments(
+                                ui,
+                                &segments,
+                                |ui, url| show_image(ui, ctx, url),
+                                |ui, name, url| {
+                                    if ui
+                                        .button(
+                                            RichText::new(format!("📎 {name}"))
+                                                .small(),
+                                        )
+                                        .on_hover_text("Download and open")
+                                        .clicked()
+                                    {
+                                        hits2.borrow_mut().push((
+                                            name.to_string(),
+                                            url.to_string(),
+                                        ));
+                                    }
+                                },
+                            );
+                            for (name, url) in file_hits.borrow().iter() {
+                                ctx.actions.push(Action::DownloadFile {
+                                    name: name.clone(),
+                                    url: url.clone(),
+                                });
                             }
                         },
                     );
-                    for (name, url) in file_hits.borrow().iter() {
-                        ctx.actions.push(Action::DownloadFile {
-                            name: name.clone(),
-                            url: url.clone(),
-                        });
-                    }
                 })
                 .response
                 .rect
@@ -385,24 +411,41 @@ fn bubble_parts(
             .corner_radius(CornerRadius::same(8))
             .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
-                let segments = parse_html(&m.raw);
-                let file_hits: std::rc::Rc<
-                    std::cell::RefCell<Vec<(String, String)>>,
-                > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-                let hits2 = file_hits.clone();
-                render_segments(
-                    ui,
-                    &segments,
-                    |ui, url| show_image(ui, ctx, url),
-                    |ui, name, url| {
-                        if ui
-                            .button(RichText::new(format!("📎 {name}")).small())
-                            .on_hover_text("Download and open")
-                            .clicked()
-                        {
-                            hits2
-                                .borrow_mut()
-                                .push((name.to_string(), url.to_string()));
+                if unsupported_card {
+                    connector_card(ui);
+                    return;
+                }
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::TOP),
+                    |ui| {
+                        let segments = parse_html(&m.raw);
+                        let file_hits: std::rc::Rc<
+                            std::cell::RefCell<Vec<(String, String)>>,
+                        > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                        let hits2 = file_hits.clone();
+                        render_segments(
+                            ui,
+                            &segments,
+                            |ui, url| show_image(ui, ctx, url),
+                            |ui, name, url| {
+                                if ui
+                                    .button(
+                                        RichText::new(format!("📎 {name}")).small(),
+                                    )
+                                    .on_hover_text("Download and open")
+                                    .clicked()
+                                {
+                                    hits2
+                                        .borrow_mut()
+                                        .push((name.to_string(), url.to_string()));
+                                }
+                            },
+                        );
+                        for (name, url) in file_hits.borrow().iter() {
+                            ctx.actions.push(Action::DownloadFile {
+                                name: name.clone(),
+                                url: url.clone(),
+                            });
                         }
                     },
                 );
@@ -415,15 +458,27 @@ fn bubble_parts(
         eprintln!("DBG bubble own rect={bubble_rect:?}");
     }
 
-    // Hover state: over the bubble OR the floating bar (sticky).
+    // Hover state: POINTER-POSITION based. egui's per-widget hover is not
+    // reliable across an Area boundary (the bar vanishes when the pointer
+    // moves into the gap), so track the bar's rect and test containment
+    // directly, with a 6px grow to bridge the bubble→bar gap.
     let hover_id = egui::Id::new(("msg-hover", &m.id));
-    let bubble_hovered = ui
-        .interact(bubble_rect, row_id, Sense::hover())
-        .hovered();
-    let was_open = ui
-        .ctx()
-        .data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
-    let open = was_open || bubble_hovered;
+    let pointer = ui.input(|i| i.pointer.latest_pos());
+    let bar_rect_prev: Option<egui::Rect> = ui.ctx().data(|d| d.get_temp(hover_id));
+    let expand = |r: egui::Rect, by: f32| {
+        egui::Rect::from_min_max(
+            egui::pos2(r.left() - by, r.top() - by),
+            egui::pos2(r.right() + by, r.bottom() + by),
+        )
+    };
+    let in_bubble = pointer
+        .map(|p| expand(bubble_rect, 2.0).contains(p))
+        .unwrap_or(false);
+    let in_bar = pointer
+        .zip(bar_rect_prev)
+        .map(|(p, r)| expand(r, 6.0).contains(p))
+        .unwrap_or(false);
+    let open = in_bubble || in_bar;
 
     if !grouped {
         if own {
@@ -486,7 +541,16 @@ fn bubble_parts(
                                     });
                                 }
                                 if own {
-                                    if ui.button(RichText::new("Edit").size(13.0)).clicked() {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                crate::theme::Icon::Pencil
+                                                    .image(Color32::WHITE, 16.0),
+                                            ),
+                                        )
+                                        .on_hover_text("Edit")
+                                        .clicked()
+                                    {
                                         let current = crate::ui::widgets::segs_to_plain(
                                             &parse_html(&m.raw),
                                         );
@@ -496,7 +560,13 @@ fn bubble_parts(
                                         });
                                     }
                                     if ui
-                                        .button(RichText::new("Delete").size(13.0))
+                                        .add(
+                                            egui::Button::new(
+                                                crate::theme::Icon::Trash
+                                                    .image(Color32::WHITE, 16.0),
+                                            ),
+                                        )
+                                        .on_hover_text("Delete")
                                         .clicked()
                                     {
                                         sink.borrow_mut().push(Action::DeleteMessage(
@@ -504,7 +574,16 @@ fn bubble_parts(
                                         ));
                                     }
                                 }
-                                if ui.button(RichText::new("Copy").size(13.0)).clicked() {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            crate::theme::Icon::Copy
+                                                .image(Color32::WHITE, 16.0),
+                                        ),
+                                    )
+                                    .on_hover_text("Copy text")
+                                    .clicked()
+                                {
                                     ui.ctx().copy_text(crate::ui::widgets::segs_to_plain(
                                         &parse_html(&m.raw),
                                     ));
@@ -514,13 +593,33 @@ fn bubble_parts(
                     });
             })
             .response;
-        ui.ctx().data_mut(|d| {
-            d.insert_temp::<bool>(hover_id, bubble_hovered || bar.hovered());
-        });
-    } else {
-        ui.ctx()
-            .data_mut(|d| d.insert_temp::<bool>(hover_id, false));
+        ui.ctx().data_mut(|d| d.insert_temp::<egui::Rect>(hover_id, bar.rect));
+    } else if bar_rect_prev.is_some() {
+        ui.ctx().data_mut(|d| d.remove::<egui::Rect>(hover_id));
     }
+}
+
+/// Muted rendering for connector/bot cards the client can't display
+/// (Teams returns the "Card - access it on cards.unsupported" stub).
+fn connector_card(ui: &mut egui::Ui) {
+    Frame::default()
+        .fill(Color32::from_rgb(0x23, 0x25, 0x2b))
+        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x47)))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🧩").size(16.0));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Connector card").small().strong());
+                    ui.label(
+                        RichText::new("Open in Teams to view the card content.")
+                            .small()
+                            .weak(),
+                    );
+                });
+            });
+        });
 }
 
 /// Reaction count chips (click = remove your reaction).

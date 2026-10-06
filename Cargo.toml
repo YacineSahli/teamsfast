@@ -37,8 +37,13 @@ egui = "0.36"
 # the repo is private and this machine's git auth is ssh-only.
 ost = { git = "https://github.com/YacineSahli/teams-core", package = "teams-cli" }
 
-# Colour emoji everywhere (platform font + bundled Noto Color Emoji).
+# The fastframe UI stack: colour emoji, Inter + platform fonts, Lucide
+# icons, editable themes, nicer wheel scrolling.
 fastframe-emoji = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 
 # Backend worker runtime (protocol calls + trouter live on a worker thread).

@@ -119,9 +119,10 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             if std::env::var_os("TEAMSFAST_NO_EMOJI").is_none() {
-                teamsfast::init_emoji(&cc.egui_ctx);
+                teamsfast::init_theme(&cc.egui_ctx);
+            } else {
+                teamsfast::apply_style(&cc.egui_ctx);
             }
-            teamsfast::apply_style(&cc.egui_ctx);
             Ok(Box::new(TeamsFastApp::new(cc)))
         }),
     )
