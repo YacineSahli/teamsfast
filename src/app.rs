@@ -1,14 +1,15 @@
-//! TeamsFast spike UI: chat list, conversation, composer, live-event log.
-//!
-//! egui 0.36 layout: the `App::ui` trait method hands us the root `Ui`;
-//! side/top/bottom regions are `egui::Panel::left/top/bottom`, and the
-//! main area is `egui::CentralPanel` — all shown *inside* that root Ui.
+//! TeamsFast App: owns all UI state, drains backend events, applies actions.
 
 use crate::backend::{self, Command, Event};
-use egui::{Color32, RichText, ScrollArea};
-use ost::api::{ChatInfo, MessageInfo};
-use std::collections::HashMap;
-use std::sync::mpsc::Receiver;
+use crate::ui::conversation::{self, Action, ConvCtx};
+use crate::ui::panels::{new_chat_dialog, search_panel, NewChatState};
+use crate::ui::sidebar::{sidebar, SideView};
+use crate::ui::widgets::avatar;
+use egui::{Color32, RichText};
+use ost::api::{ChatInfo, MessageInfo, SearchHitInfo, TeamInfo};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 #[derive(PartialEq, Clone, Copy)]
@@ -22,47 +23,100 @@ pub struct TeamsFastApp {
     state: State,
     status: String,
     error: Option<String>,
+    self_name: String,
+    self_id: Option<String>,
+
     chats: Vec<ChatInfo>,
     selected: Option<String>,
+    selected_title: String,
     messages: Vec<MessageInfo>,
+    members: HashMap<String, String>,
+    older_link: Option<String>,
+    loading_older: bool,
+
     draft: String,
+    edit: Option<(String, String)>,
+    reply: Option<(String, String, String)>,
+    uploads: Vec<(String, u64, u64)>,
+
+    teams: Vec<TeamInfo>,
+    side_view: SideView,
+    loading_teams: bool,
+    sidebar_search: String,
+
+    search_open: bool,
+    searching: bool,
+    search_hits: Vec<SearchHitInfo>,
+    search_more: bool,
+    search_query: String,
+
+    new_chat: NewChatState,
+
     trouter_log: Vec<String>,
     trouter_on: bool,
-    /// Roster names for the open chat (mri → display name).
-    open_members: HashMap<String, String>,
-    /// Our own display name (Graph whoami).
-    self_name: String,
-    /// Live events arrived; refresh the open chat at most every so often.
     pending_open_refresh: bool,
     last_open_refresh: Instant,
+    typing: Option<(String, Instant)>,
+
+    textures: HashMap<String, (egui::TextureHandle, [usize; 2])>,
+    pending_images: HashSet<String>,
+    queued_textures: Vec<(String, Vec<u8>, [usize; 2])>,
+    #[allow(dead_code)]
+    failed_images: HashSet<String>,
+    egui_ctx: Option<egui::Context>,
+
     cmd: tokio::sync::mpsc::UnboundedSender<Command>,
     events: Receiver<Event>,
 }
 
 impl TeamsFastApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
         let cmd = backend::spawn(tx);
         cmd.send(Command::CheckReady).ok();
-
         Self {
             state: State::Boot,
             status: "Starting…".into(),
             error: None,
+            self_name: String::new(),
+            self_id: None,
             chats: Vec::new(),
             selected: None,
+            selected_title: String::new(),
             messages: Vec::new(),
+            members: HashMap::new(),
+            older_link: None,
+            loading_older: false,
             draft: String::new(),
+            edit: None,
+            reply: None,
+            uploads: Vec::new(),
+            teams: Vec::new(),
+            side_view: SideView::Chats,
+            loading_teams: false,
+            sidebar_search: String::new(),
+            search_open: false,
+            searching: false,
+            search_hits: Vec::new(),
+            search_more: false,
+            search_query: String::new(),
+            new_chat: NewChatState::default(),
             trouter_log: Vec::new(),
             trouter_on: false,
-            open_members: HashMap::new(),
-            self_name: String::new(),
             pending_open_refresh: false,
             last_open_refresh: Instant::now() - Duration::from_secs(10),
+            typing: None,
+            textures: HashMap::new(),
+            pending_images: HashSet::new(),
+            failed_images: HashSet::new(),
+            queued_textures: Vec::new(),
+            egui_ctx: Some(cc.egui_ctx.clone()),
             cmd,
             events: rx,
         }
     }
+
+    // ---------------------------------------------------------------- events
 
     fn drain_events(&mut self) {
         while let Ok(ev) = self.events.try_recv() {
@@ -84,92 +138,448 @@ impl TeamsFastApp {
                     self.status = "Not signed in".into();
                     self.error = Some(e);
                 }
-                Event::Chats(chats) => {
+                Event::Chats(mut chats) => {
                     let n = chats.len();
+                    // Keep roster-resolved names from this session.
+                    let known: Vec<(String, String)> = self
+                        .chats
+                        .iter()
+                        .filter(|c| c.name != "[Direct message]" && !c.name.is_empty())
+                        .map(|c| (c.id.clone(), c.name.clone()))
+                        .collect();
+                    for (id, name) in known {
+                        if let Some(c) = chats.iter_mut().find(|c| c.id == id) {
+                            if c.name == "[Direct message]" || c.name.is_empty() {
+                                c.name = name;
+                            }
+                        }
+                    }
                     self.chats = chats;
                     self.status = format!("{n} chats");
                 }
-                Event::Messages { chat_id, messages, members, resolved_name } => {
-                    if self.selected.as_deref() == Some(chat_id.as_str()) {
-                        self.messages = messages;
-                        self.open_members = members;
+                Event::Messages {
+                    chat_id,
+                    messages,
+                    members,
+                    resolved_name,
+                    prepend,
+                    older_link,
+                } => {
+                    if self.selected.as_deref() != Some(chat_id.as_str()) {
+                        continue;
                     }
-                    // Placeholder title (e.g. "[Direct message]" on an
-                    // @unq.gbl.spaces thread): use the roster-resolved name.
-                    if let (Some(name), Some(chat)) =
-                        (resolved_name, self.chats.iter_mut().find(|c| c.id == chat_id))
+                    if prepend {
+                        let mut merged = messages;
+                        merged.extend(self.messages.drain(..));
+                        let mut seen = HashSet::new();
+                        merged.retain(|m| seen.insert(m.id.clone()));
+                        self.messages = merged;
+                        self.loading_older = false;
+                    } else {
+                        self.messages = messages;
+                    }
+                    if !members.is_empty() {
+                        self.members = members;
+                    }
+                    self.older_link = older_link;
+                    if let Some(name) = resolved_name {
+                        self.rename_chat(&chat_id, name);
+                    }
+                    // Freshly loaded tail: mark read.
+                    if let (Some(sel), Some(last)) =
+                        (self.selected.clone(), self.messages.last().map(|m| m.id.clone()))
                     {
-                        if chat.name.is_empty()
-                            || chat.name == "[Direct message]"
-                            || chat.name == "Direct message"
-                        {
-                            chat.name = name;
-                        }
+                        self.cmd
+                            .send(Command::MarkRead {
+                                chat_id: sel,
+                                message_id: last,
+                            })
+                            .ok();
                     }
                 }
-                Event::Sent(_) => self.status = "Sent".into(),
+                Event::ActionOk { action, .. } => {
+                    self.status = format!("{action:?} ✓");
+                }
+                Event::SearchResults { hits, more, .. } => {
+                    self.search_hits = hits;
+                    self.search_more = more;
+                    self.searching = false;
+                    self.search_open = true;
+                }
+                Event::Teams(teams) => {
+                    self.teams = teams;
+                    self.loading_teams = false;
+                }
+                Event::CreateChatOk(chat) => {
+                    let mut row = ost::api::ChatInfo {
+                        id: chat.id.clone(),
+                        name: chat.name.clone(),
+                        is_group: chat.is_group,
+                        last_message_time: None,
+                        last_message_sender: None,
+                        last_message_preview: None,
+                    };
+                    if row.name == "[Direct message]" {
+                        row.name = "New chat".into();
+                    }
+                    self.chats.insert(0, row);
+                    self.open_chat(chat.id);
+                }
+                Event::ImageReady { url, rgba, size } => {
+                    self.pending_images.remove(&url);
+                    self.queued_textures.push((url, rgba, size));
+                }
+                Event::ImageFailed(url) => {
+                    self.pending_images.remove(&url);
+                }
+                Event::UploadProgress {
+                    name,
+                    sent,
+                    total,
+                    ..
+                } => match self.uploads.iter_mut().find(|(n, _, _)| n == &name) {
+                    Some(slot) => {
+                        slot.1 = sent;
+                        slot.2 = total;
+                    }
+                    None => self.uploads.push((name, sent, total)),
+                },
+                Event::UploadDone { chat_id, name } => {
+                    self.uploads.retain(|(n, _, _)| n != &name);
+                    if self.selected.as_deref() == Some(chat_id.as_str()) {
+                        let id = chat_id.clone();
+                        self.open_chat(id);
+                    }
+                    self.status = format!("sent {name}");
+                }
+                Event::DownloadDone { path, .. } => {
+                    self.status = format!("saved {}", path.display());
+                }
                 Event::Trouter(json) => {
-                    self.trouter_log.push(json);
+                    self.trouter_log.push(json.clone());
                     if self.trouter_log.len() > 200 {
                         self.trouter_log.drain(..100);
                     }
-                    // Debounce: live events can storm (presence, typing…).
-                    // Flag now, refetch the open chat at most ~1/s.
-                    if self.selected.is_some() {
-                        self.pending_open_refresh = true;
-                    }
+                    self.handle_live(&json);
                 }
                 Event::TrouterConnected => {
                     self.trouter_on = true;
                     self.status = "Connected (live)".into();
                 }
+                Event::IncomingMessage {
+                    chat_id,
+                    sender,
+                    preview,
+                } => self.on_incoming(chat_id, sender, preview),
+                Event::Typing { chat_id, user } => {
+                    if self.selected.as_deref() == Some(chat_id.as_str()) {
+                        self.typing = Some((user, Instant::now()));
+                    }
+                }
                 Event::Error(e) => self.error = Some(e),
             }
         }
-
+        // Image → texture conversion needs the egui context; do parked ones now.
+        if !self.queued_textures.is_empty() {
+            if let Some(gctx) = self.egui_ctx.as_ref() {
+                for (url, rgba, size) in self.queued_textures.drain(..) {
+                    let img =
+                        egui::ColorImage::from_rgba_unmultiplied([size[0], size[1]], &rgba);
+                    let tex = gctx.load_texture(format!("img:{url}"), img, Default::default());
+                    self.textures.insert(url, (tex, size));
+                }
+            }
+        }
+        if let Some((_, since)) = &self.typing {
+            if since.elapsed() > Duration::from_secs(5) {
+                self.typing = None;
+            }
+        }
         // Debounced open-chat refresh on live activity.
-        if self.pending_open_refresh && self.last_open_refresh.elapsed() >= Duration::from_millis(900)
+        if self.pending_open_refresh
+            && self.last_open_refresh.elapsed() >= Duration::from_millis(900)
         {
             self.pending_open_refresh = false;
             self.last_open_refresh = Instant::now();
             if let Some(chat) = self.selected.clone() {
-                self.cmd.send(Command::OpenChat(chat)).ok();
+                self.open_chat(chat);
             }
         }
     }
 
-    /// Display name for a message sender, falling back to the roster when
-    /// history carries none (external/federated senders arrive as "?").
-    fn sender_name(&self, m: &MessageInfo) -> String {
-        if m.sender.is_empty() || m.sender == "?" {
-            if let Some(name) = self.open_members.get(&m.sender_mri) {
-                return name.clone();
+    fn handle_live(&mut self, json: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            return;
+        };
+        let mt = v
+            .get("messagetype")
+            .or_else(|| v.get("messageType"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let conv = v
+            .get("conversationId")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        if conv.is_empty() {
+            return;
+        }
+        match mt {
+            "Typing" | "ControlChatState" => {
+                let user = v
+                    .get("imdisplayname")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("Someone")
+                    .to_string();
+                self.typing = Some((user, Instant::now()));
+            }
+            _ => {
+                if self.selected.as_deref() == Some(conv.as_str()) {
+                    self.pending_open_refresh = true;
+                }
             }
         }
-        m.sender.clone()
     }
 
-    fn top_bar(&self, ui: &mut egui::Ui) {
+    fn on_incoming(&mut self, chat_id: String, sender: String, preview: String) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.last_message_preview = Some(preview.clone());
+            c.last_message_sender = Some(sender.clone());
+            c.last_message_time = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| (d.as_millis() as u64).to_string())
+                    .unwrap_or_default(),
+            );
+        }
+        let open = self.selected.as_deref() == Some(chat_id.as_str());
+        if open {
+            self.pending_open_refresh = true;
+        } else {
+            let title = self
+                .chats
+                .iter()
+                .find(|c| c.id == chat_id)
+                .map(|c| {
+                    if c.name.is_empty() || c.name == "[Direct message]" {
+                        "Direct message".to_string()
+                    } else {
+                        c.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| "Teams".into());
+            let body = format!("{sender}: {preview}");
+            std::thread::Builder::new()
+                .name("notify".into())
+                .spawn(move || {
+                    let _ = notify_rust::Notification::new()
+                        .summary(&title)
+                        .body(&body)
+                        .timeout(6000)
+                        .show();
+                })
+                .ok();
+        }
+    }
+
+    fn rename_chat(&mut self, id: &str, name: String) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == id) {
+            if c.name.is_empty() || c.name == "[Direct message]" || c.name == "Direct message" {
+                c.name = name.clone();
+            }
+        }
+        if self.selected.as_deref() == Some(id) {
+            self.selected_title = name;
+        }
+    }
+
+    fn open_chat(&mut self, id: String) {
+        self.selected = Some(id.clone());
+        self.messages.clear();
+        self.members.clear();
+        self.older_link = None;
+        self.edit = None;
+        self.reply = None;
+        self.selected_title = self
+            .chats
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| {
+                if c.name == "[Direct message]" || c.name.is_empty() {
+                    "Direct message".into()
+                } else {
+                    c.name.clone()
+                }
+            })
+            .unwrap_or_else(|| id.clone());
+        self.cmd.send(Command::OpenChat(id)).ok();
+    }
+
+    // ---------------------------------------------------------------- actions
+
+    fn apply(&mut self, a: Action) {
+        match a {
+            Action::OpenChat(id) => self.open_chat(id),
+            Action::Send(text) => {
+                if let Some(chat) = self.selected.clone() {
+                    self.cmd.send(Command::Send { chat_id: chat, text }).ok();
+                }
+            }
+            Action::SendReply {
+                parent_id,
+                sender,
+                snippet,
+                text,
+            } => {
+                if let Some(chat) = self.selected.clone() {
+                    self.cmd
+                        .send(Command::Reply {
+                            chat_id: chat,
+                            parent_id,
+                            parent_sender: sender,
+                            parent_text: snippet,
+                            text,
+                        })
+                        .ok();
+                    self.reply = None;
+                }
+            }
+            Action::ApplyEdit { message_id, text } => {
+                if let Some(chat) = self.selected.clone() {
+                    self.cmd
+                        .send(Command::EditMessage {
+                            chat_id: chat,
+                            message_id,
+                            text,
+                        })
+                        .ok();
+                    self.edit = None;
+                }
+            }
+            Action::StartEdit { message_id, current } => {
+                self.edit = Some((message_id, current.clone()));
+                self.reply = None;
+                self.draft = current;
+            }
+            Action::Reply {
+                message_id,
+                sender,
+                snippet,
+            } => {
+                // Hover toolbar asked to show the reply banner.
+                self.edit = None;
+                self.reply = Some((message_id, sender, snippet));
+            }
+            Action::CancelEditReply => {
+                self.edit = None;
+                self.reply = None;
+                self.draft.clear();
+            }
+            Action::DeleteMessage(id) => {
+                if let Some(chat) = self.selected.clone() {
+                    self.cmd
+                        .send(Command::DeleteMessage {
+                            chat_id: chat,
+                            message_id: id,
+                        })
+                        .ok();
+                }
+            }
+            Action::React {
+                message_id,
+                emoji,
+                remove,
+            } => {
+                if let Some(chat) = self.selected.clone() {
+                    self.cmd
+                        .send(Command::React {
+                            chat_id: chat,
+                            message_id,
+                            emoji,
+                            remove,
+                        })
+                        .ok();
+                }
+            }
+            Action::LoadOlder => {
+                if let Some(chat) = self.selected.clone() {
+                    self.loading_older = true;
+                    self.cmd.send(Command::LoadOlder(chat)).ok();
+                }
+            }
+            Action::MarkRead(id) => {
+                if let Some(chat) = self.selected.clone() {
+                    self.cmd
+                        .send(Command::MarkRead {
+                            chat_id: chat,
+                            message_id: id,
+                        })
+                        .ok();
+                }
+            }
+            Action::Attach => {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    if let Some(chat) = self.selected.clone() {
+                        self.cmd
+                            .send(Command::UploadFile { chat_id: chat, path })
+                            .ok();
+                    }
+                }
+            }
+            Action::FetchImage(url) => {
+                self.cmd.send(Command::FetchImage(url)).ok();
+            }
+            Action::OpenSearch => self.search_open = true,
+            Action::ShowNewChat => self.new_chat.open = true,
+            Action::CreateOneToOne(peer) => {
+                self.cmd.send(Command::CreateOneToOne(peer)).ok();
+            }
+            Action::CreateGroup { topic, members } => {
+                self.cmd
+                    .send(Command::CreateGroup { topic, members })
+                    .ok();
+            }
+            Action::Refresh => {
+                self.cmd.send(Command::LoadChats).ok();
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- layout
+
+    fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.strong("TeamsFast");
+            ui.strong(RichText::new("TeamsFast").size(15.0));
             ui.separator();
             match self.state {
                 State::Boot => {
                     ui.spinner();
                 }
                 State::NeedLogin => {
-                    // The Sign-in button lives below the bar, under the error line.
+                    if ui.button("Sign in").clicked() {
+                        self.error = None;
+                        self.status =
+                            "Sign-in started — see the terminal for the device code.".into();
+                        self.cmd.send(Command::StartLogin).ok();
+                    }
                 }
                 State::Ready => {
                     ui.colored_label(Color32::from_rgb(0x6f, 0xd1, 0x94), "●");
                     if ui.button("Refresh").clicked() {
-                        self.cmd.send(Command::LoadChats).ok();
+                        self.apply(Action::Refresh);
+                    }
+                    if ui.button("New chat").clicked() {
+                        self.apply(Action::ShowNewChat);
+                    }
+                    if ui.button("Search").clicked() {
+                        self.apply(Action::OpenSearch);
                     }
                 }
             }
             ui.separator();
             ui.label(&self.status);
-            if self.state == State::Ready && !self.trouter_on
+            if self.state == State::Ready
+                && !self.trouter_on
                 && ui.small_button("Go live").clicked()
             {
                 self.cmd.send(Command::StartTrouter).ok();
@@ -181,9 +591,18 @@ impl TeamsFastApp {
                         .color(Color32::from_rgb(0x6f, 0xd1, 0x94)),
                 );
             }
+            if !self.self_name.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(&self.self_name).weak().small());
+                    avatar(ui, &self.self_name, 24.0);
+                });
+            }
         });
         if let Some(err) = &self.error {
             ui.colored_label(Color32::from_rgb(0xe0, 0x7a, 0x7a), RichText::new(err).small());
+        }
+        if self.state == State::NeedLogin && self.error.is_some() {
+            ui.label("Click Sign in, then open the URL printed in the terminal and enter the device code.");
         }
     }
 }
@@ -194,169 +613,110 @@ impl eframe::App for TeamsFastApp {
 
         egui::Panel::top("top").show(ui, |ui| {
             self.top_bar(ui);
-            if self.state == State::NeedLogin && self.error.is_some() {
-                if ui.button("Sign in").clicked() {
-                    self.error = None;
-                    self.status = "Sign-in started — see the terminal for the device code."
-                        .into();
-                    self.cmd.send(Command::StartLogin).ok();
-                }
-                ui.label(
-                    "Click Sign in, then open the URL printed in the terminal \
-                     and enter the device code there.",
-                );
-            }
         });
 
-        egui::Panel::left("chats")
-            .default_size(270.0)
+        egui::Panel::left("side")
+            .default_size(300.0)
             .resizable(true)
             .show(ui, |ui| {
-                ui.heading("Chats");
-                ui.separator();
-                ScrollArea::vertical().show(ui, |ui| {
-                    for chat in &self.chats {
-                        let selected = self.selected.as_deref() == Some(chat.id.as_str());
-                        let label = match chat.name.as_str() {
-                            "" => {
-                                let mut s: String = chat.id.chars().take(24).collect();
-                                s.push('…');
-                                s
-                            }
-                            "[Direct message]" => "Direct message".into(),
-                            other => other.to_string(),
-                        };
-                        ui.horizontal(|ui| {
-                            if ui
-                                .selectable_label(selected, RichText::new(&label).strong())
-                                .clicked()
-                            {
-                                self.selected = Some(chat.id.clone());
-                                self.messages.clear();
-                                self.cmd.send(Command::OpenChat(chat.id.clone())).ok();
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let time = format_chat_time(&chat.last_message_time);
-                                if !time.is_empty() {
-                                    ui.label(RichText::new(time).small().weak());
-                                }
-                                if chat.is_group {
-                                    ui.label(RichText::new("group").small().weak());
-                                }
-                            });
-                        });
-                        if let Some(p) = &chat.last_message_preview {
-                            ui.add(
-                                egui::Label::new(RichText::new(p).small().weak()).truncate(),
-                            );
-                        }
-                        ui.separator();
-                    }
+                let mut sctx = crate::ui::sidebar::SidebarCtx {
+                    chats: &self.chats,
+                    selected: self.selected.as_ref(),
+                    teams: &self.teams,
+                    view: self.side_view,
+                    cmd: &self.cmd,
+                };
+                let mut loading = self.loading_teams;
+                let mut search = std::mem::take(&mut self.sidebar_search);
+                let mut side_actions: Vec<Action> = Vec::new();
+                sidebar(ui, &mut sctx, &mut search, &mut loading, &mut side_actions);
+                self.sidebar_search = search;
+                self.loading_teams = loading;
+                self.side_view = sctx.view;
+                for a in side_actions {
+                    self.apply(a);
+                }
+            });
+
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            if self.state != State::Ready {
+                ui.centered_and_justified(|ui| match self.state {
+                    State::Boot => ui.label("Starting…"),
+                    State::NeedLogin => ui.label("Sign in to start."),
+                    State::Ready => unreachable!(),
                 });
-            });
-
-        egui::Panel::bottom("composer").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let can_send = self.state == State::Ready
-                    && self.selected.is_some()
-                    && !self.draft.trim().is_empty();
-                let send_btn = ui.add_enabled(can_send, egui::Button::new("Send"));
-                let response = ui.text_edit_singleline(&mut self.draft);
-                let enter =
-                    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (send_btn.clicked() || enter) && can_send {
-                    if let Some(chat) = self.selected.clone() {
-                        let text = std::mem::take(&mut self.draft);
-                        self.status = "Sending…".into();
-                        self.cmd.send(Command::Send(chat, text)).ok();
-                        response.request_focus();
-                    }
-                }
-            });
-        });
-
-        egui::Panel::bottom("live")
-            .default_size(90.0)
-            .resizable(true)
-            .show(ui, |ui| {
-                ui.collapsing(
-                    RichText::new(format!("Live events ({})", self.trouter_log.len())).small(),
-                    |ui| {
-                        ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                            for line in &self.trouter_log {
-                                ui.label(RichText::new(line).small().weak());
-                            }
-                        });
-                    },
-                );
-            });
-
-        egui::CentralPanel::default().show(ui, |ui| {
+                return;
+            }
             if self.selected.is_none() {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Pick a chat on the left.");
+                    ui.label("Pick a chat on the left, or press New chat (Ctrl+N).");
                 });
-            } else {
-                ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                    for m in &self.messages {
-                        let sender = self.sender_name(m);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.strong(&sender);
-                            ui.label(RichText::new(&m.timestamp).small().weak());
-                            for r in &m.reactions {
-                                ui.label(
-                                    RichText::new(format!("{} {}", r.emoji, r.count))
-                                        .small(),
-                                );
-                            }
-                        });
-                        ui.label(&m.content);
-                        ui.add_space(6.0);
-                    }
-                });
+                return;
+            }
+            let chat_id = self.selected.clone().unwrap();
+            let mut actions: Vec<Action> = Vec::new();
+            let mut ctx = ConvCtx {
+                chat_name: self.selected_title.clone(),
+                chat_id: chat_id.clone(),
+                messages: &self.messages,
+                members: &self.members,
+                self_name: &self.self_name,
+                self_id: self.self_id.as_deref(),
+                older_link: self.older_link.as_deref(),
+                loading_older: self.loading_older,
+                typing_user: self.typing.as_ref().map(|(u, _)| u.as_str()),
+                edit: self.edit.clone(),
+                reply: self.reply.clone(),
+                uploads: &self.uploads,
+                textures: &self.textures,
+                pending_images: &mut self.pending_images,
+                actions: &mut actions,
+            };
+            conversation::conversation(ui, &mut ctx, &mut self.draft);
+            drop(ctx);
+            for a in actions {
+                self.apply(a);
             }
         });
+
+        if self.search_open {
+            egui::Panel::right("search")
+                .default_size(330.0)
+                .resizable(true)
+                .show(ui, |ui| {
+                    let cmd = self.cmd.clone();
+                    search_panel(
+                        ui,
+                        &self.search_hits,
+                        self.search_more,
+                        self.searching,
+                        &cmd,
+                        &self.search_query,
+                    );
+                });
+        }
+
+        if self.new_chat.open {
+            egui::Window::new("New conversation")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    let mut actions = Vec::new();
+                    new_chat_dialog(ui, &mut self.new_chat, &mut actions);
+                    for a in actions {
+                        self.apply(a);
+                    }
+                });
+        }
+
+        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::N)) {
+            self.apply(Action::ShowNewChat);
+        }
+        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F)) {
+            self.apply(Action::OpenSearch);
+        }
 
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(500));
     }
-}
-
-/// `"14:32"` when the message is from today, `"3 Oct"` otherwise.
-/// Teams sends epoch-milliseconds strings; unparsable values hide the column.
-fn format_chat_time(t: &Option<String>) -> String {
-    let ms: u64 = match t.as_deref().and_then(|s| s.trim().parse::<u64>().ok()) {
-        Some(v) => v,
-        None => return String::new(),
-    };
-    let secs = (ms / 1000) as i64;
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let (ly, lm, ld) = civil_from_days(secs.div_euclid(86_400));
-    let (ny, nm, nd) = civil_from_days(now_secs.div_euclid(86_400));
-    if ly == ny && lm == nm && ld == nd {
-        let sod = secs.rem_euclid(86_400);
-        format!("{:02}:{:02}", sod / 3600, (sod % 3600) / 60)
-    } else {
-        const MON: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
-        format!("{} {}", ld, MON[(lm - 1) as usize % 12])
-    }
-}
-
-/// Howard Hinnant's `civil_from_days`: days since epoch to (y, m, d).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }

@@ -39,6 +39,15 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 # Logging to stderr; the fastframe log file arrives in Phase 1.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Inline images: decode jpg/png/webp/gif from the core's media fetch.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+# Desktop notifications (dbus) for incoming messages.
+notify-rust = "4"
+# Open downloaded files with the system handler.
+open = "5"
+# Native file dialog for attachments.
+rfd = "0.15"
+
 # Local development: build against the checked-out sibling instead of the
 # pushed teams-core revision. Delete this block (then `cargo update`) to
 # build against the pushed branch.
