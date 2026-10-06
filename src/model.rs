@@ -293,7 +293,7 @@ mod tests {
             .to_zoned(jiff::tz::TimeZone::system())
             .expect("noon exists");
         let iso = noon.timestamp().to_string();
-        let out = format_chat_time(&Some(iso));
+        let out = format_chat_time(&Some(iso.clone()));
         assert!(
             out.contains("12:00"),
             "expected 12:00 in {out:?} (iso={iso})"
