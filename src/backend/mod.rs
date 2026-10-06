@@ -32,7 +32,8 @@ pub enum Command {
     LoadChats,
     /// Open a chat or channel conversation.
     OpenChat(String),
-    Send { chat_id: String, text: String },
+    /// Send with the caller's clientmessageid (pending-bubble reconciliation).
+    Send { chat_id: String, text: String, cmid: String },
     Reply {
         chat_id: String,
         parent_id: String,
@@ -82,6 +83,8 @@ pub enum Command {
     LeaveChat(String),
     /// Roll the local read horizon back (chat shows unread).
     MarkUnread(String),
+    /// Fetch who-read-what for a chat (consumption horizons).
+    ReadReceipts(String),
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +165,18 @@ pub enum Event {
     ArchiveStats(usize, usize),
     /// Our own presence availability (e.g. "Available", "Away").
     MyPresence(String),
+    /// A send definitively failed (network error or the server dropped it);
+    /// the UI marks the pending bubble with a Retry.
+    SendFailed {
+        chat_id: String,
+        cmid: String,
+        error: String,
+    },
+    /// Read receipts for a chat: (user mri, last-read message id).
+    ReadReceipts {
+        chat_id: String,
+        receipts: Vec<(String, String)>,
+    },
     Error(String),
 }
 
@@ -319,8 +334,8 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             Command::OpenChat(chat_id) => {
                 conv::open_chat(&mut ses, &tx, chat_id).await;
             }
-            Command::Send { chat_id, text } => {
-                conv::send(&mut ses, &tx, &chat_id, &text).await;
+            Command::Send { chat_id, text, cmid } => {
+                conv::send(&mut ses, &tx, &chat_id, &text, &cmid).await;
             }
             Command::Reply {
                 chat_id,
@@ -453,6 +468,9 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::MarkUnread(chat_id) => {
                 directory::mark_unread(&ses, &chat_id).await;
+            }
+            Command::ReadReceipts(chat_id) => {
+                conv::fetch_receipts(&ses, &tx, &chat_id).await;
             }
         }
     }

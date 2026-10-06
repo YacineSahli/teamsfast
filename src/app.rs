@@ -21,6 +21,21 @@ enum State {
     Ready,
 }
 
+/// An own message on its way out (or failed, awaiting Retry).
+#[derive(Clone)]
+pub struct PendingSend {
+    pub cmid: String,
+    pub chat_id: String,
+    pub text: String,
+    pub error: Option<String>,
+}
+
+/// Forward-to-chat picker.
+pub struct ForwardState {
+    pub text: String,
+    pub filter: String,
+}
+
 pub struct TeamsFastApp {
     state: State,
     status: String,
@@ -65,6 +80,12 @@ pub struct TeamsFastApp {
     /// Our presence availability ("" until first poll succeeds).
     presence: String,
     last_presence_poll: Instant,
+    /// Own sends in flight (or failed, with the error text).
+    pending_sends: Vec<PendingSend>,
+    /// Read receipts for the open chat: message id → user mris.
+    receipts: HashMap<String, Vec<String>>,
+    /// Forward picker state: the text being forwarded + filter.
+    forward: Option<ForwardState>,
 
     /// Unread state per chat: (is-unread, approximate count).
     unread: HashMap<String, (bool, u32)>,
@@ -222,6 +243,9 @@ impl TeamsFastApp {
             last_offline_retry: Instant::now() - Duration::from_secs(60),
             presence: String::new(),
             last_presence_poll: Instant::now() - Duration::from_secs(3600),
+            pending_sends: Vec::new(),
+            receipts: HashMap::new(),
+            forward: None,
             catalog: theme::theme_catalog(cc.egui_ctx.clone()),
             palette: Palette::dark(),
             selected_theme: settings_load.theme.clone(),
@@ -343,6 +367,14 @@ impl TeamsFastApp {
                         continue;
                     }
                     eprintln!("DBG ui: Messages APPLIED n={}", messages.len());
+                    // Reconcile own pending sends: once the server shows the
+                    // message (by clientmessageid) the bubble is real.
+                    let cmids: std::collections::HashSet<&str> = messages
+                        .iter()
+                        .filter_map(|m| m.client_message_id.as_deref())
+                        .collect();
+                    self.pending_sends
+                        .retain(|p| !(p.chat_id == chat_id && cmids.contains(p.cmid.as_str())));
                     if prepend {
                         let mut merged = messages;
                         merged.extend(self.messages.drain(..));
@@ -360,6 +392,8 @@ impl TeamsFastApp {
                     if let Some(name) = resolved_name {
                         self.rename_chat(&chat_id, name);
                     }
+                    // Who has read what (quiet fetch, no error surfaced).
+                    self.cmd.send(Command::ReadReceipts(chat_id.clone())).ok();
                     // Freshly loaded tail: mark read.
                     if let (Some(sel), Some(last)) =
                         (self.selected.clone(), self.messages.last().map(|m| m.id.clone()))
@@ -468,6 +502,29 @@ impl TeamsFastApp {
                 }
                 Event::MyPresence(availability) => {
                     self.presence = availability;
+                }
+                Event::SendFailed {
+                    chat_id,
+                    cmid,
+                    error,
+                } => match self
+                    .pending_sends
+                    .iter_mut()
+                    .find(|p| p.cmid == cmid && p.chat_id == chat_id)
+                {
+                    Some(p) => p.error = Some(error),
+                    None => self.error = Some(error),
+                },
+                Event::ReadReceipts { chat_id, receipts } => {
+                    if self.selected.as_deref() == Some(chat_id.as_str()) {
+                        self.receipts.clear();
+                        for (user, mid) in receipts {
+                            self.receipts
+                                .entry(mid)
+                                .or_default()
+                                .push(user);
+                        }
+                    }
                 }
                 Event::Error(e) => self.error = Some(e),
             }
@@ -655,6 +712,7 @@ impl TeamsFastApp {
         self.selected = Some(id.clone());
         self.messages.clear();
         self.members.clear();
+        self.receipts.clear();
         self.older_link = None;
         self.edit = None;
         self.reply = None;
@@ -683,7 +741,14 @@ impl TeamsFastApp {
             Action::OpenChat(id) => self.open_chat(id),
             Action::Send(text) => {
                 if let Some(chat) = self.selected.clone() {
-                    self.cmd.send(Command::Send { chat_id: chat, text }).ok();
+                    let cmid = ost::api::new_client_message_id();
+                    self.pending_sends.push(PendingSend {
+                        cmid: cmid.clone(),
+                        chat_id: chat.clone(),
+                        text: text.clone(),
+                        error: None,
+                    });
+                    self.cmd.send(Command::Send { chat_id: chat, text, cmid }).ok();
                 }
             }
             Action::SendReply {
@@ -905,6 +970,54 @@ impl TeamsFastApp {
                     self.messages.clear();
                 }
                 self.cmd.send(Command::LeaveChat(id)).ok();
+            }
+            // ---- message ops ----
+            Action::Forward(text) => {
+                self.forward = Some(ForwardState {
+                    text,
+                    filter: String::new(),
+                });
+            }
+            Action::TogglePinMessage {
+                chat_id,
+                message_id,
+            } => {
+                let pins = self
+                    .settings
+                    .pinned_messages
+                    .entry(chat_id)
+                    .or_default();
+                if let Some(pos) = pins.iter().position(|m| m == &message_id) {
+                    pins.remove(pos);
+                } else {
+                    pins.push(message_id);
+                }
+                theme::save_settings(&self.settings);
+            }
+            Action::RetrySend(cmid) => {
+                if let Some(p) = self.pending_sends.iter().find(|p| p.cmid == cmid) {
+                    let cmd = Command::Send {
+                        chat_id: p.chat_id.clone(),
+                        text: p.text.clone(),
+                        cmid: p.cmid.clone(),
+                    };
+                    if let Some(p) = self
+                        .pending_sends
+                        .iter_mut()
+                        .find(|p| p.cmid == cmid)
+                    {
+                        p.error = None;
+                    }
+                    self.cmd.send(cmd).ok();
+                }
+            }
+            Action::DismissSend(cmid) => {
+                self.pending_sends.retain(|p| p.cmid != cmid);
+            }
+            Action::JumpLatest => {
+                if let Some(chat) = self.selected.clone() {
+                    self.open_chat(chat);
+                }
             }
         }
     }
@@ -1222,6 +1335,22 @@ impl eframe::App for TeamsFastApp {
         if self.state == State::Ready && self.selected.is_some() {
             let chat_id = self.selected.clone().unwrap();
             let mut actions: Vec<Action> = Vec::new();
+            let pending_view: Vec<conversation::PendingBubble> = self
+                .pending_sends
+                .iter()
+                .filter(|p| p.chat_id == chat_id)
+                .map(|p| conversation::PendingBubble {
+                    cmid: p.cmid.clone(),
+                    text: p.text.clone(),
+                    error: p.error.clone(),
+                })
+                .collect();
+            let pinned_here = self
+                .settings
+                .pinned_messages
+                .get(&chat_id)
+                .cloned()
+                .unwrap_or_default();
             let mut ctx = ConvCtx {
                 chat_name: self.selected_title.clone(),
                 chat_id: chat_id.clone(),
@@ -1235,6 +1364,9 @@ impl eframe::App for TeamsFastApp {
                 edit: self.edit.clone(),
                 reply: self.reply.clone(),
                 uploads: &self.uploads,
+                pending: &pending_view,
+                receipts: &self.receipts,
+                pinned: &pinned_here,
                 textures: &self.textures,
                 pending_images: &mut self.pending_images,
                 emoji_textures: &mut self.emoji_textures,
@@ -1354,6 +1486,84 @@ impl eframe::App for TeamsFastApp {
         }
         if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Comma)) {
             self.settings_ui.open = true;
+        }
+
+        // Forward-to-chat picker.
+        if let Some(fwd) = self.forward.as_mut() {
+            let mut picked: Option<(String, String)> = None; // (chat_id, text)
+            let mut close = false;
+            egui::Window::new("Forward message")
+                .default_width(380.0)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "“{}”",
+                            if fwd.text.len() > 80 {
+                                format!("{}…", &fwd.text[..80])
+                            } else {
+                                fwd.text.clone()
+                            }
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut fwd.filter)
+                            .hint_text("Filter chats…")
+                            .desired_width(ui.available_width()),
+                    );
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            let f = fwd.filter.to_lowercase();
+                            for chat in self
+                                .chats
+                                .iter()
+                                .filter(|c| {
+                                    c.name.to_lowercase().contains(&f) || f.is_empty()
+                                })
+                                .take(30)
+                            {
+                                let name = if chat.name.is_empty() {
+                                    "Direct message".to_string()
+                                } else {
+                                    chat.name.clone()
+                                };
+                                if ui.selectable_label(false, &name).clicked() {
+                                    picked = Some((chat.id.clone(), fwd.text.clone()));
+                                }
+                            }
+                        });
+                    ui.add_space(4.0);
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            if close || picked.is_some() {
+                self.forward = None;
+            }
+            if let Some((chat_id, text)) = picked {
+                let cmid = ost::api::new_client_message_id();
+                self.pending_sends.push(PendingSend {
+                    cmid: cmid.clone(),
+                    chat_id: chat_id.clone(),
+                    text: text.clone(),
+                    error: None,
+                });
+                self.cmd
+                    .send(Command::Send {
+                        chat_id,
+                        text,
+                        cmid,
+                    })
+                    .ok();
+                self.status = "message forwarded".into();
+            }
         }
 
         if let Some((emoji, names)) = self.reaction_popup.clone() {
