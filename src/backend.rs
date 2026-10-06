@@ -47,7 +47,13 @@ pub fn spawn(tx: Sender<Event>) -> tokio::sync::mpsc::UnboundedSender<Command> {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
     std::thread::Builder::new()
         .name("teamsfast-backend".into())
-        .spawn(move || worker(tx, cmd_rx))
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            rt.block_on(worker(tx, cmd_rx));
+        })
         .expect("spawn backend thread");
     cmd_tx
 }
