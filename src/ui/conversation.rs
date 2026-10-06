@@ -203,62 +203,89 @@ pub fn conversation_composer(
     } else {
         ctx.pal.surface
     };
+
     Frame::default()
         .fill(compose_fill)
         .stroke(egui::Stroke::new(1.0, ctx.pal.outline))
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::symmetric(8, 6))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(8, 7))
         .show(ui, |ui| {
-        ui.horizontal(|ui| {
-        if ui
-            .add(egui::Button::new(RichText::new("📎").size(16.0)))
-            .on_hover_text("Attach a file")
-            .clicked()
-        {
-            ctx.actions.push(Action::Attach);
-        }
-        let response = ui.add(
-            egui::TextEdit::singleline(draft)
-                .hint_text(if ctx.edit.is_some() {
-                    "Edit message…"
-                } else {
-                    "Type a message"
-                })
-                .desired_width(ui.available_width() - 96.0),
-        );
-        let ready = !draft.trim().is_empty();
-        let send_btn = if ready {
-            egui::Button::new(
-                RichText::new(format!("Send  "))
-                    .strong()
-                    .color(ctx.pal.on_accent),
-            )
-            .fill(ctx.pal.accent)
-        } else {
-            egui::Button::new(RichText::new("Send").weak())
-        };
-        let btn = ui.add(send_btn);
-        let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (btn.clicked() || enter) && ready {
-            let text = draft.trim().to_string();
-            draft.clear();
-            keep_focus = true;
-            if let Some((mid, _)) = ctx.edit.clone() {
-                ctx.actions
-                    .push(Action::ApplyEdit { message_id: mid, text });
-            } else if let Some((pid, who, snip)) = ctx.reply.clone() {
-                ctx.actions.push(Action::SendReply {
-                    parent_id: pid,
-                    sender: who,
-                    snippet: snip,
-                    text,
-                });
-            } else {
-                ctx.actions.push(Action::Send(text));
-            }
-        }
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                // Attach (Lucide paperclip, ghost style).
+                let attach = ui
+                    .add(
+                        egui::Button::new(
+                            crate::theme::Icon::Paperclip
+                                .image(ui.style().visuals.text_color(), 17.0),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .min_size(egui::vec2(32.0, 32.0)),
+                    )
+                    .on_hover_text("Attach a file");
+                if attach.clicked() {
+                    ctx.actions.push(Action::Attach);
+                }
+                ui.add_space(2.0);
+
+                // Input: framed, rounded, quiet border.
+                let field = egui::Frame::default()
+                    .fill(ctx.pal.bubble_in)
+                    .stroke(egui::Stroke::new(1.0, ctx.pal.outline))
+                    .corner_radius(egui::CornerRadius::same(9))
+                    .inner_margin(egui::Margin::symmetric(8, 5));
+                let response = field
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(draft)
+                                .hint_text(if ctx.edit.is_some() {
+                                    "Edit message…"
+                                } else {
+                                    "Type a message"
+                                })
+                                .desired_width(ui.available_width() - 52.0),
+                        );
+                    })
+                    .response;
+
+                ui.add_space(4.0);
+                // Send: accent-filled icon button when armed.
+                let ready = !draft.trim().is_empty();
+                let send_response = ui.add_enabled(
+                    ready,
+                    egui::Button::new(
+                        crate::theme::Icon::Send
+                            .image(ctx.pal.on_accent, 17.0),
+                    )
+                    .fill(if ready {
+                        ctx.pal.accent
+                    } else {
+                        ui.style().visuals.extreme_bg_color
+                    })
+                    .min_size(egui::vec2(36.0, 32.0)),
+                ).on_hover_text("Send");
+                let enter =
+                    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (send_response.clicked() || enter) && ready {
+                    let text = draft.trim().to_string();
+                    draft.clear();
+                    keep_focus = true;
+                    if let Some((mid, _)) = ctx.edit.clone() {
+                        ctx.actions
+                            .push(Action::ApplyEdit { message_id: mid, text });
+                    } else if let Some((pid, who, snip)) = ctx.reply.clone() {
+                        ctx.actions.push(Action::SendReply {
+                            parent_id: pid,
+                            sender: who,
+                            snippet: snip,
+                            text,
+                        });
+                    } else {
+                        ctx.actions.push(Action::Send(text));
+                    }
+                }
+            });
         });
-    });
 
     keep_focus
 }
@@ -293,19 +320,35 @@ fn message_row(
         // Right-aligned row: RTL places the avatar at the far right; the
         // bubble column sits to its left. Every part inside the column is
         // laid out right-anchored (see bubble_parts).
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            // In right_to_left order the FIRST item sits at the far right:
-            // the avatar mirrors the incoming layout. Grouped rows reserve
-            // the identical slot (invisible) so right edges always line up.
+        // Own row: measure the text, give the bubble exactly that width
+        // (shrink-to-fit, capped), right-aligned; avatar at the far right.
+        let avail = ui.available_width() - 12.0;
+        let cap = (avail * 0.85).min(680.0);
+        let plain = crate::ui::widgets::segs_to_plain(&crate::ui::widgets::parse_html(&m.raw));
+        let text_w = ui
+            .painter()
+            .layout(
+                plain,
+                egui::FontId::proportional(14.0),
+                Color32::WHITE,
+                f32::INFINITY,
+            )
+            .mesh_bounds
+            .width();
+        let slot_w = (text_w + 26.0).clamp(56.0, cap);
+        ui.horizontal(|ui| {
+            ui.add_space(6.0);
+            ui.allocate_ui(egui::vec2(slot_w, 10.0), |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                    bubble_parts(ui, ctx, m, own, grouped);
+                });
+            });
             if !grouped {
+                ui.add_space(6.0);
                 avatar(ui, ctx.self_name, 32.0);
             } else {
-                let (_slot_rect, _slot_resp) = ui
-                    .allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                ui.add_space(38.0);
             }
-            ui.vertical(|ui| {
-                bubble_parts(ui, ctx, m, own, grouped);
-            });
         });
     } else {
         ui.horizontal_wrapped(|ui| {

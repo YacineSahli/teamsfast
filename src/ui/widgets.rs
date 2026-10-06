@@ -3,14 +3,46 @@
 use crate::model::{avatar_color, initials};
 use egui::{Color32, CornerRadius, FontId, Frame, RichText, Stroke, TextFormat, Ui, epaint};
 
-/// A quiet icon button (Lucide icon, ghost style) with a tooltip.
-pub fn icon_button(
+/// A quiet icon button (Lucide icon, ghost style): 30x30 hit area,
+/// transparent at rest, surface tint on hover, with a tooltip.
+pub fn icon_button(ui: &mut Ui, icon: crate::theme::Icon, tip: &str) -> egui::Response {
+    let tint = ui.style().visuals.text_color();
+    let btn = egui::Button::new(icon.image(tint, 16.0))
+        .fill(Color32::TRANSPARENT)
+        .min_size(egui::vec2(30.0, 28.0));
+    ui.add(btn).on_hover_text(tip)
+}
+
+/// Accent-filled icon button (for the composer's send action).
+pub fn accent_icon_button(
     ui: &mut Ui,
     icon: crate::theme::Icon,
     tip: &str,
+    accent: Color32,
+    on_accent: Color32,
+    enabled: bool,
 ) -> egui::Response {
-    let btn = egui::Button::new(icon.image(ui.style().visuals.text_color(), 16.0))
-        .fill(Color32::TRANSPARENT);
+    let tint = if enabled {
+        on_accent
+    } else {
+        ui.style().visuals.weak_text_color()
+    };
+    let fill = if enabled {
+        accent
+    } else {
+        ui.style().visuals.extreme_bg_color
+    };
+    let btn = egui::Button::new(icon.image(tint, 16.0))
+        .fill(fill)
+        .min_size(egui::vec2(36.0, 32.0));
+    ui.add_enabled(enabled, btn).on_hover_text(tip)
+}
+
+/// A quiet text button (ghost style).
+pub fn ghost_button(ui: &mut Ui, text: &str, tip: &str) -> egui::Response {
+    let btn = egui::Button::new(RichText::new(text).small())
+        .fill(Color32::TRANSPARENT)
+        .min_size(egui::vec2(28.0, 28.0));
     ui.add(btn).on_hover_text(tip)
 }
 

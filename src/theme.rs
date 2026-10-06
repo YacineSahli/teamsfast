@@ -239,6 +239,7 @@ pub fn theme_catalog(waker: egui::Context) -> Catalog {
 /// Install fonts, icons, emoji and the base style. Call once at startup.
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
+    egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
     ctx.add_plugin(fastframe_emoji::EmojiPlugin::default());
     std::thread::spawn(fastframe_emoji::warm_up);
@@ -287,6 +288,10 @@ fastframe_icons::icons! {
     pub enum Icon {
         prefix: "teamsfast-icon-",
         directory: "../assets/icons/",
+        Paperclip => "paperclip",
+        Send => "send",
+        Reply => "reply",
+        Smile => "smile",
         ArrowLeft => lucide "arrow-left",
         CircleAlert => lucide "circle-alert",
         Copy => lucide "copy",

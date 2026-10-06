@@ -35,6 +35,7 @@ eframe = { version = "0.36", default-features = false, features = [
     "accesskit", "glow", "default_fonts", "links", "wayland", "x11", "persistence",
 ] }
 egui = "0.36"
+egui_extras = { version = "0.36", features = ["svg", "image"] }
 
 # The Teams protocol core: our extraction of the patched ost library.
 # Package is `teams-cli` upstream; the lib target is `ost`. SSH form because

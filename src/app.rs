@@ -710,13 +710,31 @@ impl TeamsFastApp {
                         ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter()
                         .circle_filled(rect.center(), 4.0, self.palette.ok);
-                    if ui.button("Refresh").clicked() {
+                    ui.add_space(2.0);
+                    let refresh = ui
+                        .add(egui::Button::new(
+                            crate::theme::Icon::Refresh
+                                .image(self.palette.text, 16.0),
+                        ))
+                        .on_hover_text("Refresh chats");
+                    if refresh.clicked() {
                         self.apply(Action::Refresh);
                     }
-                    if ui.button("New chat").clicked() {
+                    let new_chat = ui
+                        .add(egui::Button::new(
+                            crate::theme::Icon::Plus.image(self.palette.text, 16.0),
+                        ))
+                        .on_hover_text("New chat (Ctrl+N)");
+                    if new_chat.clicked() {
                         self.apply(Action::ShowNewChat);
                     }
-                    if ui.button("Search").clicked() {
+                    let search = ui
+                        .add(egui::Button::new(
+                            crate::theme::Icon::Search
+                                .image(self.palette.text, 16.0),
+                        ))
+                        .on_hover_text("Search messages (Ctrl+F)");
+                    if search.clicked() {
                         self.apply(Action::OpenSearch);
                     }
                 }
