@@ -845,6 +845,46 @@ impl eframe::App for TeamsFastApp {
             });
 
 
+        if self.offline.is_some() {
+            egui::Panel::top("offline")
+                .frame(
+                    egui::Frame::default()
+                        .fill(
+                            Color32::from_rgba_unmultiplied(
+                                self.palette.warning.r(),
+                                self.palette.warning.g(),
+                                self.palette.warning.b(),
+                                36,
+                            ),
+                        )
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(
+                                self.palette.warning.r(),
+                                self.palette.warning.g(),
+                                self.palette.warning.b(),
+                                120,
+                            ),
+                        )),
+                )
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("⚠").color(self.palette.warning));
+                        ui.label(
+                            RichText::new(
+                                "Offline — showing cached data. Messages you send now can't be delivered.",
+                            )
+                            .small(),
+                        );
+                        if ui.small_button("Retry now").clicked() {
+                            self.last_offline_retry = Instant::now();
+                            self.cmd.send(Command::CheckReady).ok();
+                        }
+                    });
+                });
+        }
+
         if self.search_open {
             egui::Panel::right("search")
                 .default_size(330.0)
@@ -901,12 +941,43 @@ impl eframe::App for TeamsFastApp {
         } else {
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui.centered_and_justified(|ui| {
-                    let msg = match self.state {
-                        State::Boot => "Starting…",
-                        State::NeedLogin => "Sign in to start.",
-                        State::Ready => "Pick a chat on the left, or press New chat (Ctrl+N).",
-                    };
-                    ui.label(msg);
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(24.0);
+                        match self.state {
+                            State::Boot => {
+                                ui.spinner();
+                                ui.label(RichText::new("Starting…").weak());
+                            }
+                            State::NeedLogin => {
+                                ui.label(
+                                    RichText::new("Welcome to TeamsFast")
+                                        .strong()
+                                        .size(18.0),
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(
+                                        "Sign in with your Microsoft account to start.",
+                                    )
+                                    .weak(),
+                                );
+                            }
+                            State::Ready => {
+                                ui.label(
+                                    RichText::new("Select a conversation")
+                                        .strong()
+                                        .size(16.0),
+                                );
+                                ui.add_space(2.0);
+                                ui.label(
+                                    RichText::new(
+                                        "Pick a chat on the left, or press Ctrl+N for a new one.",
+                                    )
+                                    .weak(),
+                                );
+                            }
+                        }
+                    });
                 });
             });
         }
