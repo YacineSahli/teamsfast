@@ -247,8 +247,21 @@ pub async fn mark_read(ses: &Session, tx: &Sender<Event>, chat_id: &str, message
     let Some(c) = client(ses) else {
         return;
     };
-    if let Err(e) = ost::api::mark_read_with_client(c, chat_id, message_id).await {
-        let _ = tx.send(Event::Error(format!("mark-read: {e:#}")));
+    match ost::api::mark_read_with_client(c, chat_id, message_id).await {
+        Ok(()) => {
+            // Advance the local read horizon so unread badges clear even
+            // before the next chat-list refresh.
+            if let Some(archive) = ses.archive.as_ref() {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let _ = archive.set_read(chat_id, now_ms);
+            }
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("mark-read: {e:#}")));
+        }
     }
 }
 
