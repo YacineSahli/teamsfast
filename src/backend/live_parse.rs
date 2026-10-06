@@ -26,9 +26,12 @@ pub fn parse(raw: &str) -> Parsed {
         return Parsed::Other;
     };
 
-    // Walk: top level, or inside arrays like `channels`/`resources` (each
-    // element may carry its own payload).
+    // Walk: top level, `resource` (chat-service 3::: pushes nest the message
+    // there), `payload`, and arrays like `channels`/`resources`.
     let mut candidates: Vec<&Value> = vec![&v];
+    if let Some(res) = v.get("resource") {
+        candidates.push(res);
+    }
     if let Some(arr) = v
         .get("channels")
         .or_else(|| v.get("resources"))
@@ -38,6 +41,9 @@ pub fn parse(raw: &str) -> Parsed {
             candidates.push(item);
             if let Some(payload) = item.get("payload") {
                 candidates.push(payload);
+                if let Some(res) = payload.get("resource") {
+                    candidates.push(res);
+                }
             }
         }
     }
@@ -58,12 +64,28 @@ fn parse_one(v: &Value) -> Option<Parsed> {
         .get("messagetype")
         .or_else(|| v.get("messageType"))
         .and_then(|x| x.as_str())?;
+    // conversationId on chat-service pushes; `to`/`conversationLink` on
+    // notification-hub pushes (id is the last path segment there).
     let chat_id = v
         .get("conversationId")
         .or_else(|| v.get("conversationid"))
+        .or_else(|| v.get("to"))
         .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
+        .map(String::from)
+        .or_else(|| {
+            v.get("conversationLink").and_then(|x| x.as_str()).and_then(|l| {
+                l.split("/conversations/").nth(1).map(|rest| {
+                    rest.split('/').next().unwrap_or(rest).to_string()
+                })
+            })
+        })
+        .unwrap_or_default();
+
+    // Only user conversations (19:...): feeds (48:*), calls and noise are
+    // never surfaced as messages.
+    if !chat_id.starts_with("19:") {
+        return None;
+    }
 
     match mt.to_ascii_lowercase().as_str() {
         "typing" | "controlchatstate" => {
@@ -73,7 +95,7 @@ fn parse_one(v: &Value) -> Option<Parsed> {
             let user = display_name(v).unwrap_or_else(|| "Someone".into());
             Some(Parsed::Typing { chat_id, user })
         }
-        "chatmessage" | "richmessage" => {
+        "chatmessage" | "richmessage" | "richtext/html" | "richtext/plain" | "text" => {
             if chat_id.is_empty() {
                 return None;
             }
@@ -234,6 +256,47 @@ mod tests {
     fn empty_content_is_noise() {
         let raw = r#"{"conversationId":"19:abc@thread.v2","messagetype":"ChatMessage",
             "imdisplayname":"X","content":""}"#;
+        assert_eq!(parse(raw), Parsed::Other);
+    }
+
+    #[test]
+    fn real_teams_push_shape_richtext_html() {
+        // Actual shape observed in production (trouter 3::: decode):
+        // outer EventMessage envelope, message under `resource`.
+        let raw = r#"{"time":"2026-10-06T15:42:45.0068492Z","type":"EventMessage",
+            "resourceLink":"https://notifications.skype.net/v1/users/ME/conversations/48:notes/messages/1",
+            "resourceType":"NewMessage",
+            "resource":{"clientmessageid":"3669409457167652347",
+                "content":"<p>test</p>",
+                "from":"https://notifications.skype.net/v1/users/ME/contacts/8:orgid:57afc548",
+                "imdisplayname":"Grace Hopper",
+                "id":"1791301364979",
+                "messagetype":"RichText/Html",
+                "originalarrivaltime":"2026-10-06T15:42:44.9790000Z",
+                "composetime":"2026-10-06T15:42:44.9790000Z",
+                "type":"Message",
+                "conversationLink":"https://notifications.skype.net/v1/users/ME/conversations/19:abc_def@thread.v2",
+                "to":"19:abc_def@thread.v2",
+                "threadtype":"streamofnotes","isactive":false}}"#;
+        // NOTE: 48:notes is a feed — but this test uses a 19: id in the
+        // resource to prove the nested walk works.
+        let raw = raw.replace("48:notes", "19:abc_def@thread.v2");
+        assert_eq!(
+            parse(&raw),
+            Parsed::Incoming {
+                chat_id: "19:abc_def@thread.v2".into(),
+                sender: "Grace Hopper".into(),
+                preview: "test".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn feeds_are_ignored() {
+        // 48:* pseudo-conversations never notify.
+        let raw = r#"{"resource":{"id":"48:notes","conversationId":"48:notes",
+            "messagetype":"RichText/Html","imdisplayname":"Grace Hopper",
+            "content":"<p>test</p>"}}"#;
         assert_eq!(parse(raw), Parsed::Other);
     }
 

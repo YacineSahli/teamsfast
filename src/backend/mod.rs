@@ -257,7 +257,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 conv::open_chat(&mut ses, &tx, chat_id).await;
             }
             Command::Send { chat_id, text } => {
-                conv::send(&ses, &tx, &chat_id, &text).await;
+                conv::send(&mut ses, &tx, &chat_id, &text).await;
             }
             Command::Reply {
                 chat_id,

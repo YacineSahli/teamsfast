@@ -86,17 +86,41 @@ pub async fn load_older(ses: &mut Session, tx: &Sender<Event>, chat_id: &str) {
     }
 }
 
-pub async fn send(ses: &Session, tx: &Sender<Event>, chat_id: &str, text: &str) {
+pub async fn send(ses: &mut Session, tx: &Sender<Event>, chat_id: &str, text: &str) {
     let Some(c) = client(ses) else {
         return;
     };
-    match ost::api::send_message_with_client(c, chat_id, text).await {
-        Ok(()) => {
+    // Idempotent send: the clientmessageid lets us verify the message
+    // actually landed — topic-type channels accept the POST but drop the
+    // message, which would otherwise look like a silent failure.
+    let cmid = ost::api::new_client_message_id();
+    let sent = ost::api::send_message_with_client_id(c, chat_id, text, &cmid).await;
+    match sent {
+        Ok(_) => {
             let _ = tx.send(Event::ActionOk {
                 chat_id: chat_id.to_string(),
                 action: MsgAction::Replied,
             });
-            refetch(ses, tx, chat_id).await;
+            if let Ok(page) = read_messages_page(c, chat_id, 50, None).await {
+                let landed =
+                    ost::api::find_by_client_id(&page.messages, &cmid).is_some();
+                let cursor = page.backward_link.clone().unwrap_or_default();
+                ses.older_links.insert(chat_id.to_string(), cursor.clone());
+                if !landed {
+                    let _ = tx.send(Event::Error(
+                        "The message may not have been delivered: this conversation (a topic channel) did not show it after posting."
+                            .into(),
+                    ));
+                }
+                let _ = tx.send(Event::Messages {
+                    older_link: Some(cursor),
+                    prepend: false,
+                    chat_id: chat_id.to_string(),
+                    messages: page.messages,
+                    members: HashMap::new(),
+                    resolved_name: None,
+                });
+            }
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("send: {e:#}")));
