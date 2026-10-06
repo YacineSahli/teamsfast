@@ -23,8 +23,17 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
 - **New conversations** — 1:1 by email/UPN, group chats with topic
 - **Tray icon** — show/hide window, quit
 
-Phase-0/1 scope: calls (audio/video/screenshare) are the next major
-milestone — the protocol core already has working 1:1 audio on Linux.
+**Working today**: sign-in, chat list (live-sorted), history + paging,
+send/reply/edit/delete/reactions, read receipts, typing indicators,
+inline images + lightbox, file upload/download, search, teams/channels,
+new chats/groups, live push (notifications, typing), desktop
+notifications, themes (user-editable JSON + picker), tray, local
+encrypted archive (SQLCipher), keyring tokens, offline mode.
+
+Calls (audio/video/screenshare) are the next major milestone — the
+protocol core already has working 1:1 audio on Linux.
+
+Agent/architecture hand-off notes live in `AGENTS.md`.
 
 ## Run
 
