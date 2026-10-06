@@ -283,17 +283,20 @@ mod tests {
     #[test]
     fn chat_time_iso_with_offset() {
         tz_brussels();
-        // Clock-independent: an ISO stamp from 30 minutes ago always falls
-        // on the same local calendar day (except across a DST shift edge,
-        // where the day bucket may differ — then only the digits matter).
+        // Today at noon local — always the same calendar day, so the
+        // renderer must produce a bare HH:MM. (Relative offsets cross
+        // midnight near 00:00 and are not day-stable.)
         let now = jiff::Zoned::now();
-        let past = now.clone() - jiff::Span::new().minutes(30);
-        let iso = past.timestamp().to_string();
-        let expected = format!("{:02}:{:02}", past.hour(), past.minute());
-        let out = format_chat_time(&Some(iso.clone()));
+        let noon = now
+            .date()
+            .at(12, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::system())
+            .expect("noon exists");
+        let iso = noon.timestamp().to_string();
+        let out = format_chat_time(&Some(iso));
         assert!(
-            out.contains(&expected),
-            "expected {expected:?} in {out:?} (iso={iso})"
+            out.contains("12:00"),
+            "expected 12:00 in {out:?} (iso={iso})"
         );
     }
 
