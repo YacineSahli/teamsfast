@@ -62,6 +62,9 @@ pub struct TeamsFastApp {
     typing: Option<(String, Instant)>,
     offline: Option<String>,
     last_offline_retry: Instant,
+    /// Our presence availability ("" until first poll succeeds).
+    presence: String,
+    last_presence_poll: Instant,
 
     /// Unread state per chat: (is-unread, approximate count).
     unread: HashMap<String, (bool, u32)>,
@@ -217,6 +220,8 @@ impl TeamsFastApp {
             pending_theme: settings_load.theme.clone(),
             offline: None,
             last_offline_retry: Instant::now() - Duration::from_secs(60),
+            presence: String::new(),
+            last_presence_poll: Instant::now() - Duration::from_secs(3600),
             catalog: theme::theme_catalog(cc.egui_ctx.clone()),
             palette: Palette::dark(),
             selected_theme: settings_load.theme.clone(),
@@ -460,6 +465,9 @@ impl TeamsFastApp {
                 Event::ArchiveStats(chats, messages) => {
                     self.archive_stats = (chats, messages);
                 }
+                Event::MyPresence(availability) => {
+                    self.presence = availability;
+                }
                 Event::Error(e) => self.error = Some(e),
             }
         }
@@ -484,6 +492,14 @@ impl TeamsFastApp {
         {
             self.last_offline_retry = Instant::now();
             self.cmd.send(Command::CheckReady).ok();
+        }
+
+        // Presence poll every 60 s while signed in.
+        if self.state == State::Ready
+            && self.last_presence_poll.elapsed() >= Duration::from_secs(60)
+        {
+            self.last_presence_poll = Instant::now();
+            self.cmd.send(Command::PollPresence).ok();
         }
 
         // Debounced open-chat refresh on live activity.
@@ -914,8 +930,71 @@ impl TeamsFastApp {
             }
             if !self.self_name.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(&self.self_name).weak().small());
-                    avatar(ui, &self.self_name, 24.0);
+                    // Name chip: presence dot + name; click = status menu.
+                    let dot = crate::model::presence_color(&self.presence);
+                    let label = if self.presence.is_empty() {
+                        self.self_name.clone()
+                    } else {
+                        format!("● {}", self.self_name)
+                    };
+                    ui.menu_button(
+                        RichText::new(label).small().color(self.palette.text),
+                        |ui| {
+                            ui.label(RichText::new("Set status").small().weak());
+                            ui.separator();
+                            // Coloured dot + label (popup emoji renders
+                            // monochrome on this stack — see gotchas).
+                            const STATUSES: [(&str, &str, bool); 6] = [
+                                ("available", "Available", false),
+                                ("brb", "Be right back", false),
+                                ("busy", "Busy", true),
+                                ("dnd", "Do not disturb", true),
+                                ("away", "Away", false),
+                                ("offline", "Appear offline", false),
+                            ];
+                            for (key, text, red) in STATUSES {
+                                let wire = match key {
+                                    "available" => "Available",
+                                    "brb" => "BeRightBack",
+                                    "busy" => "Busy",
+                                    "dnd" => "DoNotDisturb",
+                                    "away" => "Away",
+                                    _ => "Offline",
+                                };
+                                let sel =
+                                    self.presence.eq_ignore_ascii_case(wire);
+                                let color = if red {
+                                    self.palette.danger
+                                } else {
+                                    match key {
+                                        "offline" => self.palette.dim,
+                                        "away" | "brb" => self.palette.warning,
+                                        _ => self.palette.ok,
+                                    }
+                                };
+                                if ui
+                                    .selectable_label(
+                                        sel,
+                                        RichText::new(format!("●  {text}"))
+                                            .small()
+                                            .color(color),
+                                    )
+                                    .clicked()
+                                {
+                                    self.cmd
+                                        .send(Command::SetPresence(key.to_string()))
+                                        .ok();
+                                    ui.close();
+                                }
+                            }
+                        },
+                    )
+                    .response
+                    .on_hover_text(format!(
+                        "Status: {}",
+                        if self.presence.is_empty() { "unknown" } else { &self.presence }
+                    ));
+                    let _ = dot;
                 });
             }
         });

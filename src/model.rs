@@ -198,6 +198,20 @@ pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Presence availability → indicator colour.
+pub fn presence_color(availability: &str) -> Color32 {
+    match availability.to_ascii_lowercase().as_str() {
+        "available" | "availableidle" => Color32::from_rgb(0x6f, 0xd1, 0x94),
+        "busy" | "donotdisturb" | "donotdisturbidle" | "inacall"
+        | "inameeting" | "presenting" | "inconferrence" => Color32::from_rgb(0xe0, 0x7a, 0x7a),
+        "away" | "berightback" | "awayidle" | "offwork" => {
+            Color32::from_rgb(0xd1, 0xa5, 0x4a)
+        }
+        "offline" | "outofoffice" => Color32::from_rgb(0x9a, 0x9d, 0xa3),
+        _ => Color32::from_rgb(0x9a, 0x9d, 0xa3),
+    }
+}
+
 /// Deterministic pleasant avatar color for a name.
 pub fn avatar_color(name: &str) -> Color32 {
     const PALETTE: [Color32; 10] = [
