@@ -33,6 +33,10 @@ egui = "0.36"
 # the repo is private and this machine's git auth is ssh-only.
 ost = { git = "https://github.com/YacineSahli/teams-core", package = "teams-cli" }
 
+# Colour emoji everywhere (platform font + bundled Noto Color Emoji).
+fastframe-emoji = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+
 # Backend worker runtime (protocol calls + trouter live on a worker thread).
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 

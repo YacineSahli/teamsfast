@@ -1,7 +1,7 @@
 //! Left sidebar: view switch (Chats / Teams), search field, chat list.
 
 use crate::backend::Command;
-use crate::model::format_chat_time;
+use crate::model::{clean_preview, format_chat_time};
 use crate::ui::conversation::Action;
 use crate::ui::widgets::avatar;
 use egui::{RichText, ScrollArea, Ui};
@@ -31,7 +31,6 @@ pub fn sidebar(
 ) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        // View switch
         ui.selectable_value(&mut ctx.view, SideView::Chats, RichText::new("Chats").strong());
         ui.selectable_value(&mut ctx.view, SideView::Teams, RichText::new("Teams").strong());
     });
@@ -39,26 +38,31 @@ pub fn sidebar(
 
     match ctx.view {
         SideView::Chats => {
-            ui.horizontal(|ui| {
-                let field = ui.add_sized(
-                    [ui.available_width() - 34.0, 24.0],
-                    egui::TextEdit::singleline(search)
-                        .hint_text("Search messages (Enter)")
-                        .font(egui::TextStyle::Small),
-                );
-                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let q = search.trim().to_string();
-                    if !q.is_empty() {
-                        ctx.cmd.send(Command::Search { query: q.clone(), from: 0 }).ok();
-                        actions.push(Action::OpenSearch);
-                        // remember query for "more" paging in the App
-                        actions.push(Action::Refresh);
-                        let _ = q;
+            // Search + new chat, constrained to the panel width.
+            let avail = ui.available_width();
+            ui.allocate_ui(egui::vec2(avail, 26.0), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button("+ New")
+                        .on_hover_text("New chat (Ctrl+N)")
+                        .clicked()
+                    {
+                        actions.push(Action::ShowNewChat);
                     }
-                }
-                if ui.small_button("＋").on_hover_text("New chat (Ctrl+N)").clicked() {
-                    actions.push(Action::ShowNewChat);
-                }
+                    let field = ui.add_sized(
+                        [ui.available_width(), 24.0],
+                        egui::TextEdit::singleline(search)
+                            .hint_text("Search messages (Enter)")
+                            .font(egui::TextStyle::Small),
+                    );
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let q = search.trim().to_string();
+                        if !q.is_empty() {
+                            ctx.cmd.send(Command::Search { query: q, from: 0 }).ok();
+                            actions.push(Action::OpenSearch);
+                        }
+                    }
+                });
             });
             ui.add_space(2.0);
             ui.separator();
@@ -90,13 +94,8 @@ pub fn sidebar(
                     });
                     for ch in &team.channels {
                         let sel = ctx.selected == Some(&ch.id);
-                        if ui
-                            .selectable_label(sel, format!("# {}", ch.name))
-                            .clicked()
-                        {
-                            ctx.cmd
-                                .send(Command::OpenChat(ch.id.clone()))
-                                .ok();
+                        if ui.selectable_label(sel, format!("# {}", ch.name)).clicked() {
+                            ctx.cmd.send(Command::OpenChat(ch.id.clone())).ok();
                         }
                     }
                 }
@@ -118,35 +117,47 @@ fn chat_row(ui: &mut Ui, ctx: &SidebarCtx<'_>, chat: &ChatInfo) {
     };
     let time = format_chat_time(&chat.last_message_time);
 
-    let row = ui.horizontal(|ui| {
-        ui.add_space(2.0);
-        avatar(ui, &label, 30.0);
-        ui.vertical(|ui| {
+    // Explicit-size row so the right column can never overflow the panel.
+    let avail = ui.available_width();
+    let response = ui
+        .allocate_ui(egui::vec2(avail, 40.0), |ui| {
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(&label).strong()).truncate(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !time.is_empty() {
-                        ui.label(RichText::new(time).small().weak());
-                    }
-                    if chat.is_group {
-                        ui.label(RichText::new("👥").small().weak());
+                ui.add_space(2.0);
+                avatar(ui, &label, 30.0);
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    // Name … time, both constrained.
+                    ui.allocate_ui(egui::vec2(ui.available_width(), 17.0), |ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !time.is_empty() {
+                                ui.label(RichText::new(time).small().weak());
+                            }
+                            if chat.is_group {
+                                ui.label(RichText::new("👥").size(13.0).weak());
+                            }
+                            ui.add(
+                                egui::Label::new(RichText::new(&label).strong()).truncate(),
+                            );
+                        });
+                    });
+                    if let Some(p) = &chat.last_message_preview {
+                        ui.add(
+                            egui::Label::new(RichText::new(clean_preview(p)).small().weak())
+                                .truncate(),
+                        );
                     }
                 });
             });
-            if let Some(p) = &chat.last_message_preview {
-                ui.add(egui::Label::new(RichText::new(p).small().weak()).truncate());
-            }
-        });
-    });
-    let full = ui.interact(row.response.rect, egui::Id::new(&chat.id), egui::Sense::click());
-    if full.clicked() {
+        })
+        .response
+        .interact(egui::Sense::click());
+
+    if response.clicked() {
         ctx.cmd.send(Command::OpenChat(chat.id.clone())).ok();
     }
     if selected {
         ui.painter().rect_filled(
-            full.rect,
+            response.rect,
             4.0,
             egui::Color32::from_rgba_unmultiplied(0x5b, 0x5f, 0xc7, 0x40),
         );

@@ -52,21 +52,40 @@ pub fn format_day_label(ts: &str) -> String {
     }
 }
 
-/// `"14:32"` for a chat-list epoch-milliseconds string; empty when unparsable.
+/// `"14:32"` for a chat-list timestamp (epoch-milliseconds string or ISO);
+/// empty when unparsable.
 pub fn format_chat_time(ms_opt: &Option<String>) -> String {
-    let Some(ms) = ms_opt.as_deref().and_then(|s| s.trim().parse::<u64>().ok()) else {
+    let raw = ms_opt.as_deref().unwrap_or("").trim();
+    if raw.is_empty() {
         return String::new();
+    }
+    let secs = match raw.parse::<u64>() {
+        Ok(ms) => (ms / 1000) as i64,
+        Err(_) => match parse_iso_secs(raw) {
+            Some(secs) => secs,
+            None => return String::new(),
+        },
     };
-    let secs = (ms / 1000) as i64;
     let now = now_secs();
     let (ly, lm, ld) = civil_from_days(secs.div_euclid(86_400));
     let (ny, nm, nd) = civil_from_days(now.div_euclid(86_400));
     if ly == ny && lm == nm && ld == nd {
         let (hh, mm, _) = hms_of(secs);
         format!("{hh:02}:{mm:02}")
-    } else {
+    } else if ly == ny {
         format!("{} {}", ld, MONTHS[(lm - 1) as usize % 12])
+    } else {
+        format!("{} {} {}", ld, MONTHS[(lm - 1) as usize % 12], ly)
     }
+}
+
+/// Remove connector markdown (`++underline++`, `**bold**`, `` `code` ``)
+/// that leaks into previews.
+pub fn clean_preview(s: &str) -> String {
+    s.replace("++", "")
+        .replace("**", "")
+        .replace("~~", "")
+        .replace('`', "")
 }
 
 const MONTHS: [&str; 12] = [

@@ -1,10 +1,19 @@
 mod app;
 mod backend;
 mod debug;
+mod emoji;
 mod model;
+mod tray;
 mod ui;
 
 pub use app::TeamsFastApp;
+
+/// Install the colour-emoji plugin and warm the font lookup. Call once at
+/// startup, before the first frame.
+pub fn init_emoji(ctx: &egui::Context) {
+    ctx.add_plugin(emoji::plugin());
+    std::thread::spawn(emoji::warm_up);
+}
 
 /// Headless debug entry (`--dump-chats`, `--probe-chat`, `--search`, `--teams`).
 pub fn debug_dispatch(args: &[String]) -> Option<eframe::Result<()>> {

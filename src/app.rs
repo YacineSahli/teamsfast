@@ -67,6 +67,9 @@ pub struct TeamsFastApp {
     failed_images: HashSet<String>,
     egui_ctx: Option<egui::Context>,
 
+    tray: Option<fastframe_tray::Tray>,
+    window_hidden: bool,
+
     cmd: tokio::sync::mpsc::UnboundedSender<Command>,
     events: Receiver<Event>,
 }
@@ -119,8 +122,41 @@ impl TeamsFastApp {
             failed_images: HashSet::new(),
             queued_textures: Vec::new(),
             egui_ctx: Some(cc.egui_ctx.clone()),
+            tray: fastframe_tray::Tray::spawn(crate::tray::config(), {
+                let waker = cc.egui_ctx.clone();
+                move || waker.request_repaint()
+            }),
+            window_hidden: false,
             cmd,
             events: rx,
+        }
+    }
+
+    fn sync_tray(&mut self, ui: &mut egui::Ui) {
+        use crate::tray::{action, TrayAction};
+        let Some(tray) = self.tray.as_ref() else {
+            return;
+        };
+        for ev in tray.events() {
+            let Some(act) = action(ev, self.window_hidden) else {
+                continue;
+            };
+            match act {
+                TrayAction::Show => {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.window_hidden = false;
+                }
+                TrayAction::Hide => {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    self.window_hidden = true;
+                }
+                TrayAction::Quit => {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
         }
     }
 
@@ -335,6 +371,16 @@ impl TeamsFastApp {
                     .unwrap_or_default(),
             );
         }
+        // Re-sort by recency so the active chat bubbles to the top.
+        self.chats.sort_by(|a, b| {
+            let k = |c: &ChatInfo| {
+                c.last_message_time
+                    .as_deref()
+                    .and_then(|t| t.trim().parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            k(b).cmp(&k(a))
+        });
         let open = self.selected.as_deref() == Some(chat_id.as_str());
         if open {
             self.pending_open_refresh = true;
@@ -553,7 +599,10 @@ impl TeamsFastApp {
                     }
                 }
                 State::Ready => {
-                    ui.colored_label(Color32::from_rgb(0x6f, 0xd1, 0x94), "●");
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(rect.center(), 4.0, Color32::from_rgb(0x6f, 0xd1, 0x94));
                     if ui.button("Refresh").clicked() {
                         self.apply(Action::Refresh);
                     }
@@ -599,6 +648,7 @@ impl TeamsFastApp {
 impl eframe::App for TeamsFastApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.sync_tray(ui);
 
         egui::Panel::top("top").show(ui, |ui| {
             self.top_bar(ui);

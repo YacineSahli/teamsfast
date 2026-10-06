@@ -25,6 +25,7 @@ fn main() -> eframe::Result<()> {
         "TeamsFast",
         options,
         Box::new(|cc| {
+            teamsfast::init_emoji(&cc.egui_ctx);
             teamsfast::apply_style(&cc.egui_ctx);
             Ok(Box::new(TeamsFastApp::new(cc)))
         }),
