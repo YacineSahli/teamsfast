@@ -2,6 +2,7 @@
 
 use crate::backend::Command;
 use crate::model::{clean_preview, format_chat_time};
+use crate::theme::Palette;
 use crate::ui::conversation::Action;
 use crate::ui::widgets::avatar;
 use egui::{RichText, ScrollArea, Ui};
@@ -20,6 +21,7 @@ pub struct SidebarCtx<'a> {
     pub teams: &'a [TeamInfo],
     pub view: SideView,
     pub cmd: &'a tokio::sync::mpsc::UnboundedSender<Command>,
+    pub pal: &'a Palette,
 }
 
 pub fn sidebar(
@@ -139,9 +141,14 @@ fn chat_row(
 
     // Row background: selection / hover.
     let bg = if selected {
-        egui::Color32::from_rgba_unmultiplied(0x5b, 0x5f, 0xc7, 0x50)
+        egui::Color32::from_rgba_unmultiplied(
+            ctx.pal.accent.r(),
+            ctx.pal.accent.g(),
+            ctx.pal.accent.b(),
+            0x50,
+        )
     } else if response.hovered() {
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+        ctx.pal.surface_hover
     } else {
         egui::Color32::TRANSPARENT
     };
@@ -152,7 +159,7 @@ fn chat_row(
         ui.painter().rect_filled(
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())),
             2.0,
-            egui::Color32::from_rgb(0x8a, 0x88, 0xff),
+            ctx.pal.accent,
         );
     }
 
@@ -182,10 +189,18 @@ fn chat_row(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
                                 if !time.is_empty() {
-                                    ui.label(RichText::new(time).small().weak());
+                                    ui.label(
+                                        RichText::new(time)
+                                            .small()
+                                            .color(ctx.pal.secondary),
+                                    );
                                 }
                                 if chat.is_group {
-                                    ui.label(RichText::new("👥").size(13.0).weak());
+                                    ui.label(
+                                        RichText::new("👥")
+                                            .size(13.0)
+                                            .color(ctx.pal.secondary),
+                                    );
                                 }
                             },
                         );
@@ -193,7 +208,9 @@ fn chat_row(
                     if let Some(p) = &chat.last_message_preview {
                         ui.add(
                             egui::Label::new(
-                                RichText::new(clean_preview(p)).small().weak(),
+                                RichText::new(clean_preview(p))
+                                    .small()
+                                    .color(ctx.pal.secondary),
                             )
                             .truncate()
                             .selectable(false),
@@ -218,6 +235,10 @@ fn chat_row(
 mod tests {
     use super::*;
     use ost::api::ChatInfo;
+
+    fn palette() -> Palette {
+        Palette::dark()
+    }
 
     fn test_chat(id: &str, name: &str) -> ChatInfo {
         ChatInfo {
@@ -249,6 +270,7 @@ mod tests {
             teams: &[],
             view: SideView::Chats,
             cmd: &cmd,
+            pal: &palette(),
         };
 
         let egui_ctx = egui::Context::default();
@@ -327,6 +349,7 @@ mod tests {
             teams: &[],
             view: SideView::Chats,
             cmd: &cmd,
+            pal: &palette(),
         };
         let egui_ctx = egui::Context::default();
         let input = egui::RawInput {

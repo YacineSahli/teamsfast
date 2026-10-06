@@ -1,6 +1,7 @@
 //! TeamsFast App: owns all UI state, drains backend events, applies actions.
 
 use crate::backend::{self, Command, Event};
+use crate::theme::{self, Palette};
 use crate::ui::conversation::{self, Action, ConvCtx};
 use crate::ui::panels::{new_chat_dialog, search_panel, NewChatState};
 use crate::ui::sidebar::{sidebar, SideView};
@@ -66,6 +67,11 @@ pub struct TeamsFastApp {
     #[allow(dead_code)]
     failed_images: HashSet<String>,
     egui_ctx: Option<egui::Context>,
+    catalog: crate::theme::Catalog,
+    palette: Palette,
+    selected_theme: Option<String>,
+    settings: theme::Settings,
+    pending_theme: Option<String>,
 
     tray: Option<fastframe_tray::Tray>,
     window_hidden: bool,
@@ -126,9 +132,13 @@ fn spawn_tray(waker: egui::Context) -> Option<fastframe_tray::Tray> {
 
 impl TeamsFastApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let settings_load = theme::load_settings();
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
         let cmd = backend::spawn(tx);
         cmd.send(Command::CheckReady).ok();
+        if settings_load.auto_live {
+            cmd.send(Command::StartTrouter).ok();
+        }
         Self {
             state: State::Boot,
             status: "Starting…".into(),
@@ -170,6 +180,11 @@ impl TeamsFastApp {
             egui_ctx: Some(cc.egui_ctx.clone()),
             tray: spawn_tray(cc.egui_ctx.clone()),
             window_hidden: false,
+            pending_theme: settings_load.theme.clone(),
+            catalog: theme::theme_catalog(cc.egui_ctx.clone()),
+            palette: Palette::dark(),
+            selected_theme: settings_load.theme.clone(),
+            settings: settings_load,
             cmd,
             events: rx,
         }
@@ -463,6 +478,26 @@ impl TeamsFastApp {
         }
     }
 
+    /// Apply the selected theme file's palette (fallback: built-in dark).
+    fn apply_selected_theme(&mut self) {
+        self.palette = self
+            .selected_theme
+            .as_deref()
+            .and_then(|name| self.catalog.find(name))
+            .map(|t| t.palette.clone())
+            .unwrap_or_else(Palette::dark);
+        if let Some(ctx) = self.egui_ctx.as_ref() {
+            self.palette.apply_visuals(ctx);
+        }
+    }
+
+    fn select_theme(&mut self, filename: String) {
+        self.selected_theme = Some(filename.clone());
+        self.settings.theme = Some(filename);
+        theme::save_settings(&self.settings);
+        self.apply_selected_theme();
+    }
+
     fn rename_chat(&mut self, id: &str, name: String) {
         if let Some(c) = self.chats.iter_mut().find(|c| c.id == id) {
             if c.name.is_empty() || c.name == "[Direct message]" || c.name == "Direct message" {
@@ -656,7 +691,7 @@ impl TeamsFastApp {
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter()
-                        .circle_filled(rect.center(), 4.0, Color32::from_rgb(0x6f, 0xd1, 0x94));
+                        .circle_filled(rect.center(), 4.0, self.palette.ok);
                     if ui.button("Refresh").clicked() {
                         self.apply(Action::Refresh);
                     }
@@ -683,6 +718,50 @@ impl TeamsFastApp {
                         .color(Color32::from_rgb(0x6f, 0xd1, 0x94)),
                 );
             }
+            ui.separator();
+            let names: Vec<String> = self
+                .catalog
+                .picker_themes()
+                .map(|t| theme::display_name(&t.filename).to_string())
+                .collect();
+            let current = self
+                .selected_theme
+                .as_deref()
+                .map(theme::display_name)
+                .unwrap_or("Theme: TeamsFast Dark")
+                .to_string();
+            egui::ComboBox::from_id_salt("theme-picker")
+                .selected_text(RichText::new(current).small())
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for name in &names {
+                        let selected = self
+                            .selected_theme
+                            .as_deref()
+                            .map(|f| theme::display_name(f) == *name)
+                            .unwrap_or(false);
+                        if ui.selectable_label(selected, name).clicked() {
+                            let file = self
+                                .catalog
+                                .themes()
+                                .iter()
+                                .find(|t| theme::display_name(&t.filename) == *name)
+                                .map(|t| t.filename.clone());
+                            if let Some(f) = file {
+                                self.select_theme(f);
+                            }
+                        }
+                    }
+                    if ui.selectable_label(false, "TeamsFast Dark").clicked() {
+                        self.selected_theme = None;
+                        self.settings.theme = None;
+                        theme::save_settings(&self.settings);
+                        self.palette = Palette::dark();
+                        if let Some(ctx) = self.egui_ctx.as_ref() {
+                            self.palette.apply_visuals(ctx);
+                        }
+                    }
+                });
             if !self.self_name.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new(&self.self_name).weak().small());
@@ -691,7 +770,7 @@ impl TeamsFastApp {
             }
         });
         if let Some(err) = &self.error {
-            ui.colored_label(Color32::from_rgb(0xe0, 0x7a, 0x7a), RichText::new(err).small());
+            ui.colored_label(self.palette.danger, RichText::new(err).small());
         }
         if self.state == State::NeedLogin && self.error.is_some() {
             ui.label("Click Sign in, then open the URL printed in the terminal and enter the device code.");
@@ -703,6 +782,21 @@ impl eframe::App for TeamsFastApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.sync_tray(ui);
+
+        // Theme catalog: poll for scans/edits; re-apply the selected palette.
+        if self.catalog.poll() {
+            self.apply_selected_theme();
+        }
+
+        // Pending theme from startup settings (once the catalog is ready).
+        if let Some(name) = self.pending_theme.take() {
+            if self.catalog.themes().iter().any(|t| t.filename == name) {
+                self.selected_theme = Some(name.clone());
+                self.apply_selected_theme();
+            } else {
+                self.pending_theme = Some(name);
+            }
+        }
 
         egui::Panel::top("top").show(ui, |ui| {
             self.top_bar(ui);
@@ -718,6 +812,7 @@ impl eframe::App for TeamsFastApp {
                     teams: &self.teams,
                     view: self.side_view,
                     cmd: &self.cmd,
+                    pal: &self.palette,
                 };
                 let mut loading = self.loading_teams;
                 let mut search = std::mem::take(&mut self.sidebar_search);
@@ -772,6 +867,7 @@ impl eframe::App for TeamsFastApp {
                 uploads: &self.uploads,
                 textures: &self.textures,
                 pending_images: &mut self.pending_images,
+                pal: &self.palette,
                 actions: &mut actions,
             };
             egui::Panel::bottom("composer").show_inside(ui, |ui| {

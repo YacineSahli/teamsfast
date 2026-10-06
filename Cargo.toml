@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 log = "0.4"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # JWT payload decode for the self-id fallback.
 base64 = "0.22"
@@ -43,7 +44,7 @@ fastframe-emoji = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
-fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 
 # Backend worker runtime (protocol calls + trouter live on a worker thread).
