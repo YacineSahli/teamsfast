@@ -78,6 +78,28 @@ fn textures_key(url: &str) -> Option<String> {
     Some(url.to_string())
 }
 
+/// File picker. GNOME's xdg portal rejects unregistered dev binaries
+/// (rfd/ashpd fails with UnknownMethod), so prefer `zenity` when installed
+/// and fall back to rfd elsewhere. Cancel (zenity exit 1) yields None.
+fn pick_file() -> Option<std::path::PathBuf> {
+    match std::process::Command::new("zenity")
+        .args(["--file-selection", "--title=Attach a file"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if p.is_empty() {
+                None
+            } else {
+                Some(std::path::PathBuf::from(p))
+            }
+        }
+        Ok(out) if out.status.code() == Some(1) => None, // user cancelled
+        _ => rfd::FileDialog::new().pick_file(),
+    }
+}
+
 /// Spawn the tray on a blocking-pool thread of a runtime that lives for the
 /// whole process. ksni's blocking API needs: no async-worker context (its
 /// nested block_on is illegal there) plus a tokio reactor for its spawned
@@ -577,12 +599,14 @@ impl TeamsFastApp {
                 }
             }
             Action::Attach => {
-                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                if let Some(path) = pick_file() {
                     if let Some(chat) = self.selected.clone() {
                         self.cmd
                             .send(Command::UploadFile { chat_id: chat, path })
                             .ok();
                     }
+                } else {
+                    self.status = "Attach cancelled or no file picker available".into();
                 }
             }
             Action::FetchImage(url) => {
