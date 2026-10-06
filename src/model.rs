@@ -2,9 +2,29 @@
 
 use egui::Color32;
 
-/// Message timestamp: `"14:32"` today, `"14:32 · 3 Oct"` this year, else with year.
-/// Accepts RFC3339-ish ISO strings (Teams server timestamps).
+/// Message timestamp: `"14:32"` today, `"14:32, 3 Oct"` this year, else with year.
+/// Server timestamps are UTC; rendered in the machine's local zone via jiff.
 pub fn format_message_time(ts: &str) -> String {
+    // Preferred path: jiff parses the instant and converts to the system
+    // zone. (Zoned::from_str needs a [zone annotation]; Teams stamps have
+    // only a trailing Z, so parse as Timestamp and convert.)
+    if let Ok(zdt) = ts
+        .trim()
+        .parse::<jiff::Timestamp>()
+        .map(|t| t.to_zoned(jiff::tz::TimeZone::system()))
+    {
+        let now = jiff::Zoned::now();
+        let date = zdt.date();
+        let today = now.date();
+        let hm = format!("{:02}:{:02}", zdt.hour(), zdt.minute());
+        return if date == today {
+            hm
+        } else if date.year() == today.year() {
+            format!("{hm}, {} {}", date.day(), MONTHS[(date.month() - 1) as usize % 12])
+        } else {
+            format!("{hm}, {} {} {}", date.day(), MONTHS[(date.month() - 1) as usize % 12], date.year())
+        };
+    }
     let Some(secs) = parse_iso_secs(ts) else {
         return String::new();
     };
@@ -29,17 +49,22 @@ pub fn format_message_time(ts: &str) -> String {
 }
 
 /// Day-separator label: `"Today"`, `"Yesterday"`, `"3 Oct"`, `"3 Oct 2025"`.
+/// Local date, matching the local bubble timestamps.
 pub fn format_day_label(ts: &str) -> String {
-    let Some(secs) = parse_iso_secs(ts) else {
+    let Ok(zdt) = ts
+        .trim()
+        .parse::<jiff::Timestamp>()
+        .map(|t| t.to_zoned(jiff::tz::TimeZone::system()))
+    else {
         return String::new();
     };
-    let now = now_secs();
-    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-    let (ny, nm, nd) = civil_from_days(now.div_euclid(86_400));
+    let (y, m, d) = (zdt.year() as i64, zdt.month() as i64, zdt.day() as i64);
+    let now = jiff::Zoned::now();
+    let (ny, nm, nd) = (now.year() as i64, now.month() as i64, now.day() as i64);
     let today = y == ny && m == nm && d == nd;
     let yesterday = {
-        let (yy, ym, yd) = civil_from_days(now.div_euclid(86_400) - 1);
-        y == yy && m == ym && d == yd
+        let yz = now.clone() - jiff::Span::new().days(1);
+        (y, m, d) == (yz.year() as i64, yz.month() as i64, yz.day() as i64)
     };
     if today {
         "Today".into()
@@ -59,23 +84,22 @@ pub fn format_chat_time(ms_opt: &Option<String>) -> String {
     if raw.is_empty() {
         return String::new();
     }
-    let secs = match raw.parse::<u64>() {
-        Ok(ms) => (ms / 1000) as i64,
-        Err(_) => match parse_iso_secs(raw) {
-            Some(secs) => secs,
-            None => return String::new(),
-        },
-    };
-    let now = now_secs();
-    let (ly, lm, ld) = civil_from_days(secs.div_euclid(86_400));
-    let (ny, nm, nd) = civil_from_days(now.div_euclid(86_400));
-    if ly == ny && lm == nm && ld == nd {
-        let (hh, mm, _) = hms_of(secs);
-        format!("{hh:02}:{mm:02}")
-    } else if ly == ny {
-        format!("{} {}", ld, MONTHS[(lm - 1) as usize % 12])
+    let zdt = if let Ok(ts) = raw.parse::<jiff::Timestamp>() {
+        ts.to_zoned(jiff::tz::TimeZone::system())
+    } else if let Ok(ms) = raw.parse::<u64>() {
+        match jiff::Timestamp::from_second((ms / 1000) as i64) {
+            Ok(ts) => ts.to_zoned(jiff::tz::TimeZone::system()),
+            Err(_) => return String::new(),
+        }
     } else {
-        format!("{} {} {}", ld, MONTHS[(lm - 1) as usize % 12], ly)
+        return String::new();
+    };
+    let hm = format!("{:02}:{:02}", zdt.hour(), zdt.minute());
+    let today = jiff::Zoned::now().date();
+    if zdt.date() == today {
+        hm
+    } else {
+        format!("{} {}", zdt.day(), MONTHS[(zdt.month() - 1) as usize % 12])
     }
 }
 
@@ -104,8 +128,8 @@ fn hms_of(secs: i64) -> (i64, i64, i64) {
     (sod / 3600, (sod % 3600) / 60, sod % 60)
 }
 
-/// Parse an ISO-8601 timestamp (`2026-10-06T08:56:22.402Z`, with offset or not)
-/// to Unix seconds. Manual but tolerant — no chrono on the UI crate.
+/// Parse an ISO-8601 timestamp to Unix seconds. Tolerant fallback used when
+/// jiff can't make sense of the string.
 pub fn parse_iso_secs(ts: &str) -> Option<i64> {
     let t = ts.trim();
     let b = t.as_bytes();
@@ -191,5 +215,62 @@ pub fn initials(name: &str) -> String {
         }
         [one] => one.chars().take(2).collect::<String>().to_uppercase(),
         _ => "?".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Set the test timezone before any jiff system-zone lookup.
+    fn tz_brussels() {
+        // SAFETY: single-threaded test binary, before first jiff use.
+        unsafe { std::env::set_var("TZ", "Europe/Brussels") };
+    }
+
+    #[test]
+    fn teams_shape_seven_digit_fraction_renders_local() {
+        tz_brussels();
+        // Teams wire shape: 7 fractional digits + Z (UTC). 10:12Z = 18:12 +8.
+        let out = format_message_time("2026-10-06T10:12:37.6750000Z");
+        // Today per wall clock in Taiwan is the same day as UTC+8 for this
+        // stamp only if run on 2026-10-06/07 — assert the local hour shift
+        // instead of the calendar bucket:
+        assert!(
+            out.contains("12:12"),
+            "expected local 12:12 somewhere in {out:?}"
+        );
+    }
+
+    #[test]
+    fn chat_time_numeric_ms_is_local() {
+        tz_brussels();
+        // 2026-10-06T10:40:55Z in epoch ms = 10:40Z = 18:40 local.
+        let ms = 1_760_000_000_000u64; // fixed: 2025-10-19T07:33:20Z — compute-free check below
+        let _ = ms;
+        // Instead build "now - 0" style: now ms as string → expect HH:MM now.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .to_string();
+        let now_local = jiff::Zoned::now();
+        let expected = format!("{:02}:{:02}", now_local.hour(), now_local.minute());
+        assert_eq!(format_chat_time(&Some(now_ms)), expected);
+    }
+
+    #[test]
+    fn chat_time_iso_with_offset() {
+        tz_brussels();
+        // 10:12Z + 8h = 18:12 same calendar day → HH:MM.
+        let out = format_chat_time(&Some("2026-10-06T10:12:37.6750000Z".into()));
+        assert!(out.contains("12:12"), "expected 12:12 in {out:?}");
+    }
+
+    #[test]
+    fn garbage_is_empty() {
+        assert_eq!(format_message_time("nonsense"), "");
+        assert_eq!(format_chat_time(&Some("nonsense".into())), "");
+        assert_eq!(format_chat_time(&None), "");
     }
 }

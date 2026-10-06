@@ -102,28 +102,14 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     });
     ui.separator();
 
-    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        let n = ctx.messages.len();
-        let mut last_day = String::new();
-        // Newest first: messages[0] is the oldest, messages[n-1] the newest.
-        for (ri, m) in ctx.messages.iter().rev().enumerate() {
-            let i = n - 1 - ri; // original index; i+1 is the message NEWER than this one
-            let day = format_day_label(&m.timestamp);
-            let is_new_day = !day.is_empty() && day != last_day;
-            if is_new_day {
-                let label = day.clone();
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new(label).small().weak());
-                });
-                last_day = day;
-            }
-            let own = is_own(m, ctx);
-            // Grouped with the message directly NEWER (rendered above it).
-            let grouped = i + 1 < n
-                && ctx.messages[i + 1].sender_mri == m.sender_mri
-                && m.timestamp.get(0..16) == ctx.messages[i + 1].timestamp.get(0..16);
-            message_row(ui, ctx, m, own, grouped);
-        }
+    // Oldest at the top, newest pinned to the bottom — Teams style.
+    // (History note: a non-zero ScrollArea offset once painted blank here;
+    // that turned out to be our panel-order bug — composer rendered AFTER
+    // CentralPanel consumed the space — not an egui defect. stick_to_bottom
+    // is verified rendering again, see bisect in git history.)
+    let mut area = ScrollArea::vertical().auto_shrink(false);
+    area = area.stick_to_bottom(true);
+    area.show(ui, |ui| {
         if ctx.older_link.is_some() {
             ui.vertical_centered(|ui| {
                 if ctx.loading_older {
@@ -135,6 +121,24 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                     ctx.actions.push(Action::LoadOlder);
                 }
             });
+        }
+        let n = ctx.messages.len();
+        let mut last_day = String::new();
+        for (i, m) in ctx.messages.iter().enumerate() {
+            let day = format_day_label(&m.timestamp);
+            let is_new_day = !day.is_empty() && day != last_day;
+            if is_new_day {
+                let label = day.clone();
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(label).small().weak());
+                });
+                last_day = day;
+            }
+            let own = is_own(m, ctx);
+            let grouped = i > 0
+                && ctx.messages[i - 1].sender_mri == m.sender_mri
+                && m.timestamp.get(0..16) == ctx.messages[i - 1].timestamp.get(0..16);
+            message_row(ui, ctx, m, own, grouped);
         }
     });
 }
