@@ -24,6 +24,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # JWT payload decode for the self-id fallback.
 base64 = "0.22"
+# Encrypted local archive (chats + messages persisted across launches).
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
+getrandom = "0.3"
 # Timezone-aware timestamp formatting (server stamps are UTC).
 jiff = "0.2"
 

@@ -6,6 +6,7 @@
 //! runtime; the event-hub drainer runs on the blocking pool (its Condvar
 //! must never block the runtime).
 
+pub mod archive;
 pub mod conv;
 pub mod directory;
 pub mod headless;
@@ -178,14 +179,24 @@ pub(crate) struct Session {
     pub self_id: Option<String>,
     /// Backward page cursor per open conversation.
     pub older_links: HashMap<String, String>,
+    /// Local archive (opens even without network, for cached content).
+    pub archive: Option<archive::Archive>,
 }
 
 impl Session {
     fn new() -> Self {
+        let archive = match archive::Archive::open() {
+            Ok(a) => Some(a),
+            Err(e) => {
+                log::warn!("archive unavailable ({e:#}); running without persistence");
+                None
+            }
+        };
         Self {
             client: None,
             self_id: None,
             older_links: HashMap::new(),
+            archive,
         }
     }
 }
@@ -248,6 +259,11 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                     Ok(mut chats) => {
                         filter_pseudo_chats(&mut chats);
                         sort_chats(&mut chats);
+                        if let Some(archive) = ses.archive.as_ref() {
+                            if let Err(e) = archive.save_chats(&chats) {
+                                log::warn!("archive save chats: {e:#}");
+                            }
+                        }
                         send!(Event::Chats(chats));
                     }
                     Err(e) => send!(Event::Error(format!("chat list: {e:#}"))),
