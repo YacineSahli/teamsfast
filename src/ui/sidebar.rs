@@ -293,15 +293,20 @@ mod tests {
             ..Default::default()
         };
         let mut out = egui_ctx.run_ui(input, |ui| {
-            chat_row(ui, &ctx, &chats[1]);
+            let mut actions = Vec::new();
+            chat_row(ui, &ctx, &chats[1], &mut actions);
+            assert_eq!(actions.len(), 1, "click must push OpenChat action");
+            match &actions[0] {
+                Action::OpenChat(id) => assert_eq!(id, "19:chat_a@thread.v2"),
+                other => panic!("unexpected action: {other:?}"),
+            }
         });
         out.textures_delta.clear();
 
-        let got = cmd_rx.try_recv().expect("OpenChat command must be sent");
-        match got {
-            Command::OpenChat(id) => assert_eq!(id, "19:chat_a@thread.v2"),
-            other => panic!("unexpected command: {other:?}"),
-        }
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "the raw command channel must NOT be used for opening chats"
+        );
     }
 
     /// Clicking empty space next to/below the rows must NOT open a chat.
