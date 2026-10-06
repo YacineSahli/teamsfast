@@ -1,0 +1,5 @@
+/target
+# Local reference material — not part of the app repo
+/teams-core
+/reference
+/.upstream

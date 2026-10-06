@@ -1,0 +1,49 @@
+[package]
+name = "teamsfast"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "A native Microsoft Teams client for Linux (spike)"
+repository = "https://github.com/YacineSahli/teamsfast"
+keywords = ["teams", "microsoft", "chat", "egui"]
+categories = ["gui"]
+
+[lib]
+name = "teamsfast"
+path = "src/lib.rs"
+
+[[bin]]
+name = "teamsfast"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+serde_json = "1"
+
+# UI framework. Same choices as spotifast/zapfast: glow keeps the tree small.
+eframe = { version = "0.36", default-features = false, features = [
+    "accesskit", "glow", "default_fonts", "links", "wayland", "x11", "persistence",
+] }
+egui = "0.36"
+
+# The Teams protocol core: our extraction of the patched ost library.
+# Package is `teams-cli` upstream; the lib target is `ost`. SSH form because
+# the repo is private and this machine's git auth is ssh-only.
+ost = { git = "https://github.com/YacineSahli/teams-core", package = "teams-cli" }
+
+# Backend worker runtime (protocol calls + trouter live on a worker thread).
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+# Logging to stderr; the fastframe log file arrives in Phase 1.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Local development: build against the checked-out sibling instead of the
+# pushed teams-core revision. Delete this block (then `cargo update`) to
+# build against the pushed branch.
+[patch."https://github.com/YacineSahli/teams-core"]
+teams-cli = { path = "teams-core" }
+
+[profile.release]
+lto = "thin"
