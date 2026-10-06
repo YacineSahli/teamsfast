@@ -22,6 +22,10 @@ pub struct SidebarCtx<'a> {
     pub view: SideView,
     pub cmd: &'a tokio::sync::mpsc::UnboundedSender<Command>,
     pub pal: &'a Palette,
+    /// Unread state per chat id: (is-unread, approximate count).
+    pub unread: &'a std::collections::HashMap<String, (bool, u32)>,
+    /// Whether count badges are enabled (settings).
+    pub show_badges: bool,
 }
 
 pub fn sidebar(
@@ -133,6 +137,7 @@ fn chat_row(
     let selected = ctx.selected == Some(&chat.id);
     let label = display_name(chat);
     let time = format_chat_time(&chat.last_message_time);
+    let unread = ctx.unread.get(&chat.id).copied().unwrap_or((false, 0));
 
     let avail = ui.available_width() - 6.0;
     let (rect, mut response) =
@@ -177,17 +182,65 @@ fn chat_row(
                     ui.horizontal(|ui| {
                         // Reserve the right column so long names can never
                         // collide with the timestamp/group tag.
-                        let name_w = (ui.available_width() - 70.0).max(60.0);
+                        let name_w = (ui.available_width() - 78.0).max(60.0);
                         ui.allocate_ui(egui::vec2(name_w, 16.0), |ui| {
                             ui.add(
-                                egui::Label::new(RichText::new(&label).strong())
-                                    .truncate()
-                                    .selectable(false),
+                                egui::Label::new(
+                                    RichText::new(&label)
+                                        .strong()
+                                        .color(if unread.0 {
+                                            ctx.pal.text
+                                        } else {
+                                            ctx.pal.secondary
+                                        }),
+                                )
+                                .truncate()
+                                .selectable(false),
                             );
                         });
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
+                                // Unread badge: count pill when we have one,
+                                // plain dot when the messages aren't cached.
+                                if unread.0 && ctx.show_badges {
+                                    let count = unread.1;
+                                    if count > 0 {
+                                        let text = if count > 99 {
+                                            "99+".to_string()
+                                        } else {
+                                            count.to_string()
+                                        };
+                                        let pad = 7.0;
+                                        let w = text.len() as f32 * 6.5 + pad * 2.0;
+                                        let (r, _) = ui.allocate_exact_size(
+                                            egui::vec2(w, 15.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().rect_filled(
+                                            r,
+                                            7.5,
+                                            ctx.pal.accent,
+                                        );
+                                        ui.painter().text(
+                                            r.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            text,
+                                            egui::FontId::proportional(10.0),
+                                            ctx.pal.on_accent,
+                                        );
+                                    } else {
+                                        let (r, _) = ui.allocate_exact_size(
+                                            egui::vec2(10.0, 10.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().circle_filled(
+                                            r.center(),
+                                            3.5,
+                                            ctx.pal.accent,
+                                        );
+                                    }
+                                }
                                 if !time.is_empty() {
                                     ui.label(
                                         RichText::new(time)
@@ -210,7 +263,11 @@ fn chat_row(
                             egui::Label::new(
                                 RichText::new(clean_preview(p))
                                     .small()
-                                    .color(ctx.pal.secondary),
+                                    .color(if unread.0 {
+                                        ctx.pal.text
+                                    } else {
+                                        ctx.pal.secondary
+                                    }),
                             )
                             .truncate()
                             .selectable(false),
@@ -271,6 +328,8 @@ mod tests {
             view: SideView::Chats,
             cmd: &cmd,
             pal: &palette(),
+            unread: &std::collections::HashMap::new(),
+            show_badges: true,
         };
 
         let egui_ctx = egui::Context::default();
@@ -350,6 +409,8 @@ mod tests {
             view: SideView::Chats,
             cmd: &cmd,
             pal: &palette(),
+            unread: &std::collections::HashMap::new(),
+            show_badges: true,
         };
         let egui_ctx = egui::Context::default();
         let input = egui::RawInput {
@@ -372,5 +433,39 @@ mod tests {
         });
         out.textures_delta.clear();
         assert!(cmd_rx.try_recv().is_err(), "no command for stray click");
+    }
+
+    /// A row with an unread entry renders the badge without breaking layout.
+    #[test]
+    fn unread_badge_renders_sane_row() {
+        let (cmd, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
+        let chats = vec![test_chat("19:badge@thread.v2", "Badge chat")];
+        let mut unread = std::collections::HashMap::new();
+        unread.insert("19:badge@thread.v2".to_string(), (true, 123));
+        let ctx = SidebarCtx {
+            chats: &chats,
+            selected: None,
+            teams: &[],
+            view: SideView::Chats,
+            cmd: &cmd,
+            pal: &palette(),
+            unread: &unread,
+            show_badges: true,
+        };
+        let egui_ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = egui_ctx.run_ui(input, |ui| {
+            let mut actions = Vec::new();
+            let rect = chat_row(ui, &ctx, &chats[0], &mut actions);
+            assert!(rect.width() > 100.0 && rect.height() >= 40.0);
+            assert!(actions.is_empty());
+        });
+        out.textures_delta.clear();
     }
 }

@@ -290,7 +290,7 @@ mod tests {
         let past = now.clone() - jiff::Span::new().minutes(30);
         let iso = past.timestamp().to_string();
         let expected = format!("{:02}:{:02}", past.hour(), past.minute());
-        let out = format_chat_time(&Some(iso));
+        let out = format_chat_time(&Some(iso.clone()));
         assert!(
             out.contains(&expected),
             "expected {expected:?} in {out:?} (iso={iso})"

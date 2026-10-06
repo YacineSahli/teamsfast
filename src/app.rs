@@ -993,6 +993,8 @@ impl eframe::App for TeamsFastApp {
                     view: self.side_view,
                     cmd: &self.cmd,
                     pal: &self.palette,
+                    unread: &self.unread,
+                    show_badges: self.settings.unread_badges,
                 };
                 let mut loading = self.loading_teams;
                 let mut search = std::mem::take(&mut self.sidebar_search);
