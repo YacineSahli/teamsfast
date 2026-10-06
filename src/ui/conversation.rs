@@ -79,6 +79,12 @@ pub enum Action {
     ClearArchive,
     OpenThemeFolder,
     OpenStateFolder,
+    // ---- chat list row ops ----
+    TogglePin(String),
+    ToggleMute { chat_id: String, muted: bool },
+    MarkUnread(String),
+    HideChat(String),
+    LeaveChat(String),
 }
 
 /// Everything the conversation view reads from the App.

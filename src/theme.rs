@@ -221,6 +221,12 @@ pub struct Settings {
     /// Unread count badges on chat rows.
     #[serde(default = "default_true")]
     pub unread_badges: bool,
+    /// Locally pinned chat ids (rendered first).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_chats: Vec<String>,
+    /// Locally known muted chat ids (server state mirrored for icons).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub muted_chats: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -248,6 +254,8 @@ impl Default for Settings {
             start_in_tray: false,
             close_to_tray: true,
             unread_badges: true,
+            pinned_chats: Vec::new(),
+            muted_chats: Vec::new(),
         })
     }
 }

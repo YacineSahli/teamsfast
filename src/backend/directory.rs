@@ -94,3 +94,59 @@ pub async fn create_group(ses: &Session, tx: &Sender<Event>, topic: &str, member
         }
     }
 }
+
+/// `Command::SetChatMuted` — server-side mute toggle.
+pub async fn set_muted(ses: &Session, tx: &Sender<Event>, chat_id: &str, muted: bool) {
+    let Some(c) = ses.client.as_ref() else {
+        return;
+    };
+    match ost::api::set_chat_muted_with_client(c, chat_id, muted).await {
+        Ok(()) => {
+            let _ = tx.send(Event::Status(format!(
+                "{} {chat_id}",
+                if muted { "muted" } else { "unmuted" }
+            )));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("mute: {e:#}")));
+        }
+    }
+}
+
+/// `Command::SetChatHidden` — hide the chat server-side.
+pub async fn set_hidden(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
+    let Some(c) = ses.client.as_ref() else {
+        return;
+    };
+    match ost::api::set_chat_hidden_with_client(c, chat_id, true).await {
+        Ok(()) => {
+            let _ = tx.send(Event::Status("chat hidden".into()));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("hide: {e:#}")));
+        }
+    }
+}
+
+/// `Command::LeaveChat` — remove our membership.
+pub async fn leave_chat(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
+    let Some(c) = ses.client.as_ref() else {
+        return;
+    };
+    match ost::api::leave_chat_with_client(c, chat_id).await {
+        Ok(()) => {
+            let _ = tx.send(Event::Status("left the chat".into()));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("leave: {e:#}")));
+        }
+    }
+}
+
+/// `Command::MarkUnread` — roll our read horizon back so the chat shows
+/// unread (and stays unread across restarts).
+pub async fn mark_unread(ses: &Session, chat_id: &str) {
+    if let Some(a) = ses.archive.as_ref() {
+        let _ = a.set_read(chat_id, 0);
+    }
+}

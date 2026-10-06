@@ -76,6 +76,12 @@ pub enum Command {
     PollPresence,
     /// Set our presence ("available" | "brb" | "busy" | "dnd" | "away" | "offline").
     SetPresence(String),
+    /// Chat row ops: server-side mute / hide / leave.
+    SetChatMuted { chat_id: String, muted: bool },
+    SetChatHidden(String),
+    LeaveChat(String),
+    /// Roll the local read horizon back (chat shows unread).
+    MarkUnread(String),
 }
 
 #[derive(Debug, Clone)]
@@ -435,6 +441,18 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                     }
                     Err(e) => send!(Event::Error(format!("set status: {e:#}"))),
                 }
+            }
+            Command::SetChatMuted { chat_id, muted } => {
+                directory::set_muted(&ses, &tx, &chat_id, muted).await;
+            }
+            Command::SetChatHidden(chat_id) => {
+                directory::set_hidden(&ses, &tx, &chat_id).await;
+            }
+            Command::LeaveChat(chat_id) => {
+                directory::leave_chat(&ses, &tx, &chat_id).await;
+            }
+            Command::MarkUnread(chat_id) => {
+                directory::mark_unread(&ses, &chat_id).await;
             }
         }
     }

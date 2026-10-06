@@ -26,6 +26,10 @@ pub struct SidebarCtx<'a> {
     pub unread: &'a std::collections::HashMap<String, (bool, u32)>,
     /// Whether count badges are enabled (settings).
     pub show_badges: bool,
+    /// Locally pinned chat ids (icon hint; App owns ordering).
+    pub pinned: &'a std::collections::HashSet<String>,
+    /// Known muted chat ids (bell-off hint).
+    pub muted: &'a std::collections::HashSet<String>,
 }
 
 pub fn sidebar(
@@ -248,6 +252,26 @@ fn chat_row(
                                             .color(ctx.pal.secondary),
                                     );
                                 }
+                                if ctx.pinned.contains(&chat.id) {
+                                    ui.add(
+                                        egui::Image::from_bytes(
+                                            crate::theme::Icon::Pin.uri(),
+                                            crate::theme::Icon::Pin.bytes(),
+                                        )
+                                        .tint(ctx.pal.secondary)
+                                        .fit_to_exact_size(egui::Vec2::splat(11.0)),
+                                    );
+                                }
+                                if ctx.muted.contains(&chat.id) {
+                                    ui.add(
+                                        egui::Image::from_bytes(
+                                            crate::theme::Icon::BellOff.uri(),
+                                            crate::theme::Icon::BellOff.bytes(),
+                                        )
+                                        .tint(ctx.pal.secondary)
+                                        .fit_to_exact_size(egui::Vec2::splat(11.0)),
+                                    );
+                                }
                                 if chat.is_group {
                                     ui.label(
                                         RichText::new("👥")
@@ -285,6 +309,41 @@ fn chat_row(
         // on a selected-mismatch guard.
         actions.push(Action::OpenChat(chat.id.clone()));
     }
+    // Right-click menu: pin / mute / mark-unread / hide / leave.
+    response.context_menu(|ui| {
+        let pinned = ctx.pinned.contains(&chat.id);
+        if ui
+            .button(if pinned { "Unpin from top" } else { "Pin to top" })
+            .clicked()
+        {
+            actions.push(Action::TogglePin(chat.id.clone()));
+            ui.close();
+        }
+        let muted = ctx.muted.contains(&chat.id);
+        if ui
+            .button(if muted { "Unmute" } else { "Mute notifications" })
+            .clicked()
+        {
+            actions.push(Action::ToggleMute {
+                chat_id: chat.id.clone(),
+                muted: !muted,
+            });
+            ui.close();
+        }
+        if ui.button("Mark as unread").clicked() {
+            actions.push(Action::MarkUnread(chat.id.clone()));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Hide chat").clicked() {
+            actions.push(Action::HideChat(chat.id.clone()));
+            ui.close();
+        }
+        if chat.is_group && ui.button("Leave chat").clicked() {
+            actions.push(Action::LeaveChat(chat.id.clone()));
+            ui.close();
+        }
+    });
     rect
 }
 
@@ -330,6 +389,8 @@ mod tests {
             pal: &palette(),
             unread: &std::collections::HashMap::new(),
             show_badges: true,
+            pinned: &std::collections::HashSet::new(),
+            muted: &std::collections::HashSet::new(),
         };
 
         let egui_ctx = egui::Context::default();
@@ -411,6 +472,8 @@ mod tests {
             pal: &palette(),
             unread: &std::collections::HashMap::new(),
             show_badges: true,
+            pinned: &std::collections::HashSet::new(),
+            muted: &std::collections::HashSet::new(),
         };
         let egui_ctx = egui::Context::default();
         let input = egui::RawInput {
@@ -451,6 +514,8 @@ mod tests {
             pal: &palette(),
             unread: &unread,
             show_badges: true,
+            pinned: &std::collections::HashSet::new(),
+            muted: &std::collections::HashSet::new(),
         };
         let egui_ctx = egui::Context::default();
         let input = egui::RawInput {
