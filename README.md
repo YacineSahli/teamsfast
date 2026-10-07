@@ -20,20 +20,22 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
   progress, download & open), **Adaptive Cards** (Opsgenie/bot cards render
   with facts and actions), colour emoji
 - **Live** — Trouter push: incoming messages, notifications (click opens
-  the chat), typing; desktop notifications with mute-aware rules
+  the chat), typing; desktop notifications with per-chat levels, mute and
+  quiet hours
 - **Sections** — icon rail: Chat, Teams & channels (create/rename/delete
   channels, join public teams, create teams), **Calendar** (week of
   meetings with join links), **Files** (OneDrive recents + each
   conversation's shared files, download/open), **To Do** (lists,
   complete/reopen, quick add), **Planner** (boards, buckets, tick tasks),
-  **Shifts** (this week's schedule), **Activity** feed (mentions and
-  messages)
+  **Shifts** (this week's schedule), **OneNote** (browse notebooks, read
+  pages, append notes), **Activity** feed (mentions and messages)
 - **Presence** — own status with a set-status menu (Available/BRB/Busy/
   DND/Away/Offline)
 - **Calls & meetings** — 1:1 audio calls from any 1:1 chat header, call
   banner with timer + hang-up, **meeting join** (Join buttons on calendar
   meetings and a paste-a-link dialog: join URL, thread ID or meeting ID),
-  and an echo-bot test call in Settings
+  **Meet now** (instant meeting, created and joined in one click), and an
+  echo-bot test call in Settings
 - **Settings** — full window (General/Appearance/Notifications/Account/
   Storage/About): theme picker + zoom, notification rules, start-in-tray,
   close-to-tray, sign-out (keyring wipe), clear local archive

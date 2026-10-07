@@ -31,6 +31,13 @@ pub fn calendar_panel(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
+                .small_button(RichText::new("Meet now").small())
+                .on_hover_text("Create an instant meeting and join it")
+                .clicked()
+            {
+                actions.push(Action::MeetNow);
+            }
+            if ui
                 .small_button(RichText::new("Join with link…").small())
                 .on_hover_text("Paste a Teams meeting link or ID")
                 .clicked()
@@ -344,10 +351,13 @@ pub fn todo_panel(
         ui.label(RichText::new("No To Do lists found.").weak());
         return;
     }
+    let body_h = ui.available_height();
     ui.horizontal(|ui| {
         // Lists column.
-        ui.allocate_ui(egui::vec2(200.0, ui.available_height()), |ui| {
+        ui.allocate_ui(egui::vec2(200.0, body_h), |ui| {
             ScrollArea::vertical().id_salt("todo_lists_scroll").auto_shrink(false).show(ui, |ui| {
+                // Parent is a horizontal row — force the column layout.
+                ui.vertical(|ui| {
                 for l in lists {
                     let sel = st.selected_list.as_deref() == Some(l.id.as_str());
                     if ui
@@ -358,13 +368,14 @@ pub fn todo_panel(
                         actions.push(Action::OpenTodoList(l.id.clone()));
                     }
                 }
+                })
             });
         });
         // Full-height divider between the columns (the stock vertical
         // Separator only spans the row's content height).
         {
             let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(1.0, ui.available_height()),
+                egui::vec2(1.0, body_h),
                 egui::Sense::hover(),
             );
             ui.painter().vline(
@@ -769,4 +780,153 @@ pub fn shifts_panel(
                 ui.add_space(4.0);
             }
         });
+}
+
+// ----------------------------------------------------------------- onenote
+
+/// Notebook → sections → pages tree (app-side; core returns flat pieces).
+#[derive(Clone, Debug)]
+pub struct NotebookTree {
+    pub name: String,
+    pub sections: Vec<ost::api::SectionInfo>,
+}
+
+pub struct NotesPanelState {
+    pub open_page: Option<(String, String)>, // (page_id, title)
+    pub append_text: String,
+}
+
+impl Default for NotesPanelState {
+    fn default() -> Self {
+        Self {
+            open_page: None,
+            append_text: String::new(),
+        }
+    }
+}
+
+/// OneNote browser: notebooks → sections → pages; a selected page renders
+/// its text with an append box.
+pub fn notes_panel(
+    ui: &mut Ui,
+    notebooks: &[NotebookTree],
+    page: Option<&ost::api::NotePage>,
+    st: &mut NotesPanelState,
+    loading: bool,
+    pal: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    ui.horizontal(|ui| {
+        ui.heading(RichText::new("OneNote").strong().size(17.0));
+        if loading {
+            ui.spinner();
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+                actions.push(Action::ReloadSection);
+            }
+        });
+    });
+    ui.separator();
+    let body_h = ui.available_height();
+    ui.horizontal(|ui| {
+        // Nav column.
+        ui.allocate_ui(egui::vec2(240.0, body_h), |ui| {
+            ScrollArea::vertical()
+                .id_salt("notes_nav")
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    // A ScrollArea inherits the parent layout — this one
+                    // lives in a horizontal row, so force a column.
+                    ui.vertical(|ui| {
+                    if notebooks.is_empty() && !loading {
+                        ui.label(RichText::new("No notebooks found.").weak());
+                    }
+                    for nb in notebooks {
+                        ui.strong(&nb.name);
+                        for sec in &nb.sections {
+                            ui.label(
+                                RichText::new(format!("  {}", sec.name)).small().weak(),
+                            );
+                            for p in &sec.pages {
+                                let sel = st
+                                    .open_page
+                                    .as_ref()
+                                    .map(|(id, _)| id == &p.id)
+                                    .unwrap_or(false);
+                                if ui
+                                    .selectable_label(sel, RichText::new(p.title.clone()).small())
+                                    .clicked()
+                                {
+                                    st.open_page = Some((p.id.clone(), p.title.clone()));
+                                    actions.push(Action::ReadNotePage(p.id.clone()));
+                                }
+                            }
+                        }
+                        ui.add_space(4.0);
+                    }
+                    });
+                });
+        });
+        // Divider.
+        {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(1.0, body_h),
+                egui::Sense::hover(),
+            );
+            ui.painter().vline(
+                rect.center().x,
+                rect.top()..=rect.bottom(),
+                egui::Stroke::new(1.0, pal.outline),
+            );
+        }
+        // Page column.
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            match page {
+                Some(p) => {
+                    ui.strong(&p.title);
+                    ui.separator();
+                    ScrollArea::vertical()
+                        .id_salt("notes_page")
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            // Render the page HTML as plain segments.
+                            let segs =
+                                crate::ui::widgets::parse_html(&p.html);
+                            crate::ui::widgets::render_segments(
+                                ui,
+                                &segs,
+                                |_, _| false,
+                                |_, _, _| {},
+                            );
+                        });
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let field = ui.add(
+                            egui::TextEdit::singleline(&mut st.append_text)
+                                .hint_text("Append to this page…")
+                                .desired_width(ui.available_width() - 66.0),
+                        );
+                        let send = ui.button("Append").clicked()
+                            || (field.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        if send && !st.append_text.trim().is_empty() {
+                            if let Some((id, _)) = st.open_page.clone() {
+                                actions.push(Action::AppendNote {
+                                    page_id: id,
+                                    text: st.append_text.trim().to_string(),
+                                });
+                                st.append_text.clear();
+                            }
+                        }
+                    });
+                }
+                None => {
+                    ui.label(RichText::new("Pick a page on the left.").weak());
+                }
+            }
+        });
+    });
 }
