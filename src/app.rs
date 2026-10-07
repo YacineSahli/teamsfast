@@ -97,6 +97,8 @@ pub struct TeamsFastApp {
     receipts: HashMap<String, Vec<String>>,
     /// Forward picker state: the text being forwarded + filter.
     forward: Option<ForwardState>,
+    /// Device-code sign-in state (URL + code once the backend has them).
+    login_code: Option<(String, String)>,
 
     // ---- sections ----
     main_view: MainView,
@@ -269,6 +271,7 @@ impl TeamsFastApp {
             pending_sends: Vec::new(),
             receipts: HashMap::new(),
             forward: None,
+            login_code: None,
             main_view: MainView::Chat,
             meetings: Vec::new(),
             calendar_loading: false,
@@ -343,10 +346,18 @@ impl TeamsFastApp {
                     // Retry the session periodically; on success Ready fires.
                 }
                 Event::SelfId(id) => self.self_id = Some(id),
-                Event::LoginResult(Ok(())) => self.status = "Signed in".into(),
+                Event::LoginResult(Ok(())) => {
+                    self.status = "Signed in".into();
+                    self.login_code = None;
+                }
                 Event::LoginResult(Err(e)) => {
                     self.status = "Sign-in failed".into();
                     self.error = Some(e);
+                    self.login_code = None;
+                }
+                Event::LoginCode { url, code } => {
+                    self.login_code = Some((url, code));
+                    self.status = "Finish the sign-in in your browser…".into();
                 }
                 Event::Ready => {
                     self.state = State::Ready;
@@ -1421,9 +1432,6 @@ impl TeamsFastApp {
         if let Some(err) = &self.error {
             ui.colored_label(self.palette.danger, RichText::new(err).small());
         }
-        if self.state == State::NeedLogin && self.error.is_some() {
-            ui.label("Click Sign in, then open the URL printed in the terminal and enter the device code.");
-        }
     }
 }
 
@@ -1671,6 +1679,64 @@ impl eframe::App for TeamsFastApp {
                                     )
                                     .weak(),
                                 );
+                                ui.add_space(10.0);
+                                if self.login_code.is_none() {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("Sign in").strong(),
+                                            )
+                                            .min_size(egui::vec2(120.0, 30.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.error = None;
+                                        self.status = "Requesting a sign-in code…".into();
+                                        self.cmd.send(Command::StartLogin).ok();
+                                    }
+                                    if let Some(err) = &self.error {
+                                        ui.label(
+                                            RichText::new(err)
+                                                .small()
+                                                .color(self.palette.danger),
+                                        );
+                                    }
+                                } else {
+                                    let (url, code) = self.login_code.clone().unwrap();
+                                    ui.label(RichText::new("1. Open this page:").small());
+                                    ui.horizontal(|ui| {
+                                        ui.monospace(
+                                            RichText::new(&url).small().color(self.palette.link),
+                                        );
+                                        if ui.small_button("Open").clicked() {
+                                            let _ = open::that_detached(&url);
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new("2. Enter this code:").small());
+                                    ui.horizontal(|ui| {
+                                        ui.monospace(
+                                            RichText::new(&code)
+                                                .size(22.0)
+                                                .strong()
+                                                .color(self.palette.text),
+                                        );
+                                        if ui.small_button("Copy").clicked() {
+                                            if let Some(ctx) = self.egui_ctx.as_ref() {
+                                                ctx.copy_text(code.clone());
+                                            }
+                                        }
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new(
+                                            "Waiting for you to finish in the browser…",
+                                        )
+                                        .small()
+                                        .weak(),
+                                    );
+                                    ui.spinner();
+                                }
                             }
                             State::Ready => {
                                 ui.label(

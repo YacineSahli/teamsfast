@@ -120,6 +120,8 @@ pub enum MsgAction {
 pub enum Event {
     Status(String),
     LoginResult(Result<(), String>),
+    /// Device-code login: the URL + code to show in the GUI.
+    LoginCode { url: String, code: String },
     Ready,
     /// Our own display name (Graph whoami).
     SelfName(String),
@@ -309,14 +311,18 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
         // (trouter, drainer) run while the queue is idle.
         match cmd {
             Command::StartLogin => {
-                send!(Event::Status(
-                    "Sign-in started — open the terminal that launched teamsfast, \
-                     visit the URL and enter the device code."
-                        .into(),
-                ));
-                let res = ost::auth::oauth::login(true)
-                    .await
-                    .map_err(|e| format!("{e:#}"));
+                send!(Event::Status("Requesting a sign-in code…".into()));
+                let tx_code = tx.clone();
+                let res = ost::auth::login_with_code_sink(true, move |url, code| {
+                    // Show the code in the GUI (still printed by `login` for
+                    // the terminal users via tracing).
+                    let _ = tx_code.send(Event::LoginCode {
+                        url: url.to_string(),
+                        code: code.to_string(),
+                    });
+                })
+                .await
+                .map_err(|e| format!("{e:#}"));
                 send!(Event::LoginResult(res));
                 match ready_session(&mut ses).await {
                     Ok((name, id)) => {
