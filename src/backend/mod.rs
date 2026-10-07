@@ -121,6 +121,14 @@ pub enum Command {
     SearchPublicTeams(String),
     JoinTeam(String),
     CreateTeam(String),
+    // ---- planner + shifts ----
+    LoadPlanner,
+    LoadShifts,
+    SetPlannerDone {
+        task_id: String,
+        etag: String,
+        done: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +246,10 @@ pub enum Event {
     CallFailed(String),
     /// Public-team search results (join picker).
     PublicTeams(Vec<ost::api::PublicTeamInfo>),
+    /// Planner boards: (team, plan, buckets, tasks).
+    Planner(Vec<crate::ui::sections::PlannerBoard>),
+    /// This week's shifts.
+    Shifts(Vec<ost::api::ShiftInfo>),
     Error(String),
 }
 
@@ -588,6 +600,19 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::CreateTeam(name) => {
                 sections::create_team(&ses, &tx, &name).await;
+            }
+            Command::LoadPlanner => {
+                sections::load_planner(&ses, &tx).await;
+            }
+            Command::LoadShifts => {
+                sections::load_shifts(&ses, &tx).await;
+            }
+            Command::SetPlannerDone {
+                task_id,
+                etag,
+                done,
+            } => {
+                sections::planner_set_done(&ses, &tx, &task_id, &etag, done).await;
             }
             Command::JoinMeeting(source) => {
                 if let Some((thread, label)) = join::resolve_join_target(&ses, &tx, &source).await

@@ -532,3 +532,207 @@ pub fn activity_panel(
         }
     });
 }
+
+// ----------------------------------------------------------------- planner
+
+/// One planner board: a plan's buckets and tasks.
+#[derive(Clone, Debug)]
+pub struct PlannerBoard {
+    pub team: String,
+    pub plan: String,
+    pub buckets: Vec<(String, String)>, // (id, name)
+    pub tasks: Vec<ost::api::PlannerTaskInfo>,
+}
+
+/// Planner boards grouped by bucket columns.
+pub fn planner_panel(
+    ui: &mut Ui,
+    boards: &[PlannerBoard],
+    loading: bool,
+    pal: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    ui.horizontal(|ui| {
+        ui.heading(RichText::new("Planner").strong().size(17.0));
+        ui.label(RichText::new("boards from your teams").small().weak());
+        if loading {
+            ui.spinner();
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+                actions.push(Action::ReloadSection);
+            }
+        });
+    });
+    ui.separator();
+    ScrollArea::vertical()
+        .id_salt("planner_scroll")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            if boards.is_empty() && !loading {
+                ui.label(
+                    RichText::new("No planner tasks found in your teams.").weak(),
+                );
+            }
+            for board in boards {
+                ui.horizontal(|ui| {
+                    ui.strong(&board.plan);
+                    ui.label(
+                        RichText::new(format!("· {}", board.team))
+                            .small()
+                            .weak(),
+                    );
+                });
+                ui.add_space(2.0);
+                let bucket_name = |id: &str| -> String {
+                    board
+                        .buckets
+                        .iter()
+                        .find(|(bid, _)| bid == id)
+                        .map(|(_, n)| n.clone())
+                        .unwrap_or_else(|| "No bucket".into())
+                };
+                egui::Grid::new(("planner-grid", &board.plan, &board.team))
+                    .num_columns(2)
+                    .spacing([10.0, 2.0])
+                    .show(ui, |ui| {
+                        for t in &board.tasks {
+                            ui.horizontal(|ui| {
+                                let (rect, resp) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 16.0),
+                                    egui::Sense::click(),
+                                );
+                                let col = if t.completed { pal.ok } else { pal.outline };
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    4,
+                                    egui::Stroke::new(1.3, col),
+                                    egui::StrokeKind::Inside,
+                                );
+                                if t.completed {
+                                    ui.painter().rect_filled(rect.shrink(4.0), 3, pal.ok);
+                                }
+                                if resp.clicked() {
+                                    actions.push(Action::SetPlannerDone {
+                                        task_id: t.id.clone(),
+                                        etag: t.etag.clone(),
+                                        done: !t.completed,
+                                    });
+                                }
+                            });
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(&t.title).color(if t.completed {
+                                            pal.dim
+                                        } else {
+                                            pal.text
+                                        }),
+                                    );
+                                    if t.percent_complete > 0 && !t.completed {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{}%",
+                                                t.percent_complete
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                    }
+                                    if let Some(due) = &t.due {
+                                        ui.label(
+                                            RichText::new(format_message_time(due))
+                                                .small()
+                                                .weak(),
+                                        );
+                                    }
+                                });
+                                ui.label(
+                                    RichText::new(bucket_name(&t.bucket_id))
+                                        .small()
+                                        .weak(),
+                                );
+                            });
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.separator();
+            }
+        });
+}
+
+// ----------------------------------------------------------------- shifts
+
+/// This week's shifts, grouped per person.
+pub fn shifts_panel(
+    ui: &mut Ui,
+    shifts: &[ost::api::ShiftInfo],
+    loading: bool,
+    pal: &Palette,
+) {
+    ui.horizontal(|ui| {
+        ui.heading(RichText::new("Shifts").strong().size(17.0));
+        ui.label(RichText::new("this week").small().weak());
+        if loading {
+            ui.spinner();
+        }
+    });
+    ui.separator();
+    ScrollArea::vertical()
+        .id_salt("shifts_scroll")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            if shifts.is_empty() && !loading {
+                ui.label(
+                    RichText::new("No shifts this week (no team schedule or none shared).")
+                        .weak(),
+                );
+            }
+            for sh in shifts {
+                egui::Frame::default()
+                    .fill(pal.surface)
+                    .stroke(egui::Stroke::new(1.0, pal.outline))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&sh.display_name).strong());
+                            if sh.is_draft {
+                                ui.label(
+                                    RichText::new("draft").small().weak(),
+                                );
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let start = sh
+                                        .start
+                                        .as_deref()
+                                        .map(format_message_time)
+                                        .unwrap_or_default();
+                                    let end = sh
+                                        .end
+                                        .as_deref()
+                                        .map(format_message_time)
+                                        .unwrap_or_default();
+                                    if !start.is_empty() {
+                                        ui.label(
+                                            RichText::new(format!("{start} – {end}"))
+                                                .small()
+                                                .color(pal.link),
+                                        );
+                                    }
+                                },
+                            );
+                        });
+                        if let Some(notes) = &sh.notes {
+                            if !notes.trim().is_empty() {
+                                ui.label(RichText::new(notes).small().weak());
+                            }
+                        }
+                    });
+                ui.add_space(4.0);
+            }
+        });
+}

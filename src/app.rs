@@ -29,6 +29,8 @@ enum MainView {
     Calendar,
     Files,
     ToDo,
+    Planner,
+    Shifts,
     Activity,
 }
 
@@ -136,6 +138,10 @@ pub struct TeamsFastApp {
     todo_tasks: HashMap<String, Vec<ost::api::TodoTaskInfo>>,
     todo: crate::ui::sections::TodoPanelState,
     todo_loading: bool,
+    planner: Vec<crate::ui::sections::PlannerBoard>,
+    planner_loading: bool,
+    shifts: Vec<ost::api::ShiftInfo>,
+    shifts_loading: bool,
     activity: Vec<crate::ui::sections::ActivityEntry>,
 
     /// Unread state per chat: (is-unread, approximate count).
@@ -435,6 +441,10 @@ impl TeamsFastApp {
             todo_tasks: HashMap::new(),
             todo: Default::default(),
             todo_loading: false,
+            planner: Vec::new(),
+            planner_loading: false,
+            shifts: Vec::new(),
+            shifts_loading: false,
             activity: Vec::new(),
             catalog: theme::theme_catalog(cc.egui_ctx.clone()),
             palette: Palette::dark(),
@@ -513,6 +523,14 @@ impl TeamsFastApp {
                     self.login_code = Some((url, code));
                     self.status = "Finish the sign-in in your browser…".into();
                 }
+                Event::Planner(boards) => {
+                    self.planner = boards;
+                    self.planner_loading = false;
+                }
+                Event::Shifts(shifts) => {
+                    self.shifts = shifts;
+                    self.shifts_loading = false;
+                }
                 Event::PublicTeams(teams) => {
                     self.team_dialog.public_teams = teams;
                     self.team_dialog.searching = false;
@@ -565,6 +583,8 @@ impl TeamsFastApp {
                             "calendar" | "cal" => Some(MainView::Calendar),
                             "files" => Some(MainView::Files),
                             "todo" => Some(MainView::ToDo),
+                            "planner" => Some(MainView::Planner),
+                            "shifts" => Some(MainView::Shifts),
                             "activity" => Some(MainView::Activity),
                             _ => None,
                         };
@@ -1437,6 +1457,20 @@ impl TeamsFastApp {
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
             }
+            Action::SetPlannerDone {
+                task_id,
+                etag,
+                done,
+            } => {
+                self.planner_loading = true;
+                self.cmd
+                    .send(Command::SetPlannerDone {
+                        task_id,
+                        etag,
+                        done,
+                    })
+                    .ok();
+            }
             Action::ChatWith { mri, name } => {
                 // 1:1 thread id is deterministic from both MRIs.
                 let Some(me) = self.self_id.clone() else {
@@ -1542,6 +1576,14 @@ impl TeamsFastApp {
                 self.todo_loading = true;
                 self.cmd.send(Command::LoadTodo).ok();
             }
+            MainView::Planner => {
+                self.planner_loading = true;
+                self.cmd.send(Command::LoadPlanner).ok();
+            }
+            MainView::Shifts => {
+                self.shifts_loading = true;
+                self.cmd.send(Command::LoadShifts).ok();
+            }
             MainView::Activity => {}
         }
     }
@@ -1552,13 +1594,15 @@ impl TeamsFastApp {
     /// Activity) with the settings gear pinned at the bottom.
     fn rail(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 6] = [
+        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 8] = [
             (MainView::Chat, "Chat", crate::theme::Icon::MessageSquare, "Chats (Ctrl+1)"),
             (MainView::Teams, "Teams", crate::theme::Icon::Users, "Teams & channels (Ctrl+2)"),
             (MainView::Calendar, "Calendar", crate::theme::Icon::Calendar, "Calendar (Ctrl+3)"),
             (MainView::Files, "Files", crate::theme::Icon::FileText, "Files (Ctrl+4)"),
             (MainView::ToDo, "To Do", crate::theme::Icon::ListTodo, "To Do (Ctrl+5)"),
-            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+6)"),
+            (MainView::Planner, "Planner", crate::theme::Icon::SquareCheck, "Planner boards (Ctrl+6)"),
+            (MainView::Shifts, "Shifts", crate::theme::Icon::Clock, "Shifts this week (Ctrl+7)"),
+            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+8)"),
         ];
         for (view, _name, icon, tip) in sections {
             let sel = self.main_view == view;
@@ -2179,6 +2223,19 @@ impl eframe::App for TeamsFastApp {
                         );
                         self.todo = st;
                     }
+                    MainView::Planner => crate::ui::sections::planner_panel(
+                        ui,
+                        &self.planner,
+                        self.planner_loading,
+                        &self.palette,
+                        &mut actions,
+                    ),
+                    MainView::Shifts => crate::ui::sections::shifts_panel(
+                        ui,
+                        &self.shifts,
+                        self.shifts_loading,
+                        &self.palette,
+                    ),
                     MainView::Activity => crate::ui::sections::activity_panel(
                         ui,
                         &self.activity,
@@ -2260,7 +2317,9 @@ impl eframe::App for TeamsFastApp {
             (egui::Key::Num3, MainView::Calendar),
             (egui::Key::Num4, MainView::Files),
             (egui::Key::Num5, MainView::ToDo),
-            (egui::Key::Num6, MainView::Activity),
+            (egui::Key::Num6, MainView::Planner),
+            (egui::Key::Num7, MainView::Shifts),
+            (egui::Key::Num8, MainView::Activity),
         ];
         for (key, view) in section_keys {
             if ui.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {
