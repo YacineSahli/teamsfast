@@ -21,7 +21,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev cmake perl
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libdbus-1-dev cmake perl
       - run: cargo build --locked
       - run: cargo test --locked
       - name: Version probe
