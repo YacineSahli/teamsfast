@@ -13,6 +13,7 @@ pub mod headless;
 pub mod live_parse;
 pub mod live;
 pub mod media;
+pub mod sections;
 
 pub use headless::list_chats_headless;
 
@@ -85,6 +86,26 @@ pub enum Command {
     MarkUnread(String),
     /// Fetch who-read-what for a chat (consumption horizons).
     ReadReceipts(String),
+    // ---- sections ----
+    LoadCalendar,
+    LoadFiles,
+    LoadTodo,
+    LoadTodoTasks(String),
+    SetTodoDone {
+        list_id: String,
+        task_id: String,
+        done: bool,
+    },
+    AddTodoTask {
+        list_id: String,
+        title: String,
+    },
+    /// Download a OneDrive item to ~/Downloads and open it.
+    DownloadDriveFile {
+        drive_id: String,
+        item_id: String,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +197,18 @@ pub enum Event {
     ReadReceipts {
         chat_id: String,
         receipts: Vec<(String, String)>,
+    },
+    // ---- sections ----
+    /// Meetings for the coming week (soonest first).
+    Calendar(Vec<ost::api::MeetingInfo>),
+    /// Recent OneDrive files.
+    Files(Vec<ost::api::SharedFile>),
+    /// Our To Do lists.
+    TodoLists(Vec<ost::api::TodoListInfo>),
+    /// Tasks of one To Do list.
+    TodoTasks {
+        list_id: String,
+        tasks: Vec<ost::api::TodoTaskInfo>,
     },
     Error(String),
 }
@@ -471,6 +504,36 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::ReadReceipts(chat_id) => {
                 conv::fetch_receipts(&ses, &tx, &chat_id).await;
+            }
+            // ---- sections ----
+            Command::LoadCalendar => {
+                sections::calendar(&ses, &tx).await;
+            }
+            Command::LoadFiles => {
+                sections::files(&ses, &tx).await;
+            }
+            Command::LoadTodo => {
+                sections::todo_lists(&ses, &tx).await;
+            }
+            Command::LoadTodoTasks(list_id) => {
+                sections::todo_tasks(&ses, &tx, &list_id).await;
+            }
+            Command::SetTodoDone {
+                list_id,
+                task_id,
+                done,
+            } => {
+                sections::todo_set_done(&ses, &tx, &list_id, &task_id, done).await;
+            }
+            Command::AddTodoTask { list_id, title } => {
+                sections::todo_add(&ses, &tx, &list_id, &title).await;
+            }
+            Command::DownloadDriveFile {
+                drive_id,
+                item_id,
+                name,
+            } => {
+                sections::download_drive_file(&ses, &tx, &drive_id, &item_id, &name).await;
             }
         }
     }
