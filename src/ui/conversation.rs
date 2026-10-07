@@ -16,7 +16,6 @@ use crate::ui::widgets::{avatar, parse_html, render_segments};
 use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense, Stroke};
 use ost::api::MessageInfo;
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::Sender;
 
 const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 
@@ -1143,58 +1142,3 @@ fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
     }
 }
 
-fn hover_toolbar(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool) {
-    const QUICK: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
-    Frame::default()
-        .fill(Color32::from_rgb(0x26, 0x28, 0x33))
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(egui::Margin::symmetric(4, 2))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for e in QUICK {
-                    if ui
-                        .button(RichText::new(e).small())
-                        .on_hover_text("React")
-                        .clicked()
-                    {
-                        ctx.actions.push(Action::React {
-                            message_id: m.id.clone(),
-                            emoji: e.into(),
-                            remove: false,
-                        });
-                    }
-                }
-                if ui
-                    .small_button("Reply")
-                    .on_hover_text("Quote and reply")
-                    .clicked()
-                {
-                    ctx.actions.push(Action::Reply {
-                        message_id: m.id.clone(),
-                        sender: sender_label(m, ctx),
-                        snippet: crate::ui::widgets::segs_to_plain(&parse_html(&m.raw))
-                            .lines()
-                            .next()
-                            .unwrap_or("")
-                            .to_string(),
-                    });
-                }
-                if own {
-                    if ui.small_button("Edit").on_hover_text("Edit").clicked() {
-                        let current = crate::ui::widgets::segs_to_plain(&parse_html(&m.raw));
-                        ctx.actions.push(Action::StartEdit {
-                            message_id: m.id.clone(),
-                            current,
-                        });
-                    }
-                    if ui.small_button("Delete").on_hover_text("Delete").clicked() {
-                        ctx.actions.push(Action::DeleteMessage(m.id.clone()));
-                    }
-                }
-                if ui.small_button("Copy").on_hover_text("Copy text").clicked() {
-                    ui.ctx()
-                        .copy_text(crate::ui::widgets::segs_to_plain(&parse_html(&m.raw)));
-                }
-            });
-        });
-}

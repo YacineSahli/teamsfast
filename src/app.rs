@@ -6,7 +6,6 @@ use crate::ui::conversation::{self, Action, ConvCtx};
 use crate::ui::panels::{new_chat_dialog, search_panel, NewChatState};
 use crate::ui::settings::{SettingsInfo, SettingsUi};
 use crate::ui::sidebar::{sidebar, SideView};
-use crate::ui::widgets::avatar;
 use egui::{Color32, RichText};
 use ost::api::{ChatInfo, MessageInfo, SearchHitInfo, TeamInfo};
 use std::collections::{HashMap, HashSet};

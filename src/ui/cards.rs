@@ -6,7 +6,7 @@
 use crate::theme::Palette;
 use crate::ui::conversation::Action;
 use base64::Engine as _;
-use egui::{Color32, RichText, Ui};
+use egui::{RichText, Ui};
 use serde_json::Value;
 
 /// Find the Adaptive Card payload in a message's raw HTML and decode its
