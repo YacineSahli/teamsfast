@@ -11,7 +11,8 @@ meeting join.** Chat (send/reply/edit/delete/react/forward/pins,
 pending+retry bubbles, seen-by, unread badges, pinned/muted chats,
 per-chat notification levels, contact cards, ghost mode), Adaptive Cards,
 section rail (Chat/Teams+mgmt incl. channel rename-delete/Calendar+join/
-Files incl. per-chat shared files/ToDo/Planner/Shifts/Activity),
+Files incl. per-chat shared files/ToDo/Planner/Shifts/OneNote/Activity),
+quiet hours, Meet now,
 presence with status menu, full Settings window, GUI device-code sign-in,
 notification click→chat, 1:1 audio calls + MEETING JOIN (verified live:
 epconv → call_accepted=true → Call active). Offline/local search merged
@@ -106,6 +107,9 @@ with Graph. Video/screenshare is the remaining Phase 2 item.
   Plain `ui.label(emoji)` in Areas/Tooltips falls back to monochrome.
 
 ### egui 0.36, part 2 (learned the hard way this phase)
+- ScrollArea content INHERITS the parent layout: a vertical ScrollArea
+  inside a ui.horizontal row lays its children out HORIZONTALLY. Wrap the
+  scroll body in ui.vertical (todo/notes nav columns both hit this).
 - Two ScrollAreas/Grids in one view MUST get unique `id_salt`/ids — the
   defaults clash and egui paints "Second use of scrollbar/Grid ID" error
   chips while corrupting the second widget's state.
