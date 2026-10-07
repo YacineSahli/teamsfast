@@ -96,6 +96,30 @@ pub enum Action {
     DismissSend(String),
     /// Refetch the newest page (scrolls home / jump to latest).
     JumpLatest,
+    // ---- sections ----
+    /// Re-fetch the data of the visible section.
+    ReloadSection,
+    /// Open a URL with the system handler.
+    OpenLink(String),
+    /// Copy text to the clipboard.
+    CopyText(String),
+    /// Download a OneDrive item and open it.
+    DownloadDriveFile {
+        drive_id: String,
+        item_id: String,
+        name: String,
+    },
+    OpenTodoList(String),
+    AddTodoTask {
+        list_id: String,
+        title: String,
+    },
+    SetTodoDone {
+        list_id: String,
+        task_id: String,
+        done: bool,
+    },
+    ClearActivity,
 }
 
 /// An own message on its way out (or failed, awaiting Retry) — the view

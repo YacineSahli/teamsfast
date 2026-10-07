@@ -40,11 +40,6 @@ pub fn sidebar(
     actions: &mut Vec<Action>,
 ) {
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut ctx.view, SideView::Chats, RichText::new("Chats").strong());
-        ui.selectable_value(&mut ctx.view, SideView::Teams, RichText::new("Teams").strong());
-    });
-    ui.add_space(2.0);
 
     match ctx.view {
         SideView::Chats => {

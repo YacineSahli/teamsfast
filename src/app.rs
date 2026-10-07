@@ -21,6 +21,17 @@ enum State {
     Ready,
 }
 
+/// The active section (left icon rail).
+#[derive(PartialEq, Clone, Copy)]
+enum MainView {
+    Chat,
+    Teams,
+    Calendar,
+    Files,
+    ToDo,
+    Activity,
+}
+
 /// An own message on its way out (or failed, awaiting Retry).
 #[derive(Clone)]
 pub struct PendingSend {
@@ -86,6 +97,18 @@ pub struct TeamsFastApp {
     receipts: HashMap<String, Vec<String>>,
     /// Forward picker state: the text being forwarded + filter.
     forward: Option<ForwardState>,
+
+    // ---- sections ----
+    main_view: MainView,
+    meetings: Vec<ost::api::MeetingInfo>,
+    calendar_loading: bool,
+    drive_files: Vec<ost::api::SharedFile>,
+    files_loading: bool,
+    todo_lists: Vec<ost::api::TodoListInfo>,
+    todo_tasks: HashMap<String, Vec<ost::api::TodoTaskInfo>>,
+    todo: crate::ui::sections::TodoPanelState,
+    todo_loading: bool,
+    activity: Vec<crate::ui::sections::ActivityEntry>,
 
     /// Unread state per chat: (is-unread, approximate count).
     unread: HashMap<String, (bool, u32)>,
@@ -246,6 +269,16 @@ impl TeamsFastApp {
             pending_sends: Vec::new(),
             receipts: HashMap::new(),
             forward: None,
+            main_view: MainView::Chat,
+            meetings: Vec::new(),
+            calendar_loading: false,
+            drive_files: Vec::new(),
+            files_loading: false,
+            todo_lists: Vec::new(),
+            todo_tasks: HashMap::new(),
+            todo: Default::default(),
+            todo_loading: false,
+            activity: Vec::new(),
             catalog: theme::theme_catalog(cc.egui_ctx.clone()),
             palette: Palette::dark(),
             selected_theme: settings_load.theme.clone(),
@@ -328,6 +361,20 @@ impl TeamsFastApp {
                     // QA hook: TEAMSFAST_SETTINGS=1 opens the settings window.
                     if std::env::var("TEAMSFAST_SETTINGS").as_deref() == Ok("1") {
                         self.settings_ui.open = true;
+                    }
+                    // QA hook: TEAMSFAST_VIEW=<chat|teams|calendar|files|todo|activity>
+                    if let Ok(v) = std::env::var("TEAMSFAST_VIEW") {
+                        let view = match v.trim().to_ascii_lowercase().as_str() {
+                            "teams" => Some(MainView::Teams),
+                            "calendar" | "cal" => Some(MainView::Calendar),
+                            "files" => Some(MainView::Files),
+                            "todo" => Some(MainView::ToDo),
+                            "activity" => Some(MainView::Activity),
+                            _ => None,
+                        };
+                        if let Some(view) = view {
+                            self.switch_view(view);
+                        }
                     }
                 }
                 Event::NeedLogin(e) => {
@@ -526,6 +573,22 @@ impl TeamsFastApp {
                         }
                     }
                 }
+                // ---- sections ----
+                Event::Calendar(meetings) => {
+                    self.meetings = meetings;
+                    self.calendar_loading = false;
+                }
+                Event::Files(files) => {
+                    self.drive_files = files;
+                    self.files_loading = false;
+                }
+                Event::TodoLists(lists) => {
+                    self.todo_lists = lists;
+                    self.todo_loading = false;
+                }
+                Event::TodoTasks { list_id, tasks } => {
+                    self.todo_tasks.insert(list_id, tasks);
+                }
                 Event::Error(e) => self.error = Some(e),
             }
         }
@@ -593,6 +656,35 @@ impl TeamsFastApp {
             let entry = self.unread.entry(chat_id.clone()).or_insert((false, 0));
             entry.0 = true;
             entry.1 = entry.1.saturating_add(1);
+            // Activity feed: mentions first-class, other messages too.
+            let chat_name = self
+                .chats
+                .iter()
+                .find(|c| c.id == chat_id)
+                .map(|c| {
+                    if c.name.is_empty() || c.name == "[Direct message]" {
+                        "Direct message".to_string()
+                    } else {
+                        c.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| "Teams".into());
+            let kind = if preview.contains('@') { "mention" } else { "message" };
+            self.activity.insert(
+                0,
+                crate::ui::sections::ActivityEntry {
+                    kind,
+                    chat_id: chat_id.clone(),
+                    chat_name,
+                    who: sender.clone(),
+                    preview: preview.clone(),
+                    at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                },
+            );
+            self.activity.truncate(200);
             if !self.settings.muted_chats.contains(&chat_id) {
                 self.notify_desktop(chat_id, sender, preview);
             }
@@ -1019,10 +1111,168 @@ impl TeamsFastApp {
                     self.open_chat(chat);
                 }
             }
+            // ---- sections ----
+            Action::ReloadSection => self.reload_section(),
+            Action::OpenLink(url) => {
+                if let Err(e) = open::that_detached(&url) {
+                    self.error = Some(format!("open link: {e:#}"));
+                }
+            }
+            Action::CopyText(text) => {
+                if let Some(ctx) = self.egui_ctx.as_ref() {
+                    ctx.copy_text(text);
+                }
+            }
+            Action::DownloadDriveFile {
+                drive_id,
+                item_id,
+                name,
+            } => {
+                self.cmd
+                    .send(Command::DownloadDriveFile {
+                        drive_id,
+                        item_id,
+                        name,
+                    })
+                    .ok();
+            }
+            Action::OpenTodoList(list_id) => {
+                if !self.todo_tasks.contains_key(&list_id) {
+                    self.cmd.send(Command::LoadTodoTasks(list_id)).ok();
+                }
+            }
+            Action::AddTodoTask { list_id, title } => {
+                self.cmd
+                    .send(Command::AddTodoTask { list_id, title })
+                    .ok();
+            }
+            Action::SetTodoDone {
+                list_id,
+                task_id,
+                done,
+            } => {
+                self.cmd
+                    .send(Command::SetTodoDone {
+                        list_id,
+                        task_id,
+                        done,
+                    })
+                    .ok();
+            }
+            Action::ClearActivity => self.activity.clear(),
+        }
+    }
+
+    /// Switch the active section (loads its data on first visit).
+    fn switch_view(&mut self, view: MainView) {
+        self.main_view = view;
+        self.reload_section();
+    }
+
+    /// (Re)fetch the visible section's data.
+    fn reload_section(&mut self) {
+        match self.main_view {
+            MainView::Chat => {}
+            MainView::Teams => {
+                if self.teams.is_empty() {
+                    self.loading_teams = true;
+                    self.cmd.send(Command::LoadTeams).ok();
+                }
+            }
+            MainView::Calendar => {
+                self.calendar_loading = true;
+                self.cmd.send(Command::LoadCalendar).ok();
+            }
+            MainView::Files => {
+                self.files_loading = true;
+                self.cmd.send(Command::LoadFiles).ok();
+            }
+            MainView::ToDo => {
+                self.todo_loading = true;
+                self.cmd.send(Command::LoadTodo).ok();
+            }
+            MainView::Activity => {}
         }
     }
 
     // ---------------------------------------------------------------- layout
+
+    /// Left icon rail: section switcher (Chat/Teams/Calendar/Files/ToDo/
+    /// Activity) with the settings gear pinned at the bottom.
+    fn rail(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 6] = [
+            (MainView::Chat, "Chat", crate::theme::Icon::MessageSquare, "Chats (Ctrl+1)"),
+            (MainView::Teams, "Teams", crate::theme::Icon::Users, "Teams & channels (Ctrl+2)"),
+            (MainView::Calendar, "Calendar", crate::theme::Icon::Calendar, "Calendar (Ctrl+3)"),
+            (MainView::Files, "Files", crate::theme::Icon::FileText, "Files (Ctrl+4)"),
+            (MainView::ToDo, "To Do", crate::theme::Icon::ListTodo, "To Do (Ctrl+5)"),
+            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+6)"),
+        ];
+        for (view, _name, icon, tip) in sections {
+            let sel = self.main_view == view;
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::click());
+            if sel {
+                ui.painter().rect_filled(rect, 8, {
+                    let [r, g, b, _] = self.palette.accent.to_srgba_unmultiplied();
+                    Color32::from_rgba_unmultiplied(r, g, b, 0x50)
+                });
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        rect.left_top(),
+                        egui::vec2(3.0, rect.height()),
+                    ),
+                    2.0,
+                    self.palette.accent,
+                );
+            } else if resp.hovered() {
+                ui.painter().rect_filled(rect, 8, self.palette.surface_hover);
+            }
+            let tint = if sel { self.palette.text } else { self.palette.secondary };
+            let mut child =
+                ui.new_child(egui::UiBuilder::new().max_rect(rect));
+            child.vertical_centered(|ui| {
+                ui.add_space(9.0);
+                ui.add(
+                    egui::Image::from_bytes(icon.uri(), icon.bytes())
+                        .tint(tint)
+                        .fit_to_exact_size(egui::Vec2::splat(18.0)),
+                );
+            });
+            let resp = resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(tip);
+            if resp.clicked() {
+                self.switch_view(view);
+            }
+            // Unread indicator on the Chat icon.
+            if view == MainView::Chat {
+                let total: u32 = self
+                    .unread
+                    .values()
+                    .map(|(u, _)| u32::from(*u))
+                    .sum();
+                if total > 0 {
+                    let c = rect.right_top() + egui::vec2(-4.0, 4.0);
+                    ui.painter().circle_filled(c, 6.0, self.palette.accent);
+                }
+            }
+        }
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            let gear = ui.add(
+                egui::Button::new(
+                    crate::theme::Icon::Settings
+                        .image(self.palette.secondary, 18.0),
+                )
+                .fill(Color32::TRANSPARENT),
+            )
+            .on_hover_text("Settings (Ctrl+,)");
+            if gear.clicked() {
+                self.settings_ui.open = true;
+            }
+        });
+    }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -1231,44 +1481,59 @@ impl eframe::App for TeamsFastApp {
             self.top_bar(ui);
         });
 
-        egui::Panel::left("side")
-            .default_size(300.0)
-            .resizable(true)
+        // Section rail (icon strip, far left).
+        egui::Panel::left("rail")
+            .default_size(46.0)
+            .resizable(false)
             .show(ui, |ui| {
-                let mut sctx = crate::ui::sidebar::SidebarCtx {
-                    chats: &self.chats,
-                    selected: self.selected.as_ref(),
-                    teams: &self.teams,
-                    view: self.side_view,
-                    cmd: &self.cmd,
-                    pal: &self.palette,
-                    unread: &self.unread,
-                    show_badges: self.settings.unread_badges,
-                    pinned: &self
-                        .settings
-                        .pinned_chats
-                        .iter()
-                        .cloned()
-                        .collect::<std::collections::HashSet<String>>(),
-                    muted: &self
-                        .settings
-                        .muted_chats
-                        .iter()
-                        .cloned()
-                        .collect::<std::collections::HashSet<String>>(),
-                };
-                let mut loading = self.loading_teams;
-                let mut search = std::mem::take(&mut self.sidebar_search);
-                let mut side_actions: Vec<Action> = Vec::new();
-                sidebar(ui, &mut sctx, &mut search, &mut loading, &mut side_actions);
-                self.sidebar_search = search;
-                self.loading_teams = loading;
-                self.side_view = sctx.view;
-                for a in side_actions {
-                    self.apply(a);
-                }
+                self.rail(ui);
             });
 
+        // Chat-family sections keep the list sidebar; the others take the
+        // whole central area.
+        let chat_family = matches!(self.main_view, MainView::Chat | MainView::Teams);
+        if chat_family && self.state == State::Ready {
+            egui::Panel::left("side")
+                .default_size(300.0)
+                .resizable(true)
+                .show(ui, |ui| {
+                    let mut sctx = crate::ui::sidebar::SidebarCtx {
+                        chats: &self.chats,
+                        selected: self.selected.as_ref(),
+                        teams: &self.teams,
+                        view: match self.main_view {
+                            MainView::Teams => SideView::Teams,
+                            _ => SideView::Chats,
+                        },
+                        cmd: &self.cmd,
+                        pal: &self.palette,
+                        unread: &self.unread,
+                        show_badges: self.settings.unread_badges,
+                        pinned: &self
+                            .settings
+                            .pinned_chats
+                            .iter()
+                            .cloned()
+                            .collect::<HashSet<String>>(),
+                        muted: &self
+                            .settings
+                            .muted_chats
+                            .iter()
+                            .cloned()
+                            .collect::<HashSet<String>>(),
+                    };
+                    let mut loading = self.loading_teams;
+                    let mut search = std::mem::take(&mut self.sidebar_search);
+                    let mut side_actions: Vec<Action> = Vec::new();
+                    sidebar(ui, &mut sctx, &mut search, &mut loading, &mut side_actions);
+                    self.sidebar_search = search;
+                    self.loading_teams = loading;
+                    self.side_view = sctx.view;
+                    for a in side_actions {
+                        self.apply(a);
+                    }
+                });
+        }
 
         if self.offline.is_some() {
             egui::Panel::top("offline")
@@ -1332,7 +1597,7 @@ impl eframe::App for TeamsFastApp {
                 });
         }
 
-        if self.state == State::Ready && self.selected.is_some() {
+        if chat_family && self.state == State::Ready && self.selected.is_some() {
             let chat_id = self.selected.clone().unwrap();
             let mut actions: Vec<Action> = Vec::new();
             let pending_view: Vec<conversation::PendingBubble> = self
@@ -1383,7 +1648,7 @@ impl eframe::App for TeamsFastApp {
             for a in actions {
                 self.apply(a);
             }
-        } else {
+        } else if chat_family {
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
@@ -1424,6 +1689,50 @@ impl eframe::App for TeamsFastApp {
                         }
                     });
                 });
+            });
+        } else {
+            // Section views own the whole central area.
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let mut actions: Vec<Action> = Vec::new();
+                match self.main_view {
+                    MainView::Calendar => crate::ui::sections::calendar_panel(
+                        ui,
+                        &self.meetings,
+                        self.calendar_loading,
+                        &self.palette,
+                        &mut actions,
+                    ),
+                    MainView::Files => crate::ui::sections::files_panel(
+                        ui,
+                        &self.drive_files,
+                        self.files_loading,
+                        &self.palette,
+                        &mut actions,
+                    ),
+                    MainView::ToDo => {
+                        let mut st = std::mem::take(&mut self.todo);
+                        crate::ui::sections::todo_panel(
+                            ui,
+                            &self.todo_lists,
+                            &self.todo_tasks,
+                            &mut st,
+                            self.todo_loading,
+                            &self.palette,
+                            &mut actions,
+                        );
+                        self.todo = st;
+                    }
+                    MainView::Activity => crate::ui::sections::activity_panel(
+                        ui,
+                        &self.activity,
+                        &self.palette,
+                        &mut actions,
+                    ),
+                    _ => unreachable!("chat family handled above"),
+                }
+                for a in actions {
+                    self.apply(a);
+                }
             });
         }
 
@@ -1486,6 +1795,20 @@ impl eframe::App for TeamsFastApp {
         }
         if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Comma)) {
             self.settings_ui.open = true;
+        }
+        // Section shortcuts: Ctrl+1..6.
+        let section_keys = [
+            (egui::Key::Num1, MainView::Chat),
+            (egui::Key::Num2, MainView::Teams),
+            (egui::Key::Num3, MainView::Calendar),
+            (egui::Key::Num4, MainView::Files),
+            (egui::Key::Num5, MainView::ToDo),
+            (egui::Key::Num6, MainView::Activity),
+        ];
+        for (key, view) in section_keys {
+            if ui.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {
+                self.switch_view(view);
+            }
         }
 
         // Forward-to-chat picker.
