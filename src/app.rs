@@ -99,6 +99,8 @@ pub struct TeamsFastApp {
     forward: Option<ForwardState>,
     /// Device-code sign-in state (URL + code once the backend has them).
     login_code: Option<(String, String)>,
+    /// Active call (label + start time) while the backend call task runs.
+    call: Option<(String, Instant)>,
 
     // ---- sections ----
     main_view: MainView,
@@ -272,6 +274,7 @@ impl TeamsFastApp {
             receipts: HashMap::new(),
             forward: None,
             login_code: None,
+            call: None,
             main_view: MainView::Chat,
             meetings: Vec::new(),
             calendar_loading: false,
@@ -359,6 +362,23 @@ impl TeamsFastApp {
                     self.login_code = Some((url, code));
                     self.status = "Finish the sign-in in your browser…".into();
                 }
+                // ---- calls ----
+                Event::CallStarted { label } => {
+                    self.call = Some((label, Instant::now()));
+                }
+                Event::CallStatus(s) => {
+                    if let Some((label, at)) = self.call.take() {
+                        self.call = Some((format!("{label} — {s}"), at));
+                    }
+                }
+                Event::CallEnded(summary) => {
+                    self.call = None;
+                    self.status = summary;
+                }
+                Event::CallFailed(e) => {
+                    self.call = None;
+                    self.error = Some(format!("call: {e}"));
+                }
                 Event::Ready => {
                     self.state = State::Ready;
                     self.status = "Connected".into();
@@ -372,6 +392,10 @@ impl TeamsFastApp {
                     // QA hook: TEAMSFAST_SETTINGS=1 opens the settings window.
                     if std::env::var("TEAMSFAST_SETTINGS").as_deref() == Ok("1") {
                         self.settings_ui.open = true;
+                    }
+                    // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call.
+                    if std::env::var("TEAMSFAST_TESTCALL").as_deref() == Ok("1") {
+                        self.cmd.send(Command::TestCall).ok();
                     }
                     // QA hook: TEAMSFAST_VIEW=<chat|teams|calendar|files|todo|activity>
                     if let Ok(v) = std::env::var("TEAMSFAST_VIEW") {
@@ -1171,6 +1195,16 @@ impl TeamsFastApp {
                     .ok();
             }
             Action::ClearActivity => self.activity.clear(),
+            // ---- calls ----
+            Action::StartCall(chat_id) => {
+                self.cmd.send(Command::StartCall(chat_id)).ok();
+            }
+            Action::TestCall => {
+                self.cmd.send(Command::TestCall).ok();
+            }
+            Action::HangUp => {
+                self.cmd.send(Command::HangUp).ok();
+            }
         }
     }
 
@@ -1583,6 +1617,50 @@ impl eframe::App for TeamsFastApp {
                 });
         }
 
+        if let Some((label, at)) = self.call.clone() {
+            let secs = at.elapsed().as_secs();
+            let mm = secs / 60;
+            let ss = secs % 60;
+            egui::Panel::top("call")
+                .frame(
+                    egui::Frame::default()
+                        .fill(Color32::from_rgba_unmultiplied(
+                            self.palette.ok.r(),
+                            self.palette.ok.g(),
+                            self.palette.ok.b(),
+                            30,
+                        ))
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(
+                                self.palette.ok.r(),
+                                self.palette.ok.g(),
+                                self.palette.ok.b(),
+                                120,
+                            ),
+                        )),
+                )
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("●").color(self.palette.ok).size(13.0));
+                        ui.label(RichText::new(format!("{label}  {mm:02}:{ss:02}")).small());
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Hang up").small().color(self.palette.on_accent),
+                                )
+                                .fill(self.palette.danger)
+                                .min_size(egui::vec2(70.0, 22.0)),
+                            )
+                            .clicked()
+                        {
+                            self.cmd.send(Command::HangUp).ok();
+                        }
+                    });
+                });
+        }
+
         if self.search_open {
             egui::Panel::right("search")
                 .default_size(330.0)
@@ -1640,6 +1718,12 @@ impl eframe::App for TeamsFastApp {
                 pending: &pending_view,
                 receipts: &self.receipts,
                 pinned: &pinned_here,
+                can_call: {
+                    let id = chat_id.as_str();
+                    id.contains("@unq.gbl.spaces")
+                        && !chat_id.starts_with("19:meeting_")
+                },
+                call_label: self.call.as_ref().map(|(l, _)| l.as_str()),
                 textures: &self.textures,
                 pending_images: &mut self.pending_images,
                 emoji_textures: &mut self.emoji_textures,

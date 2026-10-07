@@ -180,6 +180,16 @@ fn general(ui: &mut Ui, settings: &mut Settings, info: &SettingsInfo<'_>, action
     if ui.button("Refresh chats now").clicked() {
         actions.push(Action::Refresh);
     }
+    ui.add_space(8.0);
+    ui.strong("Audio");
+    if ui.button("Test call (echo bot)").clicked() {
+        actions.push(Action::TestCall);
+    }
+    ui.label(
+        RichText::new("Rings Microsoft's Call Quality Tester; speak after the beep and hear yourself back.")
+            .small()
+            .weak(),
+    );
 }
 
 fn appearance(

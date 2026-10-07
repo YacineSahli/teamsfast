@@ -120,6 +120,12 @@ pub enum Action {
         done: bool,
     },
     ClearActivity,
+    // ---- calls ----
+    /// Place a 1:1 audio call to this chat's peer.
+    StartCall(String),
+    /// Ring the echo/test bot.
+    TestCall,
+    HangUp,
 }
 
 /// An own message on its way out (or failed, awaiting Retry) — the view
@@ -150,6 +156,10 @@ pub struct ConvCtx<'a> {
     pub receipts: &'a std::collections::HashMap<String, Vec<String>>,
     /// Locally pinned message ids in this chat.
     pub pinned: &'a [String],
+    /// True when this chat is a 1:1 thread a call can be placed to.
+    pub can_call: bool,
+    /// Active-call banner text (None when idle).
+    pub call_label: Option<&'a str>,
     pub textures: &'a std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
     pub pending_images: &'a mut HashSet<String>,
     /// Emoji raster cache: cluster -> texture (colour, from bundled Noto).
@@ -200,6 +210,35 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                     }
                 },
             );
+        }
+        // Call controls for 1:1 chats.
+        if let Some(label) = ctx.call_label {
+            ui.label(
+                egui::RichText::new(format!("● {label}"))
+                    .small()
+                    .color(ctx.pal.ok),
+            );
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("Hang up").small().color(ctx.pal.on_accent))
+                        .fill(ctx.pal.danger)
+                        .min_size(egui::vec2(64.0, 22.0)),
+                )
+                .clicked()
+            {
+                ctx.actions.push(Action::HangUp);
+            }
+        } else if ctx.can_call {
+            let call = ui.add(
+                egui::Button::new(crate::theme::Icon::Phone.image(ctx.pal.secondary, 15.0))
+                    .fill(egui::Color32::TRANSPARENT),
+            );
+            if call
+                .on_hover_text("Call (audio)")
+                .clicked()
+            {
+                ctx.actions.push(Action::StartCall(ctx.chat_id.clone()));
+            }
         }
         // Jump to latest: history is paged above, so re-anchor to the tail.
         if ctx.older_link.is_some() {
