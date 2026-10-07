@@ -15,12 +15,21 @@ jobs:
   build-test:
     name: build + test
     runs-on: ubuntu-24.04
+    # A green run takes ~4 min; anything longer is a stuck step (apt-get
+    # stalls are a recurring runner flake) — kill it instead of idling
+    # for hours in "in_progress".
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install build dependencies
         run: |
-          sudo apt-get update
+          # Ubuntu archive mirrors intermittently stall on hosted runners;
+          # retry the index refresh before giving up to install.
+          for attempt in 1 2 3; do
+            sudo apt-get update && break
+            echo "apt-get update stalled (attempt $attempt)"; sleep 10
+          done
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libdbus-1-dev cmake perl
       - run: cargo build --locked
       - run: cargo test --locked
