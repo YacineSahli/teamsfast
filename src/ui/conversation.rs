@@ -138,6 +138,12 @@ pub enum Action {
     CreateTeam(String),
     /// Open the contact card for a member (mri + display name).
     ShowContact { mri: String, name: String },
+    /// Tick/untick a planner task.
+    SetPlannerDone {
+        task_id: String,
+        etag: String,
+        done: bool,
+    },
     /// Start/open the 1:1 with this member's mri.
     ChatWith { mri: String, name: String },
     HangUp,

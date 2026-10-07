@@ -211,6 +211,127 @@ pub async fn create_team(ses: &Session, tx: &Sender<Event>, name: &str) {
     }
 }
 
+// ------------------------------------------------------------- planner
+
+/// `Command::LoadPlanner` — every team's plans with buckets + tasks.
+/// Bounded: first 4 plans overall keep the load light.
+pub async fn load_planner(ses: &Session, tx: &Sender<Event>) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    let teams = match ost::api::list_teams_data(c).await {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("planner teams: {e:#}")));
+            let _ = tx.send(Event::Planner(Vec::new()));
+            return;
+        }
+    };
+    let mut boards = Vec::new();
+    'teams: for team in &teams {
+        let plans = match ost::api::list_plans_data(c, &team.id).await {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        for plan in plans {
+            if boards.len() >= 4 {
+                break 'teams;
+            }
+            let buckets = ost::api::list_buckets_data(c, &plan.id)
+                .await
+                .unwrap_or_default();
+            let tasks = ost::api::list_tasks_data(c, &plan.id, 40)
+                .await
+                .unwrap_or_default();
+            if tasks.is_empty() {
+                continue;
+            }
+            boards.push(crate::ui::sections::PlannerBoard {
+                team: team.name.clone(),
+                plan: plan.title,
+                buckets: buckets.into_iter().map(|b| (b.id, b.name)).collect(),
+                tasks,
+            });
+        }
+    }
+    let _ = tx.send(Event::Planner(boards));
+}
+
+/// `Command::SetPlannerDone` — tick / untick a task.
+pub async fn planner_set_done(
+    ses: &Session,
+    tx: &Sender<Event>,
+    task_id: &str,
+    etag: &str,
+    done: bool,
+) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::set_task_complete_with_client(c, task_id, etag, done).await {
+        Ok(_) => {
+            let _ = tx.send(Event::Status("task updated ✓".into()));
+            load_planner(ses, tx).await;
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("planner task: {e:#}")));
+        }
+    }
+}
+
+// -------------------------------------------------------------- shifts
+
+/// `Command::LoadShifts` — the first schedule-enabled team's week.
+pub async fn load_shifts(ses: &Session, tx: &Sender<Event>) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    let teams = match ost::api::list_teams_data(c).await {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("shifts teams: {e:#}")));
+            let _ = tx.send(Event::Shifts(Vec::new()));
+            return;
+        }
+    };
+    for team in &teams {
+        let Ok(schedule) = ost::api::list_schedule_data(c, &team.id).await else {
+            continue;
+        };
+        if !schedule.enabled {
+            continue;
+        }
+        // This week, local time: Monday 00:00 → +7 days.
+        let now = jiff::Zoned::now();
+        let days_from_monday = now.date().weekday().to_monday_zero_offset() as i64;
+        let midnight = now
+            .with()
+            .hour(0)
+            .minute(0)
+            .second(0)
+            .subsec_nanosecond(0)
+            .build()
+            .unwrap_or_else(|_| now.clone());
+        let monday = midnight - jiff::Span::new().days(days_from_monday);
+        let sunday = monday.clone() + jiff::Span::new().days(7);
+        let fmt = |z: &jiff::Zoned| z.timestamp().to_string();
+        match ost::api::list_shifts_range_data(c, &team.id, &fmt(&monday), &fmt(&sunday)).await
+        {
+            Ok(mut shifts) => {
+                shifts.sort_by(|a, b| a.start.cmp(&b.start));
+                let _ = tx.send(Event::Shifts(shifts));
+                return;
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("shifts: {e:#}")));
+                let _ = tx.send(Event::Shifts(Vec::new()));
+                return;
+            }
+        }
+    }
+    let _ = tx.send(Event::Shifts(Vec::new()));
+}
+
 fn dirs_downloads() -> std::path::PathBuf {
     std::env::var_os("XDG_DOWNLOAD_DIR")
         .map(std::path::PathBuf::from)
