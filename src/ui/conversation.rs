@@ -931,7 +931,11 @@ fn bubble_parts(
         .zip(bar_rect_prev)
         .map(|(p, r)| expand(r, 8.0).contains(p))
         .unwrap_or(false);
-    let open = in_bubble || in_bar;
+    // QA hook: force the bar open on the LAST message for screenshots
+    // (headless runs have no reliable pointer position).
+    let forced = std::env::var("TEAMSFAST_HOVER").as_deref() == Ok("1")
+        && std::ptr::eq(m as *const _, ctx.messages.last().unwrap_or(m) as *const _);
+    let open = in_bubble || in_bar || forced;
 
     if open {
         let clip = ui.clip_rect();
@@ -965,9 +969,16 @@ fn bubble_parts(
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 for e in QUICK_REACTIONS {
-                                    let btn = egui::Button::new(
-                                        emoji_widget(ui, ctx, e, 20.0),
-                                    )
+                                    // The emoji must live INSIDE the button:
+                                    // Button::image. (Button::new of a
+                                    // pre-added widget paints the emoji on
+                                    // the bar and leaves an empty chip.)
+                                    let btn = match emoji_image(ui, ctx, e, 20.0) {
+                                        Some(img) => egui::Button::image(img),
+                                        None => egui::Button::new(
+                                            RichText::new((*e).to_string()).size(20.0),
+                                        ),
+                                    }
                                     .fill(Color32::TRANSPARENT)
                                     .min_size(egui::vec2(32.0, 28.0));
                                     if ui.add(btn).on_hover_text("React").clicked() {
@@ -1155,9 +1166,15 @@ fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
     }
 }
 
-/// Full-colour emoji as an egui widget (bundled Noto raster — never the
-/// monochrome fallback font that hit-tests/bars were getting).
-fn emoji_widget(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, cluster: &str, px: f32) {
+/// Rasterize (cached) and return a sized image for an emoji cluster.
+/// Does NOT add anything to a Ui — callers place it inside their widget
+/// (a pre-added image paints on the parent and leaves its button empty).
+fn emoji_image(
+    ui: &egui::Ui,
+    ctx: &mut ConvCtx<'_>,
+    cluster: &str,
+    px: f32,
+) -> Option<egui::Image<'static>> {
     if !ctx.emoji_textures.contains_key(cluster) {
         if let Some((rgba, size)) = crate::theme::raster_emoji(cluster, 64) {
             let img = egui::ColorImage::from_rgba_unmultiplied(
@@ -1170,14 +1187,20 @@ fn emoji_widget(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, cluster: &str, px: f32
             ctx.emoji_textures.insert(cluster.to_string(), tex);
         }
     }
-    match ctx.emoji_textures.get(cluster) {
-        Some(tex) => {
-            let scale = px / tex.size()[1].max(1) as f32;
-            let size = egui::vec2(
-                tex.size()[0] as f32 * scale,
-                tex.size()[1] as f32 * scale,
-            );
-            ui.add(egui::Image::new((tex.id(), size)));
+    let tex = ctx.emoji_textures.get(cluster)?;
+    let scale = px / tex.size()[1].max(1) as f32;
+    let size = egui::vec2(
+        tex.size()[0] as f32 * scale,
+        tex.size()[1] as f32 * scale,
+    );
+    Some(egui::Image::new((tex.id(), size)))
+}
+
+/// Add the emoji widget directly to `ui` (reaction chips under messages).
+fn emoji_widget(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, cluster: &str, px: f32) {
+    match emoji_image(ui, ctx, cluster, px) {
+        Some(img) => {
+            ui.add(img);
         }
         None => {
             ui.label(RichText::new(cluster).size(px));
