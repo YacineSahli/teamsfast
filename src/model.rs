@@ -117,6 +117,20 @@ pub fn format_chat_time(ms_opt: &Option<String>) -> String {    let raw = ms_opt
     }
 }
 
+/// One-line preview for a local search hit.
+pub fn local_search_preview(content: &str) -> String {
+    let mut line = clean_preview(content)
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if line.chars().count() > 96 {
+        line = format!("{}…", line.chars().take(96).collect::<String>());
+    }
+    line
+}
+
 /// Remove connector markdown (`++underline++`, `**bold**`, `` `code` ``)
 /// that leaks into previews.
 pub fn clean_preview(s: &str) -> String {

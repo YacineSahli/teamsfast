@@ -3,7 +3,9 @@
 use super::{Event, Session};
 use std::sync::mpsc::Sender;
 
-/// `Command::Search` — Graph search over messages.
+/// `Command::Search` — Graph search over messages, merged with the local
+/// archive index (offline results always included, deduped by message id;
+/// they also cover the tenant-blocked / offline cases alone).
 pub async fn search(ses: &Session, tx: &Sender<Event>, query: &str, from: usize) {
     if query.trim().is_empty() {
         let _ = tx.send(Event::SearchResults {
@@ -21,27 +23,83 @@ pub async fn search(ses: &Session, tx: &Sender<Event>, query: &str, from: usize)
         Ok(page) => {
             let _ = tx.send(Event::SearchResults {
                 query: query.to_string(),
-                hits: page.hits,
+                hits: merge_local(ses, query, page.hits),
                 more: page.more,
             });
         }
         Err(e) => {
             let msg = format!("{e:#}");
             if msg.contains("403") || msg.contains("Forbidden") {
-                let _ = tx.send(Event::SearchUnavailable(
-                    "Message search isn't available with this tenant's Teams                      permissions (Graph refused the Teams client token)."
-                        .into(),
-                ));
+                let local = local_hits(ses, query, 25);
+                let note = if local.is_empty() {
+                    "Online message search isn't available with this tenant's Teams \
+                     permissions (Graph refused the Teams client token)."
+                        .to_string()
+                } else {
+                    format!(
+                        "Online search is blocked by this tenant; showing {} local results.",
+                        local.len()
+                    )
+                };
+                let _ = tx.send(Event::SearchUnavailable(note));
+                let _ = tx.send(Event::SearchResults {
+                    query: query.to_string(),
+                    hits: local,
+                    more: false,
+                });
             } else {
                 let _ = tx.send(Event::Error(format!("search: {msg}")));
+                let _ = tx.send(Event::SearchResults {
+                    query: query.to_string(),
+                    hits: local_hits(ses, query, 25),
+                    more: false,
+                });
             }
-            let _ = tx.send(Event::SearchResults {
-                query: query.to_string(),
-                hits: Vec::new(),
-                more: false,
-            });
         }
     }
+}
+
+/// Archive hits as search results (newest first).
+fn local_hits(ses: &Session, query: &str, limit: usize) -> Vec<ost::api::SearchHitInfo> {
+    let Some(archive) = ses.archive.as_ref() else {
+        return Vec::new();
+    };
+    archive
+        .search_messages(query, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(chat_id, m)| ost::api::SearchHitInfo {
+            message_id: m.id.clone(),
+            chat_id,
+            team_id: None,
+            channel_id: None,
+            sender: if m.sender.is_empty() { "Unknown".into() } else { m.sender },
+            timestamp: m.timestamp,
+            preview: crate::model::local_search_preview(&m.content),
+            subject: None,
+        })
+        .collect()
+}
+
+/// Local + online hits, deduped by message id, locals first.
+fn merge_local(
+    ses: &Session,
+    query: &str,
+    online: Vec<ost::api::SearchHitInfo>,
+) -> Vec<ost::api::SearchHitInfo> {
+    let local = local_hits(ses, query, 25);
+    if local.is_empty() {
+        return online;
+    }
+    let mut out = local;
+    let seen: std::collections::HashSet<String> =
+        out.iter().map(|h| h.message_id.clone()).collect();
+    for h in online {
+        if !seen.contains(&h.message_id) {
+            out.push(h);
+        }
+    }
+    out
 }
 
 /// `Command::LoadTeams` — teams with their channels.

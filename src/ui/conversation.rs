@@ -128,6 +128,8 @@ pub enum Action {
     JoinMeeting { source: String, label: Option<String> },
     /// Open the "join with link" input.
     ShowJoinDialog,
+    /// Per-chat notification level ("all" | "mentions" | "off").
+    SetNotifyLevel { chat_id: String, level: String },
     HangUp,
 }
 

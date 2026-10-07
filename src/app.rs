@@ -776,7 +776,16 @@ impl TeamsFastApp {
                 },
             );
             self.activity.truncate(200);
-            if !self.settings.muted_chats.contains(&chat_id) {
+            let level = self
+                .settings
+                .notification_levels
+                .get(&chat_id)
+                .map(|s| s.as_str())
+                .unwrap_or("all");
+            let notify_ok = !self.settings.muted_chats.contains(&chat_id)
+                && level != "off"
+                && (level != "mentions" || preview.contains('@'));
+            if notify_ok {
                 self.notify_desktop(chat_id, sender, preview);
             }
         }
@@ -1277,6 +1286,16 @@ impl TeamsFastApp {
                 self.cmd.send(Command::JoinMeeting(source)).ok();
             }
             Action::ShowJoinDialog => self.join_open = true,
+            Action::SetNotifyLevel { chat_id, level } => {
+                if level == "all" {
+                    self.settings.notification_levels.remove(&chat_id);
+                } else {
+                    self.settings
+                        .notification_levels
+                        .insert(chat_id, level);
+                }
+                theme::save_settings(&self.settings);
+            }
             Action::HangUp => {
                 self.cmd.send(Command::HangUp).ok();
             }
@@ -1638,7 +1657,8 @@ impl eframe::App for TeamsFastApp {
                             .iter()
                             .cloned()
                             .collect::<HashSet<String>>(),
-                    };
+                    notify_levels: &self.settings.notification_levels,
+                };
                     let mut loading = self.loading_teams;
                     let mut search = std::mem::take(&mut self.sidebar_search);
                     let mut side_actions: Vec<Action> = Vec::new();
