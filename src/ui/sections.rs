@@ -30,6 +30,13 @@ pub fn calendar_panel(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button(RichText::new("Join with link…").small())
+                .on_hover_text("Paste a Teams meeting link or ID")
+                .clicked()
+            {
+                actions.push(Action::ShowJoinDialog);
+            }
             if ui.small_button(RichText::new("Refresh").small()).clicked() {
                 actions.push(Action::ReloadSection);
             }
@@ -91,11 +98,24 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(url) = &m.join_url {
                         if ui
-                            .small_button(RichText::new("Join info").small())
-                            .on_hover_text(url)
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Join").small().color(pal.on_accent),
+                                )
+                                .fill(pal.accent)
+                                .min_size(egui::vec2(54.0, 20.0)),
+                            )
+                            .on_hover_text("Join this meeting in TeamsFast")
                             .clicked()
                         {
-                            actions.push(Action::OpenLink(url.clone()));
+                            actions.push(Action::JoinMeeting {
+                                source: url.clone(),
+                                label: Some(if m.subject.is_empty() {
+                                    "Meeting".to_string()
+                                } else {
+                                    m.subject.clone()
+                                }),
+                            });
                         }
                         if ui
                             .small_button(RichText::new("Copy link").small())

@@ -100,6 +100,11 @@ pub struct TeamsFastApp {
     login_code: Option<(String, String)>,
     /// Active call (label + start time) while the backend call task runs.
     call: Option<(String, Instant)>,
+    /// "Join with link" dialog state.
+    join_open: bool,
+    join_source: String,
+    /// Subject hint for the next meeting join's banner label.
+    call_label_hint: Option<String>,
 
     // ---- sections ----
     main_view: MainView,
@@ -274,6 +279,9 @@ impl TeamsFastApp {
             forward: None,
             login_code: None,
             call: None,
+            join_open: false,
+            join_source: String::new(),
+            call_label_hint: None,
             main_view: MainView::Chat,
             meetings: Vec::new(),
             calendar_loading: false,
@@ -363,6 +371,12 @@ impl TeamsFastApp {
                 }
                 // ---- calls ----
                 Event::CallStarted { label } => {
+                    // A hint (meeting subject from the calendar) wins over
+                    // the generic "Meeting"/thread-id label.
+                    let label = self
+                        .call_label_hint
+                        .take()
+                        .unwrap_or(label);
                     self.call = Some((label, Instant::now()));
                 }
                 Event::CallStatus(s) => {
@@ -638,6 +652,20 @@ impl TeamsFastApp {
                 }
                 // ---- sections ----
                 Event::Calendar(meetings) => {
+                    // QA hook: TEAMSFAST_JOIN=1 auto-joins the first meeting
+                    // that has a join link.
+                    if std::env::var("TEAMSFAST_JOIN").as_deref() == Ok("1") {
+                        if let Some(m) = meetings.iter().find(|m| m.join_url.is_some()) {
+                            let url = m.join_url.clone().unwrap();
+                            let label = Some(if m.subject.is_empty() {
+                                "Meeting".to_string()
+                            } else {
+                                m.subject.clone()
+                            });
+                            self.call_label_hint = label;
+                            self.cmd.send(Command::JoinMeeting(url)).ok();
+                        }
+                    }
                     self.meetings = meetings;
                     self.calendar_loading = false;
                 }
@@ -1242,6 +1270,13 @@ impl TeamsFastApp {
             Action::TestCall => {
                 self.cmd.send(Command::TestCall).ok();
             }
+            Action::JoinMeeting { source, label } => {
+                self.join_open = false;
+                self.status = "Resolving meeting…".into();
+                self.call_label_hint = label;
+                self.cmd.send(Command::JoinMeeting(source)).ok();
+            }
+            Action::ShowJoinDialog => self.join_open = true,
             Action::HangUp => {
                 self.cmd.send(Command::HangUp).ok();
             }
@@ -2076,6 +2111,62 @@ impl eframe::App for TeamsFastApp {
                     })
                     .ok();
                 self.status = "message forwarded".into();
+            }
+        }
+
+        // Join-with-link dialog.
+        if self.join_open {
+            let mut join_now = false;
+            let mut close = false;
+            egui::Window::new("Join a meeting")
+                .default_width(460.0)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(
+                        RichText::new(
+                            "Paste a Teams meeting link, a meeting thread id, or a meet ID.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    ui.add_space(4.0);
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut self.join_source)
+                            .hint_text("https://teams.microsoft.com/l/meetup-join/…")
+                            .desired_width(ui.available_width()),
+                    );
+                    let enter =
+                        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Join").strong().color(self.palette.on_accent),
+                                )
+                                .fill(self.palette.accent)
+                                .min_size(egui::vec2(70.0, 24.0)),
+                            )
+                            .clicked()
+                            || enter
+                        {
+                            join_now = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.join_open = false;
+            }
+            if join_now {
+                let src = self.join_source.trim().to_string();
+                if !src.is_empty() {
+                    self.apply(Action::JoinMeeting { source: src, label: None });
+                }
+                self.join_source.clear();
             }
         }
 
