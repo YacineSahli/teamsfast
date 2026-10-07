@@ -261,13 +261,20 @@ remaining Phase 2 item.
 
 ### Release + self-update (live since v0.1.0)
 
-- Tags `v*` trigger `.github/workflows/release.yml`: x86_64 + aarch64
+- **Release policy (user decision, 2026-10-07): builds run ONLY on
+  release.** There is no CI workflow — tags `v*` trigger
+  `.github/workflows/release.yml`: x86_64 + aarch64
   tarballs (portable marker inside), attested, `checksums.txt` signed
   with the Ed25519 key whose public half is
   `assets/update-public-key.hex`; the private key lives in the
   `TEAMSFAST_UPDATE_SIGNING_KEY` repo secret (backup copy:
   `~/.config/teamsfast-dev/update-signing-key.pem` — LOSING it breaks
   update verification for shipped installs; keep a copy off-machine).
+  **NEVER tag or release autonomously**: the user tests manually until
+  the product is feature-complete and polished; every release lands on
+  their install via self-update, so cut one only on an explicit
+  "release vX" request. Verify with `cargo build && cargo test` locally
+  before tagging — there is no CI safety net on main.
 - Releases REQUIRE `packaging/release-notes/v<ver>.md` committed first.
 - The updater is `src/updates.rs` + the worker in app.rs; installation
   detection needs the marker beside the binary (dev builds from cargo
