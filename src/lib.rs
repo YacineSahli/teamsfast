@@ -6,6 +6,7 @@ mod model;
 mod theme;
 mod tray;
 mod ui;
+pub mod updates;
 
 pub use app::TeamsFastApp;
 

@@ -53,9 +53,19 @@ fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+# Self-update from GitHub releases (see src/updates.rs).
+fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1", features = [
+    "reqwest",
+] }
 
 # Backend worker runtime (protocol calls + trouter live on a worker thread).
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+# Update checks ride the same reqwest the core uses (blocking client for
+# fastframe-update's ReqwestTransport).
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "native-tls",
+] }
 
 # Logging to stderr; the fastframe log file arrives in Phase 1.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }

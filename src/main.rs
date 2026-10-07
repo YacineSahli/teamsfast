@@ -82,7 +82,20 @@ fn init_logging(log_path: &std::path::Path, panic_path: &std::path::Path) {
 }
 
 fn main() -> eframe::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    // Update plumbing first: run the install helper when asked, and take
+    // the update flags off the command line before anything else parses.
+    let launch = fastframe_update::intercept(&teamsfast::updates::CONFIG);
+
+    let args: Vec<String> = launch
+        .arguments
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.iter().any(|a| a == "--version") {
+        // The updater's rollback probe expects `<slug> <version>`.
+        println!("teamsfast {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if let Some(res) = teamsfast::debug_dispatch(&args) {
         return res;
     }
@@ -114,16 +127,18 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
+    let receipt = launch.receipt;
+    let launch_error = launch.error;
     eframe::run_native(
         "TeamsFast",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             if std::env::var_os("TEAMSFAST_NO_EMOJI").is_none() {
                 teamsfast::init_theme(&cc.egui_ctx);
             } else {
                 teamsfast::apply_style(&cc.egui_ctx);
             }
-            Ok(Box::new(TeamsFastApp::new(cc)))
+            Ok(Box::new(TeamsFastApp::new(cc, receipt, launch_error)))
         }),
     )
 }
