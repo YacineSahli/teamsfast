@@ -51,7 +51,25 @@ Video/screenshare is the next milestone.
 
 Agent/architecture hand-off notes live in `AGENTS.md`.
 
-## Run
+## Install
+
+Grab a portable build from [the releases](https://github.com/YacineSahli/teamsfast/releases)
+— unpack it and run the binary inside. The release carries an update
+signature: a portable install keeps itself current (checks once a day,
+downloads in the background, swaps on restart, and rolls back
+automatically if the new version fails to start).
+
+```sh
+tar xzf teamsfast-v*-x86_64-unknown-linux-gnu.tar.gz
+cd teamsfast-v*-x86_64-unknown-linux-gnu
+./teamsfast
+```
+
+For a system-wide-feeling install, drop the binary and
+`teamsfast-portable.txt` anywhere on your `PATH` (e.g.
+`~/.local/opt/teamsfast/`) and symlink it.
+
+## Run from source
 
 ```sh
 cargo run

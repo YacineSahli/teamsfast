@@ -237,6 +237,22 @@ with Graph. Video/screenshare is the remaining Phase 2 item.
 ## Roadmap (agreed priority)
 
 1. Video/screenshare (the last call modality).
+
+### Release + self-update (live since v0.1.0)
+
+- Tags `v*` trigger `.github/workflows/release.yml`: x86_64 + aarch64
+  tarballs (portable marker inside), attested, `checksums.txt` signed
+  with the Ed25519 key whose public half is
+  `assets/update-public-key.hex`; the private key lives in the
+  `TEAMSFAST_UPDATE_SIGNING_KEY` repo secret (backup copy:
+  `~/.config/teamsfast-dev/update-signing-key.pem` — LOSING it breaks
+  update verification for shipped installs; keep a copy off-machine).
+- Releases REQUIRE `packaging/release-notes/v<ver>.md` committed first.
+- The updater is `src/updates.rs` + the worker in app.rs; installation
+  detection needs the marker beside the binary (dev builds from cargo
+  correctly refuse). E2E-verified: 0.1.0 portable → signed 0.1.1 →
+  helper swap → receipt → no rollback.
+- `TEAMSFAST_AUTOUPDATE=1` restarts without the button (headless QA).
 2. Meeting lobby UI (LobbyState is in teams-core).
 3. User manual pass → fix findings same-session.
 4. Benchmarks vs teams-for-linux (zapfast methodology, publish numbers).
