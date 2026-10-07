@@ -9,8 +9,9 @@ for the full investigation and `README.md` for the user-facing summary.
 **Status: Phase 2 in progress — chat client with sections, calls AND
 meeting join.** Chat (send/reply/edit/delete/react/forward/pins,
 pending+retry bubbles, seen-by, unread badges, pinned/muted chats,
-per-chat notification levels, contact cards), Adaptive Cards, section
-rail (Chat/Teams+mgmt/Calendar+join/Files/ToDo/Planner/Shifts/Activity),
+per-chat notification levels, contact cards, ghost mode), Adaptive Cards,
+section rail (Chat/Teams+mgmt incl. channel rename-delete/Calendar+join/
+Files incl. per-chat shared files/ToDo/Planner/Shifts/Activity),
 presence with status menu, full Settings window, GUI device-code sign-in,
 notification click→chat, 1:1 audio calls + MEETING JOIN (verified live:
 epconv → call_accepted=true → Call active). Offline/local search merged

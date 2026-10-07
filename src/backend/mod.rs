@@ -121,6 +121,17 @@ pub enum Command {
     SearchPublicTeams(String),
     JoinTeam(String),
     CreateTeam(String),
+    RenameChannel {
+        team_id: String,
+        channel_id: String,
+        name: String,
+    },
+    DeleteChannel {
+        team_id: String,
+        channel_id: String,
+    },
+    /// Recent files shared in one chat.
+    ChatFiles(String),
     // ---- planner + shifts ----
     LoadPlanner,
     LoadShifts,
@@ -250,6 +261,11 @@ pub enum Event {
     Planner(Vec<crate::ui::sections::PlannerBoard>),
     /// This week's shifts.
     Shifts(Vec<ost::api::ShiftInfo>),
+    /// Files shared in one chat.
+    ChatFiles {
+        chat_id: String,
+        files: Vec<ost::api::SharedFile>,
+    },
     Error(String),
 }
 
@@ -600,6 +616,19 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::CreateTeam(name) => {
                 sections::create_team(&ses, &tx, &name).await;
+            }
+            Command::RenameChannel {
+                team_id,
+                channel_id,
+                name,
+            } => {
+                sections::rename_channel(&ses, &tx, &team_id, &channel_id, &name).await;
+            }
+            Command::DeleteChannel { team_id, channel_id } => {
+                sections::delete_channel(&ses, &tx, &team_id, &channel_id).await;
+            }
+            Command::ChatFiles(chat_id) => {
+                sections::chat_files(&ses, &tx, &chat_id).await;
             }
             Command::LoadPlanner => {
                 sections::load_planner(&ses, &tx).await;

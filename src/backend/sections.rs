@@ -211,6 +211,69 @@ pub async fn create_team(ses: &Session, tx: &Sender<Event>, name: &str) {
     }
 }
 
+/// `Command::RenameChannel` — rename a channel (permission-gated server-side).
+pub async fn rename_channel(
+    ses: &Session,
+    tx: &Sender<Event>,
+    team_id: &str,
+    channel_id: &str,
+    name: &str,
+) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::update_channel_data(c, team_id, channel_id, Some(name), None).await {
+        Ok(()) => {
+            let _ = tx.send(Event::Status(format!("channel renamed to #{name} ✓")));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("rename channel: {e:#}")));
+        }
+    }
+}
+
+/// `Command::DeleteChannel` — delete a channel.
+pub async fn delete_channel(
+    ses: &Session,
+    tx: &Sender<Event>,
+    team_id: &str,
+    channel_id: &str,
+) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::delete_channel_data(c, team_id, channel_id).await {
+        Ok(()) => {
+            let _ = tx.send(Event::Status("channel deleted".into()));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("delete channel: {e:#}")));
+        }
+    }
+}
+
+/// `Command::ChatFiles` — files recently shared in one conversation.
+pub async fn chat_files(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::list_chat_files_data(c, chat_id, 30).await {
+        Ok(files) => {
+            let _ = tx.send(Event::ChatFiles {
+                chat_id: chat_id.to_string(),
+                files,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("chat files: {e:#}")));
+            let _ = tx.send(Event::ChatFiles {
+                chat_id: chat_id.to_string(),
+                files: Vec::new(),
+            });
+        }
+    }
+}
+
 // ------------------------------------------------------------- planner
 
 /// `Command::LoadPlanner` — every team's plans with buckets + tasks.

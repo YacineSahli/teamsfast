@@ -144,6 +144,17 @@ pub enum Action {
         etag: String,
         done: bool,
     },
+    RenameChannel {
+        team_id: String,
+        channel_id: String,
+        name: String,
+    },
+    DeleteChannel {
+        team_id: String,
+        channel_id: String,
+    },
+    /// Show this chat's shared files in the Files section.
+    ShowChatFiles(String),
     /// Start/open the 1:1 with this member's mri.
     ChatWith { mri: String, name: String },
     HangUp,
@@ -260,6 +271,17 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             {
                 ctx.actions.push(Action::StartCall(ctx.chat_id.clone()));
             }
+        }
+        // Shared files of this conversation (Files section).
+        if ui
+            .add(
+                egui::Button::new(crate::theme::Icon::FileText.image(ctx.pal.secondary, 14.0))
+                    .fill(egui::Color32::TRANSPARENT),
+            )
+            .on_hover_text("Files shared in this chat")
+            .clicked()
+        {
+            ctx.actions.push(Action::ShowChatFiles(ctx.chat_id.clone()));
         }
         // Jump to latest: history is paged above, so re-anchor to the tail.
         if ctx.older_link.is_some() {

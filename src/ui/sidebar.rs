@@ -110,21 +110,45 @@ pub fn sidebar(
                     ctx.cmd.send(Command::LoadTeams).ok();
                 }
             }
-            ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                for team in ctx.teams {
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        avatar(ui, &team.name, 22.0);
-                        ui.strong(&team.name);
-                    });
-                    for ch in &team.channels {
-                        let sel = ctx.selected == Some(&ch.id);
-                        if ui.selectable_label(sel, format!("# {}", ch.name)).clicked() {
-                            actions.push(Action::OpenChat(ch.id.clone()));
+            ScrollArea::vertical()
+                .id_salt("teams_list_scroll")
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    for team in ctx.teams {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            avatar(ui, &team.name, 22.0);
+                            ui.strong(&team.name);
+                        });
+                        for ch in &team.channels {
+                            let sel = ctx.selected == Some(&ch.id);
+                            let row = ui.selectable_label(
+                                sel,
+                                RichText::new(format!("# {}", ch.name)),
+                            );
+                            if row.clicked() {
+                                actions.push(Action::OpenChat(ch.id.clone()));
+                            }
+                            row.context_menu(|ui| {
+                                if ui.button("Rename channel…").clicked() {
+                                    actions.push(Action::RenameChannel {
+                                        team_id: team.id.clone(),
+                                        channel_id: ch.id.clone(),
+                                        name: ch.name.clone(),
+                                    });
+                                    ui.close();
+                                }
+                                if ui.button("Delete channel").clicked() {
+                                    actions.push(Action::DeleteChannel {
+                                        team_id: team.id.clone(),
+                                        channel_id: ch.id.clone(),
+                                    });
+                                    ui.close();
+                                }
+                            });
                         }
                     }
-                }
-            });
+                });
         }
     }
 }
