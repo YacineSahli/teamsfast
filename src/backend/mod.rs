@@ -10,6 +10,7 @@ pub mod archive;
 pub mod conv;
 pub mod directory;
 pub mod headless;
+pub mod join;
 pub mod live_parse;
 pub mod live;
 pub mod media;
@@ -111,6 +112,8 @@ pub enum Command {
     StartCall(String),
     /// Ring the Teams echo/test bot (settings "Test call").
     TestCall,
+    /// Join a meeting from a URL / thread id / meet ID.
+    JoinMeeting(String),
     /// Hang up the active call.
     HangUp,
 }
@@ -567,6 +570,12 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             Command::TestCall => {
                 start_call(&mut ses, &tx, String::new(), true).await;
             }
+            Command::JoinMeeting(source) => {
+                if let Some((thread, label)) = join::resolve_join_target(&ses, &tx, &source).await
+                {
+                    start_call_labelled(&mut ses, &tx, thread, false, label).await;
+                }
+            }
             Command::HangUp => {
                 if let Some(stop) = ses.call_stop.take() {
                     let _ = stop.send(true);
@@ -581,6 +590,18 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
 /// ICE/TURN, SRTP/Opus and cpal audio, all inside one spawned task. The
 /// watch channel hangs up cooperatively.
 async fn start_call(ses: &mut Session, tx: &Sender<Event>, chat_id: String, echo: bool) {
+    let label = if echo { "Echo test".to_string() } else { chat_id.clone() };
+    start_call_labelled(ses, tx, chat_id, echo, label).await;
+}
+
+/// [`start_call`] with a display label (meeting subject, chat name, …).
+async fn start_call_labelled(
+    ses: &mut Session,
+    tx: &Sender<Event>,
+    chat_id: String,
+    echo: bool,
+    label: String,
+) {
     if ses.call_stop.is_some() {
         let _ = tx.send(Event::CallFailed("a call is already in progress".into()));
         return;
@@ -588,11 +609,6 @@ async fn start_call(ses: &mut Session, tx: &Sender<Event>, chat_id: String, echo
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     ses.call_stop = Some(stop_tx);
     let tx_evt = tx.clone();
-    let label = if echo {
-        "Echo test".to_string()
-    } else {
-        chat_id.clone()
-    };
     let thread = if echo { None } else { Some(chat_id) };
     tokio::spawn(async move {
         let _ = tx_evt.send(Event::CallStarted { label });
