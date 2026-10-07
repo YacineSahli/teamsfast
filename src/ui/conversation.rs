@@ -136,6 +136,10 @@ pub enum Action {
     SearchPublicTeams(String),
     JoinTeam { team_id: String, name: String },
     CreateTeam(String),
+    /// Open the contact card for a member (mri + display name).
+    ShowContact { mri: String, name: String },
+    /// Start/open the 1:1 with this member's mri.
+    ChatWith { mri: String, name: String },
     HangUp,
 }
 
@@ -620,7 +624,23 @@ fn message_row(
             ui.vertical(|ui| {
                 ui.set_max_width((ui.available_width() * 0.8).min(620.0));
                 if !grouped {
-                    ui.label(RichText::new(sender_label(m, ctx)).small().strong());
+                    let name = sender_label(m, ctx);
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new(&name).small().strong().color(ctx.pal.link),
+                            )
+                            .selectable(false),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Contact card")
+                        .clicked()
+                    {
+                        ctx.actions.push(Action::ShowContact {
+                            mri: m.sender_mri.clone(),
+                            name,
+                        });
+                    }
                 }
                 bubble_parts(ui, ctx, m, own, grouped);
             });
@@ -888,7 +908,13 @@ fn bubble_parts(
         let anchor_x = (bubble_rect.right() - BAR_W + 10.0)
             .max(clip.left() + 8.0)
             .min(clip.right() - BAR_W - 8.0);
-        let anchor_y = (bubble_rect.top() - 44.0).max(clip.top() + 2.0);
+        // Prefer above the bubble; when there is no room (top of the
+        // scroll area) sit below it instead of overlapping the content.
+        let anchor_y = if bubble_rect.top() - 44.0 >= clip.top() + 2.0 {
+            bubble_rect.top() - 44.0
+        } else {
+            (bubble_rect.bottom() + 4.0).min(clip.bottom() - 44.0)
+        };
         let anchor = egui::pos2(anchor_x, anchor_y);
         let actions_sink: std::rc::Rc<std::cell::RefCell<Vec<Action>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
