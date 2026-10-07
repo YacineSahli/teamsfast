@@ -1,4 +1,3 @@
-# Use the system git (and its ssh keys) for git dependencies — the
-# teams-core repo is private during the spike.
+# Use the system git (and its ssh keys) for git dependencies.
 [net]
 git-fetch-with-cli = true

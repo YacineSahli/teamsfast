@@ -1,7 +1,7 @@
 #!/bin/bash
 # Headless UI QA: run TeamsFast on Xvfb, screenshot, clean up by PID.
 # usage: qa_shot.sh OUT.png SIZE [chat_id] [scroll_mode]
-cd .
+cd "$(dirname "$0")"
 OUT="$1"; SIZE="$2"; OPEN="$3"; SCROLL="$4"
 
 Xvfb :77 -screen 0 "${SIZE}"x24 >/dev/null 2>&1 &
