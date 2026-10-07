@@ -141,6 +141,9 @@ fn general(ui: &mut Ui, settings: &mut Settings, info: &SettingsInfo<'_>, action
     if toggle(ui, "Start hidden in the system tray", &mut settings.start_in_tray) {
         theme::save_settings(settings);
     }
+    if toggle(ui, "Check for updates automatically", &mut settings.update_checks) {
+        theme::save_settings(settings);
+    }
     ui.add_space(8.0);
 
     ui.strong("Privacy");

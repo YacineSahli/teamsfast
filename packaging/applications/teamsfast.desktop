@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TeamsFast
+Comment=Microsoft Teams, native and fast
+Exec=teamsfast
+Icon=teamsfast
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=teamsfast

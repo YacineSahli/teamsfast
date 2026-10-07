@@ -50,6 +50,130 @@ pub struct ForwardState {
     pub filter: String,
 }
 
+/// One update-flow message from the update thread.
+#[derive(Debug, Clone)]
+pub enum UpdateEvent {
+    Checking,
+    /// A newer release exists (version, release page URL).
+    Available { version: String, url: String },
+    /// Download progress in percent.
+    Progress(u8),
+    /// Downloaded + verified; waiting for the user to restart.
+    Ready { version: String },
+    /// This copy may not self-update, or the check/download failed.
+    Blocked(String),
+    /// The helper was asked to install; quit now.
+    Restarting,
+}
+
+/// UI-side view of the update flow. The thread owns the Updater and the
+/// Prepared update; the UI only ever sees events and sends commands.
+#[derive(Default)]
+pub struct UpdateState {
+    pub dialog: Option<UpdateDialog>,
+    /// Commands to the update thread (Restart / Dismiss).
+    pub cmd_tx: Option<std::sync::mpsc::Sender<UpdateCommand>>,
+    pub events: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
+    /// Checked once per launch.
+    checked: bool,
+    receipt_acknowledged: bool,
+}
+
+/// What the update window shows.
+pub struct UpdateDialog {
+    pub kind: UpdateDialogKind,
+    pub version: String,
+    pub url: String,
+}
+
+pub enum UpdateDialogKind {
+    Progress(u8),
+    Ready,
+    Failed(String),
+    Unsupported(String),
+}
+
+/// UI → update-thread commands.
+pub enum UpdateCommand {
+    Restart,
+    Dismiss,
+}
+
+/// Spawn the update worker: check → download (with progress) → park until
+/// the user restarts or dismisses.
+fn spawn_update_worker(tx: std::sync::mpsc::Sender<UpdateEvent>, rx: std::sync::mpsc::Receiver<UpdateCommand>) {
+    std::thread::Builder::new()
+        .name("updates".into())
+        .spawn(move || {
+            let send = |ev: UpdateEvent| {
+                let _ = tx.send(ev);
+            };
+            let updater = match crate::updates::updater() {
+                Ok(u) => u,
+                Err(e) => {
+                    send(UpdateEvent::Blocked(format!("update client: {e:#}")));
+                    return;
+                }
+            };
+            let release = match updater.check() {
+                Ok(Some(r)) => r,
+                Ok(None) => return, // up to date: silent
+                Err(e) => {
+                    log::debug!("update check: {e:#}");
+                    return; // offline at launch: silent
+                }
+            };
+            send(UpdateEvent::Available {
+                version: release.version.clone(),
+                url: release.url.clone(),
+            });
+            match updater.installation() {
+                Ok(_) => {}
+                Err(reason) => {
+                    send(UpdateEvent::Blocked(reason.to_string()));
+                    return;
+                }
+            }
+            let prepared = match updater.download(&release, |received, total| {
+                let pct = if total > 0 {
+                    ((received * 100) / total).min(100) as u8
+                } else {
+                    0
+                };
+                let _ = tx.send(UpdateEvent::Progress(pct));
+            }) {
+                Ok(p) => p,
+                Err(e) => {
+                    send(UpdateEvent::Blocked(format!("download: {e:#}")));
+                    return;
+                }
+            };
+            let version = release.version.clone();
+            send(UpdateEvent::Ready { version });
+            // Park until the UI decides.
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    UpdateCommand::Restart => {
+                        let args: Vec<String> = std::env::args()
+                            .skip(1)
+                            .filter(|a| {
+                                !a.starts_with("--update-")
+                                    && a != fastframe_update::APPLY_UPDATE_FLAG
+                            })
+                            .collect();
+                        match updater.handoff(prepared, args) {
+                            Ok(()) => send(UpdateEvent::Restarting),
+                            Err(e) => send(UpdateEvent::Blocked(format!("restart: {e:#}"))),
+                        }
+                        return;
+                    }
+                    UpdateCommand::Dismiss => return,
+                }
+            }
+        })
+        .ok();
+}
+
 /// "Create channel / join team" dialog state.
 #[derive(Default)]
 pub struct TeamDialogState {
@@ -167,6 +291,10 @@ pub struct TeamsFastApp {
     /// A real quit was requested (tray Quit): the close-to-tray cancel
     /// must stand down so the process can exit.
     quitting: bool,
+    /// Update flow state + the launch receipt to acknowledge.
+    update: UpdateState,
+    update_receipt: Option<fastframe_update::Receipt>,
+    launch_error: Option<String>,
     /// Notification clicks: chat ids delivered by notify threads.
     notif_clicks: Receiver<String>,
     /// The sender side cloned into every notification thread.
@@ -399,7 +527,11 @@ fn teams_dialog(
 }
 
 impl TeamsFastApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        receipt: Option<fastframe_update::Receipt>,
+        launch_error: Option<String>,
+    ) -> Self {
         let settings_load = theme::load_settings();
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
         let cmd = backend::spawn(tx);
@@ -503,6 +635,9 @@ impl TeamsFastApp {
             cmd,
             events: rx,
             settings: settings_load,
+            update: UpdateState::default(),
+            update_receipt: receipt,
+            launch_error,
         }
     }
 
@@ -1726,6 +1861,142 @@ impl TeamsFastApp {
         }
     }
 
+    /// Update flow: one check per launch, event drain, dialog, receipt.
+    fn update_logic(&mut self, ui: &mut egui::Ui) {
+        // Acknowledge a helper-installed relaunch once the window is up.
+        if !self.update.receipt_acknowledged
+            && let Some(receipt) = self.update_receipt.take()
+        {
+            self.update.receipt_acknowledged = true;
+            if let Err(e) = receipt.acknowledge() {
+                log::warn!("update receipt: {e:#}");
+            }
+            self.status = format!("Updated to {} ✓", crate::updates::CONFIG.current_version);
+        }
+        if let Some(err) = self.launch_error.take() {
+            self.error = Some(format!("update: {err}"));
+        }
+        // One check per launch, when enabled.
+        if !self.update.checked {
+            self.update.checked = true;
+            if self.settings.update_checks {
+                let (tx_ev, rx_ev) = std::sync::mpsc::channel::<UpdateEvent>();
+                let (tx_cmd, rx_cmd) = std::sync::mpsc::channel::<UpdateCommand>();
+                spawn_update_worker(tx_ev, rx_cmd);
+                self.update.events = Some(rx_ev);
+                self.update.cmd_tx = Some(tx_cmd);
+            }
+        }
+        // Drain events.
+        let mut restart_now = false;
+        if let Some(events) = &self.update.events {
+            while let Ok(ev) = events.try_recv() {
+                match ev {
+                    UpdateEvent::Checking => {}
+                    UpdateEvent::Available { version, url } => {
+                        self.update.dialog = Some(UpdateDialog {
+                            kind: UpdateDialogKind::Progress(0),
+                            version,
+                            url,
+                        });
+                    }
+                    UpdateEvent::Progress(pct) => {
+                        if let Some(d) = &mut self.update.dialog {
+                            d.kind = UpdateDialogKind::Progress(pct);
+                        }
+                    }
+                    UpdateEvent::Ready { version } => {
+                        if let Some(d) = &mut self.update.dialog {
+                            d.kind = UpdateDialogKind::Ready;
+                            let _ = &version;
+                        }
+                    }
+                    UpdateEvent::Blocked(msg) => {
+                        if let Some(d) = &mut self.update.dialog {
+                            // Download/verify failures read as errors;
+                            // install-detection refusals as informational.
+                            d.kind = UpdateDialogKind::Unsupported(msg);
+                        }
+                    }
+                    UpdateEvent::Restarting => restart_now = true,
+                }
+            }
+        }
+        if restart_now {
+            // The helper waits for us to exit.
+            self.quitting = true;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // Dialog window.
+        if let Some(dialog) = self.update.dialog.as_ref() {
+            let version = dialog.version.clone();
+            let url = dialog.url.clone();
+            let open = &mut true;
+            let mut cmd: Option<UpdateCommand> = None;
+            egui::Window::new("Update available")
+                .open(open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(380.0)
+                .show(ui.ctx(), |ui| match &dialog.kind {
+                    UpdateDialogKind::Progress(pct) => {
+                        ui.label(format!("TeamsFast {version} is downloading…"));
+                        ui.add(egui::ProgressBar::new(*pct as f32 / 100.0).show_percentage());
+                    }
+                    UpdateDialogKind::Ready => {
+                        ui.label(format!("TeamsFast {version} is ready to install."));
+                        ui.label(
+                            RichText::new("Restart to finish; the previous version is restored if anything fails.")
+                                .small()
+                                .weak(),
+                        );
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Restart to update")
+                                            .strong()
+                                            .color(self.palette.on_accent),
+                                    )
+                                    .fill(self.palette.accent)
+                                    .min_size(egui::vec2(120.0, 24.0)),
+                                )
+                                .clicked()
+                            {
+                                cmd = Some(UpdateCommand::Restart);
+                            }
+                        });
+                    }
+                    UpdateDialogKind::Failed(msg) => {
+                        ui.label(format!("Update to {version} failed:"));
+                        ui.label(RichText::new(msg).small().color(self.palette.danger));
+                    }
+                    UpdateDialogKind::Unsupported(msg) => {
+                        ui.label(format!("TeamsFast {version} is available."));
+                        ui.label(RichText::new(msg).small().weak());
+                        if ui.hyperlink_to("Open the release page", &url).clicked() {
+                            let _ = open::that_detached(&url);
+                        }
+                    }
+                });
+            if !*open {
+                cmd = Some(UpdateCommand::Dismiss);
+            }
+            match cmd {
+                Some(UpdateCommand::Restart) => {
+                    self.update.dialog = None;
+                    self.status = "installing update…".into();
+                    // The worker hands off; the Restarting event quits us.
+                }
+                Some(UpdateCommand::Dismiss) => {
+                    self.update.dialog = None;
+                }
+                None => {}
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- layout
 
     /// Left icon rail: section switcher (Chat/Teams/Calendar/Files/ToDo/
@@ -1962,6 +2233,7 @@ impl eframe::App for TeamsFastApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.sync_tray(ui);
+        self.update_logic(ui);
 
         // Start-in-tray: hide on the first rendered frame.
         if self.pending_hide {

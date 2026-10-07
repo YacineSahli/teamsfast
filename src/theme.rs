@@ -240,6 +240,9 @@ pub struct Settings {
     /// inside it. None = always notify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quiet_hours: Option<(String, String)>,
+    /// Check GitHub for a newer release once per launch.
+    #[serde(default = "default_true")]
+    pub update_checks: bool,
 }
 
 fn default_true() -> bool {
@@ -273,6 +276,7 @@ impl Default for Settings {
             notification_levels: std::collections::HashMap::new(),
             ghost_mode: false,
             quiet_hours: None,
+            update_checks: true,
         })
     }
 }
