@@ -6,6 +6,7 @@ use crate::ui::conversation::{self, Action, ConvCtx};
 use crate::ui::panels::{new_chat_dialog, search_panel, NewChatState};
 use crate::ui::settings::{SettingsInfo, SettingsUi};
 use crate::ui::sidebar::{sidebar, SideView};
+use crate::ui::widgets::avatar;
 use egui::{Color32, RichText};
 use ost::api::{ChatInfo, MessageInfo, SearchHitInfo, TeamInfo};
 use std::collections::{HashMap, HashSet};
@@ -122,6 +123,8 @@ pub struct TeamsFastApp {
     call_label_hint: Option<String>,
     /// Teams-management dialog (create channel, join/create team).
     team_dialog: TeamDialogState,
+    /// Contact card for a member (mri, display name).
+    contact: Option<(String, String)>,
 
     // ---- sections ----
     main_view: MainView,
@@ -422,6 +425,7 @@ impl TeamsFastApp {
             join_source: String::new(),
             call_label_hint: None,
             team_dialog: TeamDialogState::default(),
+            contact: None,
             main_view: MainView::Chat,
             meetings: Vec::new(),
             calendar_loading: false,
@@ -1430,6 +1434,34 @@ impl TeamsFastApp {
                 self.cmd.send(Command::JoinMeeting(source)).ok();
             }
             Action::ShowJoinDialog => self.join_open = true,
+            Action::ShowContact { mri, name } => {
+                self.contact = Some((mri, name));
+            }
+            Action::ChatWith { mri, name } => {
+                // 1:1 thread id is deterministic from both MRIs.
+                let Some(me) = self.self_id.clone() else {
+                    self.status = "Still loading your profile…".into();
+                    return;
+                };
+                let thread =
+                    ost::api::one_to_one_thread_id(&format!("8:orgid:{me}"), &mri);
+                self.contact = None;
+                if !self.chats.iter().any(|c| c.id == thread) {
+                    // Add a placeholder row so the title resolves instantly.
+                    self.chats.insert(
+                        0,
+                        ChatInfo {
+                            id: thread.clone(),
+                            name: name.clone(),
+                            is_group: false,
+                            last_message_time: None,
+                            last_message_sender: None,
+                            last_message_preview: None,
+                        },
+                    );
+                }
+                self.open_chat(thread);
+            }
             Action::ShowTeamDialog => {
                 self.team_dialog.open = true;
                 if self.team_dialog.channel_team.is_none() {
@@ -2312,6 +2344,39 @@ impl eframe::App for TeamsFastApp {
                     .ok();
                 self.status = "message forwarded".into();
             }
+        }
+
+        // Contact card: who they are + quick chat.
+        if let Some((mri, name)) = self.contact.clone() {
+            egui::Window::new("Contact")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.horizontal(|ui| {
+                        avatar(ui, &name, 40.0);
+                        ui.vertical(|ui| {
+                            ui.strong(&name);
+                            ui.label(
+                                RichText::new(mri.trim_start_matches("8:").to_string())
+                                    .small()
+                                    .weak(),
+                            );
+                        });
+                    });
+                    ui.add_space(6.0);
+                    ui.separator();
+                    if ui
+                        .button("Chat")
+                        .clicked()
+                    {
+                        let mri = mri.clone();
+                        let name = name.clone();
+                        self.apply(Action::ChatWith { mri, name });
+                    }
+                    if ui.button("Close").clicked() {
+                        self.contact = None;
+                    }
+                });
         }
 
         // Teams management dialog: create channel / join public team /
