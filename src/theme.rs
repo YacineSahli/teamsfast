@@ -233,6 +233,9 @@ pub struct Settings {
     /// Per-chat notification level: "all" (default) | "mentions" | "off".
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub notification_levels: std::collections::HashMap<String, String>,
+    /// Ghost mode: hold back read receipts (no mark-read calls).
+    #[serde(default)]
+    pub ghost_mode: bool,
 }
 
 fn default_true() -> bool {
@@ -264,6 +267,7 @@ impl Default for Settings {
             muted_chats: Vec::new(),
             pinned_messages: std::collections::HashMap::new(),
             notification_levels: std::collections::HashMap::new(),
+            ghost_mode: false,
         })
     }
 }

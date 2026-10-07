@@ -255,6 +255,40 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
     ui.separator();
 }
 
+/// Files shared within one conversation (shown above the drive recents).
+pub fn chat_files_panel(
+    ui: &mut Ui,
+    _chat_id: &str,
+    chat_name: &str,
+    files: &[SharedFile],
+    loading: bool,
+    pal: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    ui.horizontal(|ui| {
+        ui.heading(
+            RichText::new(format!("Files · {chat_name}"))
+                .strong()
+                .size(15.0),
+        );
+        if loading {
+            ui.spinner();
+        }
+    });
+    ui.separator();
+    ScrollArea::vertical()
+        .id_salt(("chat_files", _chat_id))
+        .max_height(260.0)
+        .show(ui, |ui| {
+            if files.is_empty() && !loading {
+                ui.label(RichText::new("No files shared in this conversation.").weak());
+            }
+            for f in files {
+                file_row(ui, f, pal, actions);
+            }
+        });
+}
+
 // ------------------------------------------------------------------- to-do
 
 pub struct TodoPanelState {

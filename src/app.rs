@@ -140,6 +140,11 @@ pub struct TeamsFastApp {
     todo_loading: bool,
     planner: Vec<crate::ui::sections::PlannerBoard>,
     planner_loading: bool,
+    /// Files shared in a chat (chat id + name for display).
+    chat_files: Option<(String, String, Vec<ost::api::SharedFile>)>,
+    chat_files_loading: bool,
+    /// Rename-channel dialog (team, channel, current name).
+    channel_rename: Option<(String, String, String)>,
     shifts: Vec<ost::api::ShiftInfo>,
     shifts_loading: bool,
     activity: Vec<crate::ui::sections::ActivityEntry>,
@@ -442,6 +447,9 @@ impl TeamsFastApp {
             todo_loading: false,
             planner: Vec::new(),
             planner_loading: false,
+            chat_files: None,
+            chat_files_loading: false,
+            channel_rename: None,
             shifts: Vec::new(),
             shifts_loading: false,
             activity: Vec::new(),
@@ -530,6 +538,16 @@ impl TeamsFastApp {
                     self.shifts = shifts;
                     self.shifts_loading = false;
                 }
+                Event::ChatFiles { chat_id, files } => {
+                    let name = self
+                        .chats
+                        .iter()
+                        .find(|c| c.id == chat_id)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| chat_id.clone());
+                    self.chat_files = Some((chat_id, name, files));
+                    self.chat_files_loading = false;
+                }
                 Event::PublicTeams(teams) => {
                     self.team_dialog.public_teams = teams;
                     self.team_dialog.searching = false;
@@ -574,6 +592,17 @@ impl TeamsFastApp {
                     // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call.
                     if std::env::var("TEAMSFAST_TESTCALL").as_deref() == Ok("1") {
                         self.cmd.send(Command::TestCall).ok();
+                    }
+                    // QA hook: TEAMSFAST_CHATFILES=1 fetches the open chat's
+                    // shared files (pair with TEAMSFAST_OPEN).
+                    if std::env::var("TEAMSFAST_CHATFILES").as_deref() == Ok("1") {
+                        if let Some(id) = std::env::var("TEAMSFAST_OPEN").ok() {
+                            if !id.trim().is_empty() {
+                                self.switch_view(MainView::Files);
+                                self.chat_files_loading = true;
+                                self.cmd.send(Command::ChatFiles(id)).ok();
+                            }
+                        }
                     }
                     // QA hooks: TEAMSFAST_TEAMS=1 / TEAMSFAST_JOINDLG=1
                     // open their dialogs for screenshot QA.
@@ -682,9 +711,13 @@ impl TeamsFastApp {
                     }
                     // Who has read what (quiet fetch, no error surfaced).
                     self.cmd.send(Command::ReadReceipts(chat_id.clone())).ok();
-                    // Freshly loaded tail: mark read.
-                    if let (Some(sel), Some(last)) =
-                        (self.selected.clone(), self.messages.last().map(|m| m.id.clone()))
+                    // Freshly loaded tail: mark read — unless ghost mode
+                    // holds read receipts back.
+                    if !self.settings.ghost_mode
+                        && let (Some(sel), Some(last)) = (
+                            self.selected.clone(),
+                            self.messages.last().map(|m| m.id.clone()),
+                        )
                     {
                         self.cmd
                             .send(Command::MarkRead {
@@ -1213,6 +1246,9 @@ impl TeamsFastApp {
                 }
             }
             Action::MarkRead(id) => {
+                if self.settings.ghost_mode {
+                    return; // privacy: hold the receipt back
+                }
                 if let Some(chat) = self.selected.clone() {
                     self.cmd
                         .send(Command::MarkRead {
@@ -1463,6 +1499,26 @@ impl TeamsFastApp {
             Action::ShowJoinDialog => self.join_open = true,
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
+            }
+            Action::RenameChannel {
+                team_id,
+                channel_id,
+                name,
+            } => {
+                self.channel_rename = Some((team_id, channel_id, name));
+            }
+            Action::DeleteChannel { team_id, channel_id } => {
+                self.status = "deleting channel…".into();
+                self.cmd
+                    .send(Command::DeleteChannel { team_id, channel_id })
+                    .ok();
+                self.loading_teams = true;
+                self.cmd.send(Command::LoadTeams).ok();
+            }
+            Action::ShowChatFiles(chat_id) => {
+                self.switch_view(MainView::Files);
+                self.chat_files_loading = true;
+                self.cmd.send(Command::ChatFiles(chat_id)).ok();
             }
             Action::SetPlannerDone {
                 task_id,
@@ -2210,13 +2266,27 @@ impl eframe::App for TeamsFastApp {
                         &self.palette,
                         &mut actions,
                     ),
-                    MainView::Files => crate::ui::sections::files_panel(
-                        ui,
-                        &self.drive_files,
-                        self.files_loading,
-                        &self.palette,
-                        &mut actions,
-                    ),
+                    MainView::Files => {
+                        if let Some((chat_id, chat_name, files)) = &self.chat_files {
+                            crate::ui::sections::chat_files_panel(
+                                ui,
+                                chat_id,
+                                chat_name,
+                                files,
+                                self.chat_files_loading,
+                                &self.palette,
+                                &mut actions,
+                            );
+                            ui.add_space(6.0);
+                        }
+                        crate::ui::sections::files_panel(
+                            ui,
+                            &self.drive_files,
+                            self.files_loading,
+                            &self.palette,
+                            &mut actions,
+                        )
+                    }
                     MainView::ToDo => {
                         let mut st = std::mem::take(&mut self.todo);
                         crate::ui::sections::todo_panel(
@@ -2410,6 +2480,50 @@ impl eframe::App for TeamsFastApp {
                     .ok();
                 self.status = "message forwarded".into();
             }
+        }
+
+        // Rename-channel dialog.
+        if let Some((team, channel, mut current)) = self.channel_rename.clone() {
+            egui::Window::new("Rename channel")
+                .default_width(380.0)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(RichText::new("New name:").small());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut current)
+                            .desired_width(ui.available_width()),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Rename").strong().color(self.palette.on_accent),
+                                )
+                                .fill(self.palette.accent)
+                                .min_size(egui::vec2(70.0, 24.0)),
+                            )
+                            .clicked()
+                            && !current.trim().is_empty()
+                        {
+                            let name = current.trim().to_string();
+                            self.cmd
+                                .send(Command::RenameChannel {
+                                    team_id: team,
+                                    channel_id: channel,
+                                    name,
+                                })
+                                .ok();
+                            self.channel_rename = None;
+                            self.loading_teams = true;
+                            self.cmd.send(Command::LoadTeams).ok();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.channel_rename = None;
+                        }
+                    });
+                });
         }
 
         // Contact card: who they are + quick chat.

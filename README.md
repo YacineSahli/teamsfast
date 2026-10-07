@@ -11,7 +11,7 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
 - **Sign-in** — Microsoft device-code flow entirely in the app (code + link
   panel with Open/Copy); work/school and personal accounts
 - **Chat** — list (live-sorted, pinned/muted chats, unread badges,
-  per-chat notification levels), history with paging, send (with pending +
+  per-chat notification levels, ghost mode for read receipts), history with paging, send (with pending +
   failed-retry bubbles), reply, edit, delete, reactions, "Seen by"
   receipts, typing indicators, forward, locally pinned messages,
   jump-to-latest, contact cards (click a sender), roster-resolved names
@@ -21,9 +21,10 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
   with facts and actions), colour emoji
 - **Live** — Trouter push: incoming messages, notifications (click opens
   the chat), typing; desktop notifications with mute-aware rules
-- **Sections** — icon rail: Chat, Teams & channels (create channels, join
-  public teams, create teams), **Calendar** (week of meetings with join
-  links), **Files** (OneDrive recents, download/open), **To Do** (lists,
+- **Sections** — icon rail: Chat, Teams & channels (create/rename/delete
+  channels, join public teams, create teams), **Calendar** (week of
+  meetings with join links), **Files** (OneDrive recents + each
+  conversation's shared files, download/open), **To Do** (lists,
   complete/reopen, quick add), **Planner** (boards, buckets, tick tasks),
   **Shifts** (this week's schedule), **Activity** feed (mentions and
   messages)

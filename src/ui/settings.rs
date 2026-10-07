@@ -143,6 +143,12 @@ fn general(ui: &mut Ui, settings: &mut Settings, info: &SettingsInfo<'_>, action
     }
     ui.add_space(8.0);
 
+    ui.strong("Privacy");
+    if toggle(ui, "Ghost mode — hold back read receipts", &mut settings.ghost_mode) {
+        theme::save_settings(settings);
+    }
+    ui.add_space(8.0);
+
     ui.strong("Window");
     if toggle(
         ui,
