@@ -8,30 +8,38 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
 
 ## What works today
 
-- **Sign-in** — Microsoft device-code flow (work/school and personal)
-- **Chat** — list (live-sorted by recency), history with paging, send,
-  reply, edit, delete, reactions, read receipts, typing indicators,
-  roster-resolved names (external/federated users included)
+- **Sign-in** — Microsoft device-code flow entirely in the app (code + link
+  panel with Open/Copy); work/school and personal accounts
+- **Chat** — list (live-sorted, pinned/muted chats, unread badges), history
+  with paging, send (with pending + failed-retry bubbles), reply, edit,
+  delete, reactions, "Seen by" receipts, typing indicators, forward,
+  locally pinned messages, jump-to-latest, roster-resolved names
 - **Rich messages** — Teams HTML subset (bold/italic/links/code/mentions/
   quotes), inline images with lightbox, file attachments (upload with
-  progress, download & open), colour emoji (platform font + bundled Noto)
-- **Live** — Trouter push: incoming messages, notifications, typing;
-  desktop notifications for background chats
+  progress, download & open), **Adaptive Cards** (Opsgenie/bot cards render
+  with facts and actions), colour emoji
+- **Live** — Trouter push: incoming messages, notifications (click opens
+  the chat), typing; desktop notifications with mute-aware rules
+- **Sections** — icon rail: Chat, Teams & channels, **Calendar** (week of
+  meetings with join links), **Files** (OneDrive recents, download/open),
+  **To Do** (lists, complete/reopen, quick add), **Activity** feed
+  (mentions and messages)
+- **Presence** — own status with a set-status menu (Available/BRB/Busy/
+  DND/Away/Offline)
+- **Calls** — 1:1 audio calls from any 1:1 chat header, call banner with
+  timer + hang-up, and an echo-bot test call in Settings
+- **Settings** — full window (General/Appearance/Notifications/Account/
+  Storage/About): theme picker + zoom, notification rules, start-in-tray,
+  close-to-tray, sign-out (keyring wipe), clear local archive
 - **Search** — message search (Graph; degrades gracefully when a tenant's
   token lacks `Chat.Read`)
-- **Teams & channels** — browse teams, open channel conversations
 - **New conversations** — 1:1 by email/UPN, group chats with topic
 - **Tray icon** — show/hide window, quit
 
-**Working today**: sign-in, chat list (live-sorted), history + paging,
-send/reply/edit/delete/reactions, read receipts, typing indicators,
-inline images + lightbox, file upload/download, search, teams/channels,
-new chats/groups, live push (notifications, typing), desktop
-notifications, themes (user-editable JSON + picker), tray, local
-encrypted archive (SQLCipher), keyring tokens, offline mode.
+Also: local encrypted archive (SQLCipher), keyring tokens, offline mode,
+user-editable JSON themes.
 
-Calls (audio/video/screenshare) are the next major milestone — the
-protocol core already has working 1:1 audio on Linux.
+Meeting join and video/screenshare are the next milestones.
 
 Agent/architecture hand-off notes live in `AGENTS.md`.
 

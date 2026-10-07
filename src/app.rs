@@ -436,6 +436,24 @@ impl TeamsFastApp {
                     self.chats = chats;
                     self.sort_chats();
                     self.status = format!("{n} chats");
+                    // A conversation opened before the list loaded (launch
+                    // hook, notification click): give it its real title.
+                    if let Some(sel) = self.selected.clone() {
+                        if let Some(c) = self.chats.iter().find(|c| c.id == sel) {
+                            let name = if c.name.is_empty()
+                                || c.name == "[Direct message]"
+                            {
+                                "Direct message".to_string()
+                            } else {
+                                c.name.clone()
+                            };
+                            // Don't clobber a resolved channel title
+                            // ("# x · team").
+                            if !self.selected_title.starts_with("# ") {
+                                self.selected_title = name;
+                            }
+                        }
+                    }
                 }
                 Event::Messages {
                     chat_id,
@@ -505,6 +523,17 @@ impl TeamsFastApp {
                 Event::Teams(teams) => {
                     self.teams = teams;
                     self.loading_teams = false;
+                    // A channel opened before its team loaded: fix the title.
+                    if let Some(sel) = self.selected.clone() {
+                        let hit = self
+                            .teams
+                            .iter()
+                            .flat_map(|t| t.channels.iter().map(move |ch| (t.name.clone(), ch.id.clone(), ch.name.clone())))
+                            .find(|(_, id, _)| *id == sel);
+                        if let Some((team, _, ch)) = hit {
+                            self.selected_title = format!("# {ch} · {team}");
+                        }
+                    }
                 }
                 Event::CreateChatOk(chat) => {
                     let mut row = ost::api::ChatInfo {
@@ -857,7 +886,19 @@ impl TeamsFastApp {
                     c.name.clone()
                 }
             })
-            .unwrap_or_else(|| id.clone());
+            .unwrap_or_default();
+        if self.selected_title.is_empty() {
+            // Channels live in the teams tree, not the chats list.
+            let ch = self
+                .teams
+                .iter()
+                .flat_map(|t| t.channels.iter().map(move |ch| (t.name.clone(), ch)))
+                .find(|(_, ch)| ch.id == id);
+            self.selected_title = match ch {
+                Some((team, ch)) => format!("# {} · {}", ch.name, team),
+                None => id.clone(),
+            };
+        }
         self.cmd.send(Command::OpenChat(id)).ok();
     }
 
