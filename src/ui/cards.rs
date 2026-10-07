@@ -9,27 +9,58 @@ use base64::Engine as _;
 use egui::{Color32, RichText, Ui};
 use serde_json::Value;
 
-/// Find the `b64,<payload>` param in a message's raw HTML and decode the
-/// Adaptive Card JSON from it.
+/// Find the Adaptive Card payload in a message's raw HTML and decode its
+/// JSON. Two wire shapes occur: `b64,<payload>` inside a param value and
+/// `<Swift b64="<payload>"/>` inside the URIObject element.
 pub fn extract_card(raw: &str) -> Option<Value> {
+    // `<Swift b64="…"/>` — payload runs to the closing quote.
+    if let Some(idx) = raw.find("b64=\"") {
+        let rest = &raw[idx + 5..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        if let Some(card) = decode_b64_card(&rest[..end]) {
+            return Some(card);
+        }
+    }
+    // `b64,<payload>` — payload runs to the next delimiter.
     let idx = raw.find("b64,")?;
     let rest = &raw[idx + 4..];
     let end = rest
         .find(|c: char| c == '"' || c == '<' || c.is_whitespace())
         .unwrap_or(rest.len());
-    let b64 = &rest[..end];
+    decode_b64_card(&rest[..end])
+}
+
+fn decode_b64_card(b64: &str) -> Option<Value> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let json: Value = serde_json::from_slice(&bytes).ok()?;
+    // Teams wraps the card: {"attachments":[{"content":{AdaptiveCard}}]}.
+    if let Some(content) = json
+        .get("attachments")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|att| att.get("content"))
+        .filter(|c| c.get("body").is_some())
+    {
+        return Some(content.clone());
+    }
+    Some(json)
 }
 
 /// Render a decoded Adaptive Card into `ui`. Unknown elements are skipped
-/// silently; `actions` receives OpenUrl presses.
+/// silently; `actions` receives OpenUrl presses. `salt` keeps widget ids
+/// unique when several cards render in one view.
 pub fn render_card(ui: &mut Ui, card: &Value, pal: &Palette, actions: &mut Vec<Action>) {
     let Some(body) = card.get("body").and_then(|v| v.as_array()) else {
         return;
     };
+    // Unique per message content (same card JSON → same id, different cards
+    // in one view never clash).
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    card.to_string().hash(&mut hasher);
+    let salt = hasher.finish();
     let width = ui.available_width().min(560.0);
     egui::Frame::default()
         .fill(pal.surface)
@@ -47,7 +78,7 @@ pub fn render_card(ui: &mut Ui, card: &Value, pal: &Palette, actions: &mut Vec<A
                     ui.add_space(2.0);
                 }
                 for el in body {
-                    render_element(ui, el, pal, actions);
+                    render_element(ui, el, pal, salt, actions);
                 }
                 // Root-level actions.
                 if let Some(acts) = card.get("actions").and_then(|v| v.as_array()) {
@@ -57,7 +88,13 @@ pub fn render_card(ui: &mut Ui, card: &Value, pal: &Palette, actions: &mut Vec<A
         });
 }
 
-fn render_element(ui: &mut Ui, el: &Value, pal: &Palette, actions: &mut Vec<Action>) {
+fn render_element(
+    ui: &mut Ui,
+    el: &Value,
+    pal: &Palette,
+    salt: u64,
+    actions: &mut Vec<Action>,
+) {
     let kind = el.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match kind {
         "TextBlock" => {
@@ -92,7 +129,7 @@ fn render_element(ui: &mut Ui, el: &Value, pal: &Palette, actions: &mut Vec<Acti
         }
         "FactSet" => {
             if let Some(facts) = el.get("facts").and_then(|v| v.as_array()) {
-                egui::Grid::new("card-facts")
+                egui::Grid::new(("card-facts", salt))
                     .num_columns(2)
                     .spacing([14.0, 3.0])
                     .show(ui, |ui| {
@@ -140,7 +177,7 @@ fn render_element(ui: &mut Ui, el: &Value, pal: &Palette, actions: &mut Vec<Acti
                 .and_then(|v| v.as_array());
             if let Some(children) = children {
                 for child in children {
-                    render_element(ui, child, pal, actions);
+                    render_element(ui, child, pal, salt, actions);
                 }
             }
         }
@@ -209,5 +246,17 @@ mod tests {
     #[test]
     fn no_card_in_plain_html() {
         assert!(extract_card("<div>hello</div>").is_none());
+    }
+
+    #[test]
+    fn extracts_swift_b64_quote_form_with_envelope() {
+        // Real wire shape (Opsgenie): <Swift b64="…"/> wrapping
+        // {"attachments":[{"content":{AdaptiveCard…}}]}.
+        let card = r#"{"type":"AdaptiveCard","body":[{"type":"TextBlock","text":"P1"}]}"#;
+        let envelope = format!(r#"{{"attachments":[{{"content":{card}}}]}}"#);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(envelope);
+        let raw = format!(r#"<URIObject type="SWIFT.1"><Swift b64="{b64}" /></URIObject>"#);
+        let parsed = extract_card(&raw).expect("card decoded");
+        assert_eq!(parsed["body"][0]["text"].as_str().unwrap(), "P1");
     }
 }

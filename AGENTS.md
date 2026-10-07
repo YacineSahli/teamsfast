@@ -6,12 +6,13 @@ of the patched `ost` protocol library. Sibling-in-spirit of zapfast and
 spotifast (same architecture, same fastframe crates). Read `FEASIBILITY.md`
 for the full investigation and `README.md` for the user-facing summary.
 
-**Status: Phase 0/1 — daily-driver chat works end-to-end on a real
-account.** Current version renders a polished chat UI (verified via
-headless screenshot + vision QA rounds): sidebar, conversations with rich
-content, media, search, teams/channels, live push, notifications, themes,
-tray, local encrypted archive, keyring tokens, offline mode. Calls are
-Phase 2 (not started).
+**Status: Phase 1+ — feature-complete chat client with sections and
+1:1 audio calls.** Chat (send/reply/edit/delete/react/forward/pins,
+pending+retry bubbles, seen-by, unread badges, pinned/muted chats),
+Adaptive Cards, section rail (Chat/Teams/Calendar/Files/ToDo/Activity),
+presence with status menu, full Settings window, GUI device-code sign-in,
+notification click→chat, 1:1 audio calls (banner + hang-up + echo test).
+Meeting join and video/screenshare are the remaining Phase 2 items.
 
 ## Repository layout
 
@@ -32,10 +33,14 @@ Phase 2 (not started).
 - `src/backend/live.rs` + `live_parse.rs` — Trouter session, pointer-based
   sticky hover unaffected; parser (9 unit tests, shapes from real logs).
 - `src/backend/archive.rs` — SQLCipher persistence (see "Local archive").
-- `src/ui/` — sidebar.rs (rows = allocate-first whole buttons),
-  conversation.rs (bubbles, hover bar, composer), panels.rs (search,
-  new-chat), widgets.rs (Teams-HTML renderer, avatars, day separator,
-  icon_button), media.rs (lightbox).
+- `src/ui/` — sidebar.rs (rows = allocate-first whole buttons, context
+  menu, unread badges), conversation.rs (bubbles, hover bar, composer,
+  pending-send bubbles, seen-by, call controls), panels.rs (search,
+  new-chat), sections.rs (Calendar/Files/ToDo/Activity panels),
+  settings.rs (Settings window), cards.rs (Adaptive Card renderer),
+  widgets.rs (Teams-HTML renderer, avatars, day separator, icon_button),
+  media.rs (lightbox).
+- `src/backend/sections.rs` — calendar/files/todo/drive-download handlers.
 - `src/theme.rs` — Palette (17 named colors, dark/light bases, derive
   rules), Catalog/Omarchy bridge, Settings load/save, emoji raster cache.
 - `src/emoji.rs` — bundled Noto Color Emoji setup (MUST run before
@@ -94,6 +99,33 @@ Phase 2 (not started).
 - For bars/chips/raster: `theme::raster_emoji(cluster, px)` renders RGBA
   via the installed font (probe: TEAMSFAST_EMOJI_PROBE=1 logs all sizes).
   Plain `ui.label(emoji)` in Areas/Tooltips falls back to monochrome.
+
+### egui 0.36, part 2 (learned the hard way this phase)
+- Two ScrollAreas/Grids in one view MUST get unique `id_salt`/ids — the
+  defaults clash and egui paints "Second use of scrollbar/Grid ID" error
+  chips while corrupting the second widget's state.
+- Adaptive Card payloads arrive as `<Swift b64="…"/>` (quote form) inside
+  a URIObject, wrapped in `{"attachments":[{"content":{card}}]}` — see
+  ui/cards.rs extract_card (handles `b64,` param form too).
+- `egui::Panel::left` has no `exact_width`; use `default_size` +
+  `resizable(false)`.
+
+### Build env (this machine)
+- The call stack needs `alsa-sys` → alsa.pc. System has runtime
+  libasound only; headers come from the Flatpak GNOME SDK via a local
+  shim (`~/.local/lib/teamfast-pc/alsa.pc` + lib/libasound.so symlink to
+  /usr/lib64) wired through `[env] PKG_CONFIG_PATH` in ~/.cargo/config.toml.
+  After editing the .pc you MUST `cargo clean -p alsa-sys` — build scripts
+  cache link paths and stale ones re-break the link.
+- teams-core builds with `--features audio`; the app Cargo.toml already
+  enables it on the `ost` dep.
+
+### QA harness quirks
+- Xvfb reports a 0mm display via XRandR → winit caps the window at
+  1100x760 regardless of TEAMSFAST_SIZE. Shoot QA at 1100x760 for full
+  paint; black bands at 1240x820 are the harness, never the app.
+- Xvfb draws a phantom mouse pointer dead-center that can hold a hover
+  bar open or tint one row — ignore in vision QA.
 
 ### Threading & crates
 - Backend = one thread with a current-thread tokio runtime;
@@ -174,32 +206,32 @@ Phase 2 (not started).
 
 ## Known gaps / deferred
 
-- **Calls (Phase 2)** — teams-core already has working Linux 1:1 audio
-  (ICE/TURN/SRTP/Opus) + WIP video; UI + PipeWire QA needed. Meeting join
-  after that.
-- **Connector cards** — rendered as a muted "Connector card" placeholder;
-  Adaptive Card JSON (`Swift b64` in URIObject) parsing is future work.
-- **Unread badges** — needs consumption-horizon state cached locally.
-- **Fastframe shell** — close-to-tray/single-instance/autostart/
-  self-update (fastframe-instance/update/shell crates not yet wired).
+- **Meeting join** (from calendar/links) and **video/screenshare** — the
+  remaining Phase 2 items; 1:1 audio works (signaling verified live
+  against the echo bot; this sandbox blocks TURN UDP, so full-duplex
+  audio needs a real network to verify).
+- **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,
+  Submit actions shown disabled); Input.Text and interactive submits are
+  future work.
+- **Topic-channel sends** still fail at MS's side — honest error surfaced.
+- **Fastframe shell** — single-instance/autostart/self-update
+  (fastframe-instance/update/shell crates not yet wired).
 - **Archive key in OS keyring** (currently a 0600 file).
-- **GUI device-code login** (ost prints the code to the terminal; needs
-  pub surface or reimplemented oauth flow).
-- **Channel send to topic channels** fails silently at MS's side — we
-  surface an honest error; proper topic posting unresolved.
-- Multi-account, i18n, light-theme QA, message search inside the app UI
-  is wired but tenant-blocked (Graph 403) for now.
+- **Multi-account**, i18n; in-app message search is wired but
+  tenant-blocked (Graph 403) for now.
+- Mute state is mirrored locally (server-side flag not exposed by
+  list_chats_data, so it resets to un-muted on a fresh profile).
 
 ## Roadmap (agreed priority)
 
-1. User manual pass → fix findings same-session.
-2. Notification click → focus chat; unread badges (needs local
-   consumption-horizon).
-3. GUI login + keyring/`--logs` polish.
-4. Benchmarks vs teams-for-linux (zapfast methodology, publish numbers).
-5. Upstream: ost issue (roster naming for @unq.gbl.spaces, topic-channel
-   send, device-code surfacing) + ping better-teams author (mrowlinson).
-6. Phase 2: 1:1 audio calls → meeting join → video/screenshare.
+1. Meeting join (calendar/link → call), then video/screenshare.
+2. User manual pass → fix findings same-session.
+3. Benchmarks vs teams-for-linux (zapfast methodology, publish numbers).
+4. Upstream: ost issues (roster naming for @unq.gbl.spaces, topic-channel
+   send) + push our presence-with-client / login_with_code_sink /
+   run_call_with_stop patches; ping better-teams author (mrowlinson).
+5. Fastframe shell (single-instance, autostart, self-update), archive key
+   in keyring, multi-account.
 
 ## Ecosystem notes
 
