@@ -82,6 +82,12 @@ fn init_logging(log_path: &std::path::Path, panic_path: &std::path::Path) {
 }
 
 fn main() -> eframe::Result<()> {
+    // Incoming calls must ring in the UI, never auto-answer. teams-core's
+    // trouter loop answers invitations unless this is set (the documented
+    // embedder switch); set it before any thread spawns (set_var is racy
+    // with concurrent getenv).
+    unsafe { std::env::set_var("TEAMS_MANUAL_CALLS", "1") };
+
     // Update plumbing first: run the install helper when asked, and take
     // the update flags off the command line before anything else parses.
     let launch = fastframe_update::intercept(&teamsfast::updates::CONFIG);

@@ -16,12 +16,32 @@ pub enum Parsed {
     },
     /// Someone is typing in `chat_id`.
     Typing { chat_id: String, user: String },
-    /// Presence noise, calls, acks — show in the log only.
+    /// An incoming call invitation (NGCallManagerWin push). `raw` is kept
+    /// verbatim: accept/decline re-parse it backend-side for the links.
+    IncomingCall {
+        caller_name: String,
+        caller_mri: String,
+        has_video: bool,
+        raw: String,
+    },
+    /// A call-signalling callback announced an end (caller cancelled while
+    /// ringing, or the remote end hung up on the accepted call).
+    CallGone,
+    /// Presence noise, acks — show in the log only.
     Other,
 }
 
 /// Parse one published event payload (already stripped of socket.io framing).
 pub fn parse(raw: &str) -> Parsed {
+    // Incoming-call invitations: any envelope that carries a callInvitation.
+    // Checked before chat parsing (an invitation is not a chat event); the
+    // raw JSON rides along for the backend's accept/decline.
+    if ost::calling::parse_call_notification(raw).is_some() {
+        if let Some(parsed) = incoming_call(raw) {
+            return parsed;
+        }
+    }
+
     let Ok(v) = serde_json::from_str::<Value>(raw) else {
         return Parsed::Other;
     };
@@ -56,7 +76,50 @@ pub fn parse(raw: &str) -> Parsed {
             return parsed;
         }
     }
+    // Call-callback envelope (teams-core publishes conversationEnd / call-end
+    // callbacks as `callCallback`): an end signal for a live or ringing call.
+    if v.get("type").and_then(|t| t.as_str()) == Some("callCallback") {
+        if let Some(url) = v.get("url").and_then(|u| u.as_str()) {
+            if url.contains("conversationEnd") || url.contains("/call/end") {
+                return Parsed::CallGone;
+            }
+        }
+    }
     Parsed::Other
+}
+
+/// Extract the ringing event from a callInvitation payload (already known
+/// to parse). Caller identity falls back to "Unknown caller"; the raw JSON
+/// is carried verbatim.
+fn incoming_call(raw: &str) -> Option<Parsed> {
+    let n = ost::calling::parse_call_notification(raw)?;
+    let (name, mri) = n
+        .participants
+        .as_ref()
+        .and_then(|p| p.from.as_ref())
+        .map(|f| {
+            (
+                f.display_name.clone().unwrap_or_default(),
+                f.id.clone().unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
+    let has_video = n
+        .call_invitation
+        .as_ref()
+        .and_then(|inv| inv.call_modalities.as_ref())
+        .map(|mods| mods.iter().any(|m| m.eq_ignore_ascii_case("video")))
+        .unwrap_or(false);
+    Some(Parsed::IncomingCall {
+        caller_name: if name.trim().is_empty() {
+            "Unknown caller".into()
+        } else {
+            name.trim().to_string()
+        },
+        caller_mri: mri,
+        has_video,
+        raw: raw.to_string(),
+    })
 }
 
 fn parse_one(v: &Value) -> Option<Parsed> {
@@ -304,6 +367,77 @@ mod tests {
     fn garbage_is_other() {
         assert_eq!(parse("not json at all"), Parsed::Other);
         assert_eq!(parse("[]"), Parsed::Other);
+    }
+
+    #[test]
+    fn incoming_call_top_level_and_body_envelope() {
+        let inv = r#"{"callInvitation":{"callModalities":["Audio"],
+            "links":{"acceptance":"https://cc/acc","end":"https://cc/end",
+            "mediaAnswer":"https://cc/ma"}},
+            "participants":{"from":{"id":"8:orgid:aaaa-bbbb","displayName":"Grace Hopper"}},
+            "debugContent":{"callId":"c1"}}"#;
+        assert_eq!(
+            parse(inv),
+            Parsed::IncomingCall {
+                caller_name: "Grace Hopper".into(),
+                caller_mri: "8:orgid:aaaa-bbbb".into(),
+                has_video: false,
+                raw: inv.to_string(),
+            }
+        );
+
+        let wrapped = serde_json::json!({"id": 7, "method": "POST", "body": inv}).to_string();
+        match parse(&wrapped) {
+            Parsed::IncomingCall {
+                caller_name,
+                has_video,
+                ..
+            } => {
+                assert_eq!(caller_name, "Grace Hopper");
+                assert!(!has_video);
+            }
+            other => panic!("expected IncomingCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incoming_call_video_flag_and_name_fallback() {
+        let inv = r#"{"callInvitation":{"callModalities":["Audio","Video"]},
+            "participants":{"from":{"id":"8:orgid:x"}}}"#;
+        match parse(inv) {
+            Parsed::IncomingCall {
+                caller_name,
+                has_video,
+                ..
+            } => {
+                assert_eq!(caller_name, "Unknown caller");
+                assert!(has_video);
+            }
+            other => panic!("expected IncomingCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn call_callback_end_is_call_gone() {
+        let gone = r#"{"type":"callCallback",
+            "url":"/v4/f/EP/ab12/conversation/conversationEnd/",
+            "body":{"reason":"hangup"}}"#;
+        assert_eq!(parse(gone), Parsed::CallGone);
+
+        let call_end = r#"{"type":"callCallback","url":"/v4/f/EP/ab12/call/end/","body":null}"#;
+        assert_eq!(parse(call_end), Parsed::CallGone);
+
+        // Other call callbacks (roster/progress) stay out of the UI path.
+        let roster = r#"{"type":"callCallback","url":"/v4/f/EP/ab12/conversation/rosterUpdate/","body":{}}"#;
+        assert_eq!(parse(roster), Parsed::Other);
+    }
+
+    #[test]
+    fn chat_event_with_conversation_link_is_not_call_gone() {
+        // Invitation-shaped links inside chat pushes must not trip CallGone.
+        let msg = r#"{"conversationId":"19:a_b@thread.v2","messagetype":"ChatMessage",
+            "imdisplayname":"Ada","content":"<p>links: conversationEnd</p>"}"#;
+        assert!(matches!(parse(msg), Parsed::Incoming { .. }));
     }
 
     #[test]

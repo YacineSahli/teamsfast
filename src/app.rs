@@ -50,6 +50,50 @@ pub struct ForwardState {
     pub filter: String,
 }
 
+/// A ringing incoming call: caller identity for the banner plus the raw
+/// invitation JSON the backend needs to accept/decline.
+#[derive(Clone)]
+pub struct IncomingRing {
+    pub name: String,
+    pub mri: String,
+    pub has_video: bool,
+    pub raw: String,
+    pub at: Instant,
+}
+
+/// Teams rings for roughly 30 s before voicemail; drop the banner past 45 s
+/// (caller-cancel pushes are not capture-verified yet — see NOTES).
+pub const RING_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Synthetic invitation for the TEAMSFAST_RING=1 QA hook (parseable, with
+/// dead links so an accidental accept fails harmlessly).
+pub fn qa_incoming_ring() -> IncomingRing {
+    let raw = serde_json::json!({
+        "callInvitation": {
+            "callModalities": ["Audio"],
+            "links": {
+                "acceptance": "https://qa.invalid/accept",
+                "end": "https://qa.invalid/end",
+                "mediaAnswer": "https://qa.invalid/media"
+            },
+            "mediaContent": { "contentType": "application/sdp", "blob": "" }
+        },
+        "participants": {
+            "from": { "id": "8:orgid:00000000-0000-0000-0000-000000000000",
+                      "displayName": "QA Incoming Caller" }
+        },
+        "debugContent": { "callId": "qa-ring" }
+    })
+    .to_string();
+    IncomingRing {
+        name: "QA Incoming Caller".into(),
+        mri: "8:orgid:00000000-0000-0000-0000-000000000000".into(),
+        has_video: false,
+        raw,
+        at: Instant::now(),
+    }
+}
+
 /// One update-flow message from the update thread.
 #[derive(Debug, Clone)]
 pub enum UpdateEvent {
@@ -243,6 +287,9 @@ pub struct TeamsFastApp {
     login_code: Option<(String, String)>,
     /// Active call (label + start time) while the backend call task runs.
     call: Option<(String, Instant)>,
+    /// Ringing incoming call (banner with Accept/Decline).
+    incoming: Option<IncomingRing>,
+
     /// "Join with link" dialog state.
     join_open: bool,
     join_source: String,
@@ -595,6 +642,7 @@ impl TeamsFastApp {
             forward: None,
             login_code: None,
             call: None,
+            incoming: None,
             join_open: false,
             join_source: String::new(),
             call_label_hint: None,
@@ -740,6 +788,26 @@ impl TeamsFastApp {
                     self.team_dialog.searching = false;
                 }
                 // ---- calls ----
+                Event::IncomingCall {
+                    caller_name,
+                    caller_mri,
+                    has_video,
+                    raw,
+                } => {
+                    self.incoming = Some(IncomingRing {
+                        name: caller_name,
+                        mri: caller_mri,
+                        has_video,
+                        raw,
+                        at: Instant::now(),
+                    });
+                }
+                Event::CallGone => {
+                    // Caller cancelled while ringing: drop the banner. The
+                    // accepted-call case stays manual until the callback
+                    // shapes are capture-verified (see NOTES).
+                    self.incoming = None;
+                }
                 Event::CallStarted { label } => {
                     // A hint (meeting subject from the calendar) wins over
                     // the generic "Meeting"/thread-id label.
@@ -779,6 +847,11 @@ impl TeamsFastApp {
                     // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call.
                     if std::env::var("TEAMSFAST_TESTCALL").as_deref() == Ok("1") {
                         self.cmd.send(Command::TestCall).ok();
+                    }
+                    // QA hook: TEAMSFAST_RING=1 shows the ringing banner
+                    // with a synthetic caller (pixel QA for incoming calls).
+                    if std::env::var("TEAMSFAST_RING").as_deref() == Ok("1") {
+                        self.incoming = Some(qa_incoming_ring());
                     }
                     // QA hook: TEAMSFAST_CHATFILES=1 fetches the open chat's
                     // shared files (pair with TEAMSFAST_OPEN).
@@ -1683,6 +1756,16 @@ impl TeamsFastApp {
             Action::TestCall => {
                 self.cmd.send(Command::TestCall).ok();
             }
+            Action::AcceptIncoming => {
+                if let Some(ring) = self.incoming.take() {
+                    self.cmd.send(Command::AcceptIncoming(ring.raw)).ok();
+                }
+            }
+            Action::DeclineIncoming => {
+                if let Some(ring) = self.incoming.take() {
+                    self.cmd.send(Command::DeclineIncoming(ring.raw)).ok();
+                }
+            }
             Action::JoinMeeting { source, label } => {
                 self.join_open = false;
                 self.status = "Resolving meeting…".into();
@@ -2392,6 +2475,87 @@ impl eframe::App for TeamsFastApp {
                         }
                     });
                 });
+        }
+
+        if let Some(ring) = self.incoming.clone() {
+            // Caller-cancel pushes are not capture-verified yet, so the
+            // banner self-expires past the ring window.
+            if ring.at.elapsed() > RING_TIMEOUT {
+                self.incoming = None;
+            } else {
+                let busy = self.call.is_some();
+                let palette = &self.palette;
+                let mut actions: Vec<Action> = Vec::new();
+                egui::Panel::top("ringing")
+                    .frame(
+                        egui::Frame::default()
+                            .fill(Color32::from_rgba_unmultiplied(
+                                self.palette.danger.r(),
+                                self.palette.danger.g(),
+                                self.palette.danger.b(),
+                                34,
+                            ))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(
+                                    self.palette.danger.r(),
+                                    self.palette.danger.g(),
+                                    self.palette.danger.b(),
+                                    150,
+                                ),
+                            )),
+                    )
+                    .show_inside(ui, |ui| {
+                        let mut accept = false;
+                        let mut decline = false;
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("📞").size(14.0));
+                            let video = if ring.has_video { " · video" } else { "" };
+                            ui.label(
+                                RichText::new(format!("{} — incoming call{}", ring.name, video))
+                                    .small(),
+                            );
+                            if ui
+                                .add_enabled(
+                                    !busy,
+                                    egui::Button::new(
+                                        RichText::new("Accept").small().color(palette.on_accent),
+                                    )
+                                    .fill(palette.ok)
+                                    .min_size(egui::vec2(70.0, 22.0)),
+                                )
+                                .clicked()
+                            {
+                                accept = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Decline").small().color(palette.on_accent),
+                                    )
+                                    .fill(palette.danger)
+                                    .min_size(egui::vec2(70.0, 22.0)),
+                                )
+                                .clicked()
+                            {
+                                decline = true;
+                            }
+                            if busy {
+                                ui.label(RichText::new("(busy — accept disabled)").weak().small());
+                            }
+                        });
+                        if accept {
+                            actions.push(Action::AcceptIncoming);
+                        }
+                        if decline {
+                            actions.push(Action::DeclineIncoming);
+                        }
+                    });
+                for a in actions {
+                    self.apply(a);
+                }
+            }
         }
 
         if let Some((label, at)) = self.call.clone() {

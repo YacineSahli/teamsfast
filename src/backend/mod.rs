@@ -114,6 +114,11 @@ pub enum Command {
     TestCall,
     /// Join a meeting from a URL / thread id / meet ID.
     JoinMeeting(String),
+    /// Accept the ringing incoming call (raw invitation JSON from
+    /// [`Event::IncomingCall`]).
+    AcceptIncoming(String),
+    /// Decline the ringing incoming call (raw invitation JSON).
+    DeclineIncoming(String),
     /// Hang up the active call.
     HangUp,
     // ---- teams management ----
@@ -261,6 +266,17 @@ pub enum Event {
     CallEnded(String),
     /// The call could not be placed.
     CallFailed(String),
+    /// An incoming call is ringing; `raw` is the invitation JSON (accept/
+    /// decline re-parse it backend-side for the signaling links).
+    IncomingCall {
+        caller_name: String,
+        caller_mri: String,
+        has_video: bool,
+        raw: String,
+    },
+    /// A call-signalling callback announced an end (caller cancelled while
+    /// ringing; the accepted-call case is handled conservatively in the UI).
+    CallGone,
     /// Public-team search results (join picker).
     PublicTeams(Vec<ost::api::PublicTeamInfo>),
     /// Planner boards: (team, plan, buckets, tasks).
@@ -673,6 +689,12 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                     start_call_labelled(&mut ses, &tx, thread, false, label).await;
                 }
             }
+            Command::AcceptIncoming(raw) => {
+                accept_incoming(&mut ses, &tx, raw).await;
+            }
+            Command::DeclineIncoming(raw) => {
+                decline_incoming(raw).await;
+            }
             Command::HangUp => {
                 if let Some(stop) = ses.call_stop.take() {
                     let _ = stop.send(true);
@@ -725,6 +747,68 @@ async fn start_call_labelled(
             Err(e) => {
                 let _ = tx_evt.send(Event::CallFailed(format!("{e:#}")));
             }
+        }
+    });
+}
+
+/// Accept the ringing incoming call: same spawn shape as
+/// [`start_call_labelled`] (watch channel + detached task), but the call
+/// leg comes from the invitation instead of epconv placement.
+async fn accept_incoming(ses: &mut Session, tx: &Sender<Event>, raw: String) {
+    if ses.call_stop.is_some() {
+        // Ringing on top of an active call: decline politely rather than
+        // half-answer; the caller hears the decline immediately.
+        decline_incoming(raw).await;
+        let _ = tx.send(Event::CallFailed("declined: a call is already in progress".into()));
+        return;
+    }
+    let Some(notification) = ost::calling::parse_call_notification(&raw) else {
+        let _ = tx.send(Event::CallFailed(
+            "incoming call invitation could not be parsed".into(),
+        ));
+        return;
+    };
+    let label = notification
+        .participants
+        .as_ref()
+        .and_then(|p| p.from.as_ref())
+        .and_then(|f| f.display_name.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Incoming call".into());
+
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    ses.call_stop = Some(stop_tx);
+    let tx_evt = tx.clone();
+    tokio::spawn(async move {
+        let _ = tx_evt.send(Event::CallStarted { label });
+        let _ = tx_evt.send(Event::CallStatus("accepting…".into()));
+        // Safety cap via hang-up only — an incoming call has no duration
+        // budget; the stop watch (and the remote end) end it.
+        let res = ost::calling::answer_call_with_stop(&notification, false, stop_rx).await;
+        match res {
+            Ok(result) => {
+                let _ = tx_evt.send(Event::CallEnded(format!(
+                    "call ended — accepted: {}, {} packets sent / {} received",
+                    result.call_accepted, result.packets_sent, result.packets_received
+                )));
+            }
+            Err(e) => {
+                let _ = tx_evt.send(Event::CallFailed(format!("{e:#}")));
+            }
+        }
+    });
+}
+
+/// Decline a ringing call: fire-and-forget POST to the invitation's end
+/// link (best-effort — a failed decline just lets the caller time out).
+async fn decline_incoming(raw: String) {
+    tokio::spawn(async move {
+        let Some(notification) = ost::calling::parse_call_notification(&raw) else {
+            log::warn!("decline: invitation unparseable, ignoring");
+            return;
+        };
+        if let Err(e) = ost::calling::decline_call(&notification).await {
+            log::warn!("decline failed (caller will time out): {e:#}");
         }
     });
 }

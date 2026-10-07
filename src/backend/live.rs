@@ -47,6 +47,29 @@ pub fn start(tx: &Sender<Event>) {
                         return;
                     }
                 }
+                Parsed::IncomingCall {
+                    caller_name,
+                    caller_mri,
+                    has_video,
+                    raw,
+                } => {
+                    if tx2
+                        .send(Event::IncomingCall {
+                            caller_name,
+                            caller_mri,
+                            has_video,
+                            raw,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Parsed::CallGone => {
+                    if tx2.send(Event::CallGone).is_err() {
+                        return;
+                    }
+                }
                 Parsed::Other => {}
             }
         }

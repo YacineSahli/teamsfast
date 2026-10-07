@@ -124,6 +124,10 @@ pub enum Action {
     StartCall(String),
     /// Ring the echo/test bot.
     TestCall,
+    /// Accept the ringing incoming call.
+    AcceptIncoming,
+    /// Decline the ringing incoming call.
+    DeclineIncoming,
     /// Join a meeting (join URL / thread id / meet ID) with a display label.
     JoinMeeting { source: String, label: Option<String> },
     /// Open the "join with link" input.
