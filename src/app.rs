@@ -1910,6 +1910,15 @@ impl TeamsFastApp {
                             d.kind = UpdateDialogKind::Ready;
                             let _ = &version;
                         }
+                        // QA hook: TEAMSFAST_AUTOUPDATE=1 restarts without
+                        // waiting for the button (headless update tests).
+                        if std::env::var("TEAMSFAST_AUTOUPDATE").as_deref() == Ok("1") {
+                            if let Some(tx) = &self.update.cmd_tx {
+                                let _ = tx.send(UpdateCommand::Restart);
+                            }
+                            self.update.dialog = None;
+                            self.status = "installing update…".into();
+                        }
                     }
                     UpdateEvent::Blocked(msg) => {
                         if let Some(d) = &mut self.update.dialog {
