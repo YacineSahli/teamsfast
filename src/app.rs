@@ -164,6 +164,9 @@ pub struct TeamsFastApp {
     settings_was_open: bool,
     /// Hide the window on the first frame (start-in-tray).
     pending_hide: bool,
+    /// A real quit was requested (tray Quit): the close-to-tray cancel
+    /// must stand down so the process can exit.
+    quitting: bool,
     /// Notification clicks: chat ids delivered by notify threads.
     notif_clicks: Receiver<String>,
     /// The sender side cloned into every notification thread.
@@ -494,6 +497,7 @@ impl TeamsFastApp {
             archive_stats: (0, 0),
             settings_was_open: false,
             pending_hide: settings_load.start_in_tray,
+            quitting: false,
             notif_clicks: notif_rx,
             notif_tx,
             cmd,
@@ -524,6 +528,9 @@ impl TeamsFastApp {
                     self.window_hidden = true;
                 }
                 TrayAction::Quit => {
+                    // Mark a real quit so the close-to-tray handler lets
+                    // the close through instead of hiding again.
+                    self.quitting = true;
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -1964,8 +1971,14 @@ impl eframe::App for TeamsFastApp {
             self.window_hidden = true;
         }
 
-        // Close-to-tray: cancel the close and hide instead.
-        if ui.input(|i| i.viewport().close_requested()) && self.settings.close_to_tray {
+        // Close-to-tray: cancel the close and hide instead — but never
+        // when a real quit is in flight, and never when there is no tray
+        // to hide to (the ✕ would become unquittable).
+        if ui.input(|i| i.viewport().close_requested())
+            && self.settings.close_to_tray
+            && !self.quitting
+            && self.tray.is_some()
+        {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ui.ctx()
