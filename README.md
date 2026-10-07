@@ -57,6 +57,9 @@ Agent/architecture hand-off notes live in `AGENTS.md`.
 cargo run
 ```
 
+Build needs Rust 1.85+ and `alsa-lib-devel` (the calling stack links ALSA
+through cpal); the vendored OpenSSL also wants `perl` + `make`.
+
 Signing in uses Microsoft's device-code flow: click **Sign in**, then open a
 browser at the URL printed in the terminal that launched teamsfast and enter
 the code. Tokens are cached by the ost core in `~/.config/teams-cli/`.
