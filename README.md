@@ -10,36 +10,41 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
 
 - **Sign-in** — Microsoft device-code flow entirely in the app (code + link
   panel with Open/Copy); work/school and personal accounts
-- **Chat** — list (live-sorted, pinned/muted chats, unread badges), history
-  with paging, send (with pending + failed-retry bubbles), reply, edit,
-  delete, reactions, "Seen by" receipts, typing indicators, forward,
-  locally pinned messages, jump-to-latest, roster-resolved names
+- **Chat** — list (live-sorted, pinned/muted chats, unread badges,
+  per-chat notification levels), history with paging, send (with pending +
+  failed-retry bubbles), reply, edit, delete, reactions, "Seen by"
+  receipts, typing indicators, forward, locally pinned messages,
+  jump-to-latest, contact cards (click a sender), roster-resolved names
 - **Rich messages** — Teams HTML subset (bold/italic/links/code/mentions/
   quotes), inline images with lightbox, file attachments (upload with
   progress, download & open), **Adaptive Cards** (Opsgenie/bot cards render
   with facts and actions), colour emoji
 - **Live** — Trouter push: incoming messages, notifications (click opens
   the chat), typing; desktop notifications with mute-aware rules
-- **Sections** — icon rail: Chat, Teams & channels, **Calendar** (week of
-  meetings with join links), **Files** (OneDrive recents, download/open),
-  **To Do** (lists, complete/reopen, quick add), **Activity** feed
-  (mentions and messages)
+- **Sections** — icon rail: Chat, Teams & channels (create channels, join
+  public teams, create teams), **Calendar** (week of meetings with join
+  links), **Files** (OneDrive recents, download/open), **To Do** (lists,
+  complete/reopen, quick add), **Planner** (boards, buckets, tick tasks),
+  **Shifts** (this week's schedule), **Activity** feed (mentions and
+  messages)
 - **Presence** — own status with a set-status menu (Available/BRB/Busy/
   DND/Away/Offline)
-- **Calls** — 1:1 audio calls from any 1:1 chat header, call banner with
-  timer + hang-up, and an echo-bot test call in Settings
+- **Calls & meetings** — 1:1 audio calls from any 1:1 chat header, call
+  banner with timer + hang-up, **meeting join** (Join buttons on calendar
+  meetings and a paste-a-link dialog: join URL, thread ID or meeting ID),
+  and an echo-bot test call in Settings
 - **Settings** — full window (General/Appearance/Notifications/Account/
   Storage/About): theme picker + zoom, notification rules, start-in-tray,
   close-to-tray, sign-out (keyring wipe), clear local archive
-- **Search** — message search (Graph; degrades gracefully when a tenant's
-  token lacks `Chat.Read`)
+- **Search** — message search online (Graph) merged with a local index of
+  your archive, so search also works offline or on tenants that block it
 - **New conversations** — 1:1 by email/UPN, group chats with topic
 - **Tray icon** — show/hide window, quit
 
 Also: local encrypted archive (SQLCipher), keyring tokens, offline mode,
 user-editable JSON themes.
 
-Meeting join and video/screenshare are the next milestones.
+Video/screenshare is the next milestone.
 
 Agent/architecture hand-off notes live in `AGENTS.md`.
 

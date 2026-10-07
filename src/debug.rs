@@ -13,6 +13,8 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
             .get(2)
             .map(|q| search_probe(q)),
         Some("--teams") => Some(teams_probe()),
+        Some("--probe-planner") => Some(planner_probe()),
+        Some("--probe-shifts") => Some(shifts_probe()),
         _ => None,
     }
 }
@@ -102,6 +104,57 @@ fn teams_probe() -> Result<()> {
                 for ch in &t.channels {
                     println!("  CH {} | {}", ch.id, ch.name);
                 }
+            }
+            Ok(())
+        })
+    })
+}
+
+/// Print each team's planner plans (with a couple of tasks).
+fn planner_probe() -> Result<()> {
+    with_client(|client| {
+        Box::pin(async move {
+            let teams = ost::api::list_teams_data(client).await?;
+            for t in &teams {
+                match ost::api::list_plans_data(client, &t.id).await {
+                    Ok(plans) => {
+                        for p in &plans {
+                            println!("PLAN {} | {} | team {}", p.id, p.title, t.name);
+                            match ost::api::list_tasks_data(client, &p.id, 3).await {
+                                Ok(tasks) => {
+                                    for task in &tasks {
+                                        println!(
+                                            "  TASK {} | done={} | {}",
+                                            task.id, task.completed, task.title
+                                        );
+                                    }
+                                }
+                                Err(e) => println!("  TASKS err: {e:#}"),
+                            }
+                        }
+                    }
+                    Err(e) => println!("PLAN err for {}: {e:#}", t.name),
+                }
+            }
+            Ok(())
+        })
+    })
+}
+
+/// Print the first schedule-enabled team's shifts for this week.
+fn shifts_probe() -> Result<()> {
+    with_client(|client| {
+        Box::pin(async move {
+            let teams = ost::api::list_teams_data(client).await?;
+            for t in &teams {
+                let sched = match ost::api::list_schedule_data(client, &t.id).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        println!("SCHED err for {}: {e:#}", t.name);
+                        continue;
+                    }
+                };
+                println!("SCHED {} | enabled={}", t.name, sched.enabled);
             }
             Ok(())
         })

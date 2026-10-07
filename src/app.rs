@@ -251,7 +251,6 @@ fn teams_dialog(
     egui::ScrollArea::vertical()
         .id_salt("team-dialog-scroll")
         .max_height(420.0)
-        .auto_shrink(false)
         .show(ui, |ui| {
             ui.strong("Create a channel");
             ui.horizontal(|ui| {
@@ -575,6 +574,14 @@ impl TeamsFastApp {
                     // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call.
                     if std::env::var("TEAMSFAST_TESTCALL").as_deref() == Ok("1") {
                         self.cmd.send(Command::TestCall).ok();
+                    }
+                    // QA hooks: TEAMSFAST_TEAMS=1 / TEAMSFAST_JOINDLG=1
+                    // open their dialogs for screenshot QA.
+                    if std::env::var("TEAMSFAST_TEAMS").as_deref() == Ok("1") {
+                        self.apply(Action::ShowTeamDialog);
+                    }
+                    if std::env::var("TEAMSFAST_JOINDLG").as_deref() == Ok("1") {
+                        self.join_open = true;
                     }
                     // QA hook: TEAMSFAST_VIEW=<chat|teams|calendar|files|todo|activity>
                     if let Ok(v) = std::env::var("TEAMSFAST_VIEW") {
@@ -2470,7 +2477,7 @@ impl eframe::App for TeamsFastApp {
                 .show(ui.ctx(), |ui| {
                     ui.label(
                         RichText::new(
-                            "Paste a Teams meeting link, a meeting thread id, or a meet ID.",
+                            "Paste a Teams meeting link, a meeting thread ID, or a meeting ID.",
                         )
                         .small()
                         .weak(),
@@ -2498,7 +2505,13 @@ impl eframe::App for TeamsFastApp {
                         {
                             join_now = true;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new("Cancel")
+                                    .min_size(egui::vec2(70.0, 24.0)),
+                            )
+                            .clicked()
+                        {
                             close = true;
                         }
                     });
