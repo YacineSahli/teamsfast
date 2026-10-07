@@ -6,13 +6,15 @@ of the patched `ost` protocol library. Sibling-in-spirit of zapfast and
 spotifast (same architecture, same fastframe crates). Read `FEASIBILITY.md`
 for the full investigation and `README.md` for the user-facing summary.
 
-**Status: Phase 1+ — feature-complete chat client with sections and
-1:1 audio calls.** Chat (send/reply/edit/delete/react/forward/pins,
-pending+retry bubbles, seen-by, unread badges, pinned/muted chats),
-Adaptive Cards, section rail (Chat/Teams/Calendar/Files/ToDo/Activity),
+**Status: Phase 2 in progress — chat client with sections, calls AND
+meeting join.** Chat (send/reply/edit/delete/react/forward/pins,
+pending+retry bubbles, seen-by, unread badges, pinned/muted chats,
+per-chat notification levels, contact cards), Adaptive Cards, section
+rail (Chat/Teams+mgmt/Calendar+join/Files/ToDo/Planner/Shifts/Activity),
 presence with status menu, full Settings window, GUI device-code sign-in,
-notification click→chat, 1:1 audio calls (banner + hang-up + echo test).
-Meeting join and video/screenshare are the remaining Phase 2 items.
+notification click→chat, 1:1 audio calls + MEETING JOIN (verified live:
+epconv → call_accepted=true → Call active). Offline/local search merged
+with Graph. Video/screenshare is the remaining Phase 2 item.
 
 ## Repository layout
 
@@ -40,7 +42,9 @@ Meeting join and video/screenshare are the remaining Phase 2 items.
   settings.rs (Settings window), cards.rs (Adaptive Card renderer),
   widgets.rs (Teams-HTML renderer, avatars, day separator, icon_button),
   media.rs (lightbox).
-- `src/backend/sections.rs` — calendar/files/todo/drive-download handlers.
+- `src/backend/sections.rs` — calendar/files/todo/planner/shifts/teams-mgmt
+  handlers; `src/backend/join.rs` — meeting-join resolution (join URL /
+  thread id / meet ID → call leg).
 - `src/theme.rs` — Palette (17 named colors, dark/light bases, derive
   rules), Catalog/Omarchy bridge, Settings load/save, emoji raster cache.
 - `src/emoji.rs` — bundled Noto Color Emoji setup (MUST run before
@@ -206,10 +210,11 @@ Meeting join and video/screenshare are the remaining Phase 2 items.
 
 ## Known gaps / deferred
 
-- **Meeting join** (from calendar/links) and **video/screenshare** — the
-  remaining Phase 2 items; 1:1 audio works (signaling verified live
-  against the echo bot; this sandbox blocks TURN UDP, so full-duplex
-  audio needs a real network to verify).
+- **Video/screenshare** — the last Phase 2 item; audio 1:1 + meeting join
+  work (signaling verified live; this sandbox blocks TURN UDP, so
+  full-duplex audio needs a real network to hear).
+- **Meeting lobby** — joining a lobby-gated meeting places the leg; an
+  explicit lobby/admit UI is future work (teams-core has LobbyState).
 - **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,
   Submit actions shown disabled); Input.Text and interactive submits are
   future work.
@@ -224,13 +229,15 @@ Meeting join and video/screenshare are the remaining Phase 2 items.
 
 ## Roadmap (agreed priority)
 
-1. Meeting join (calendar/link → call), then video/screenshare.
-2. User manual pass → fix findings same-session.
-3. Benchmarks vs teams-for-linux (zapfast methodology, publish numbers).
-4. Upstream: ost issues (roster naming for @unq.gbl.spaces, topic-channel
+1. Video/screenshare (the last call modality).
+2. Meeting lobby UI (LobbyState is in teams-core).
+3. User manual pass → fix findings same-session.
+4. Benchmarks vs teams-for-linux (zapfast methodology, publish numbers).
+5. Upstream: ost issues (roster naming for @unq.gbl.spaces, topic-channel
    send) + push our presence-with-client / login_with_code_sink /
-   run_call_with_stop patches; ping better-teams author (mrowlinson).
-5. Fastframe shell (single-instance, autostart, self-update), archive key
+   run_call_with_stop / planner-with-client patches; ping better-teams
+   author (mrowlinson).
+6. Fastframe shell (single-instance, autostart, self-update), archive key
    in keyring, multi-account.
 
 ## Ecosystem notes

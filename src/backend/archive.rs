@@ -405,6 +405,40 @@ mod tests {
     }
 
     #[test]
+    fn search_messages_like_escapes_and_matches() {
+        let (archive, dir) = temp_archive("search");
+        let mk = |id: &str, ts: &str, content: &str| MessageInfo {
+            id: id.into(),
+            sender_mri: "8:orgid:a".into(),
+            sender: "A".into(),
+            timestamp: ts.into(),
+            content: content.into(),
+            raw: format!("<div>{content}</div>"),
+            reactions: Vec::new(),
+            reply_to: None,
+            client_message_id: None,
+        };
+        let msgs = vec![
+            mk("m1", "2026-10-06T10:00:00.0000000Z", "deploy the cluster"),
+            mk("m2", "2026-10-06T11:00:00.0000000Z", "100% done"),
+            mk("m3", "2026-10-06T12:00:00.0000000Z", "under_score test"),
+        ];
+        archive.save_messages("19:c", &msgs).unwrap();
+        let hits = archive.search_messages("cluster", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1.content, "deploy the cluster");
+        assert_eq!(hits[0].0, "19:c");
+        // % is a literal, not a wildcard.
+        assert_eq!(archive.search_messages("100%", 10).unwrap().len(), 1);
+        // _ is a literal too.
+        assert_eq!(archive.search_messages("under_score", 10).unwrap().len(), 1);
+        assert_eq!(archive.search_messages("underXscore", 10).unwrap().len(), 0);
+        // Empty query short-circuits.
+        assert!(archive.search_messages("  ", 10).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn read_state_and_wipe() {
         let (archive, dir) = temp_archive("read");
         let msgs: Vec<MessageInfo> = (0..3)
