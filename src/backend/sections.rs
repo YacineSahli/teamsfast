@@ -148,6 +148,69 @@ pub async fn download_drive_file(
     }
 }
 
+// ----------------------------------------------------------------- teams
+
+/// `Command::CreateChannel` — add a standard channel to a team.
+pub async fn create_channel(ses: &Session, tx: &Sender<Event>, team_id: &str, name: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::create_channel_data(c, team_id, name, None).await {
+        Ok(_) => {
+            let _ = tx.send(Event::Status(format!("channel #{name} created ✓")));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("create channel: {e:#}")));
+        }
+    }
+}
+
+/// `Command::SearchPublicTeams` — public teams matching a query.
+pub async fn search_public_teams(ses: &Session, tx: &Sender<Event>, query: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::search_public_teams_data(c, query, 20).await {
+        Ok((_, teams)) => {
+            let _ = tx.send(Event::PublicTeams(teams));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("team search: {e:#}")));
+            let _ = tx.send(Event::PublicTeams(Vec::new()));
+        }
+    }
+}
+
+/// `Command::JoinTeam` — join a public team by id.
+pub async fn join_team(ses: &Session, tx: &Sender<Event>, team_id: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::join_team_data(c, team_id).await {
+        Ok(msg) => {
+            let _ = tx.send(Event::Status(msg));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("join team: {e:#}")));
+        }
+    }
+}
+
+/// `Command::CreateTeam` — create a team (polls the async operation).
+pub async fn create_team(ses: &Session, tx: &Sender<Event>, name: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::create_team_data(c, name, None).await {
+        Ok(_) => {
+            let _ = tx.send(Event::Status(format!("team {name} created ✓")));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("create team: {e:#}")));
+        }
+    }
+}
+
 fn dirs_downloads() -> std::path::PathBuf {
     std::env::var_os("XDG_DOWNLOAD_DIR")
         .map(std::path::PathBuf::from)

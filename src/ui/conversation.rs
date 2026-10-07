@@ -130,6 +130,12 @@ pub enum Action {
     ShowJoinDialog,
     /// Per-chat notification level ("all" | "mentions" | "off").
     SetNotifyLevel { chat_id: String, level: String },
+    // ---- teams management ----
+    ShowTeamDialog,
+    CreateChannel { team_id: String, name: String },
+    SearchPublicTeams(String),
+    JoinTeam { team_id: String, name: String },
+    CreateTeam(String),
     HangUp,
 }
 
