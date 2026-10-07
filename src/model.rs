@@ -248,7 +248,7 @@ pub fn avatar_color(name: &str) -> Color32 {
 }
 
 /// 1–2 letter initials for an avatar. Skips punctuation-only words so
-/// "MI - ACME" yields "MD", not "M-".
+/// "MI - ACME" yields "MA", not "M-".
 pub fn initials(name: &str) -> String {
     let words: Vec<&str> = name
         .split_whitespace()

@@ -69,11 +69,6 @@ open = "5"
 # Native file dialog for attachments.
 rfd = "0.15"
 
-# Local development: build against the checked-out sibling instead of the
-# pushed teams-core revision. Delete this block (then `cargo update`) to
-# build against the pushed branch.
-[patch."https://github.com/YacineSahli/teams-core"]
-teams-cli = { path = "teams-core" }
 
 [profile.release]
 lto = "thin"

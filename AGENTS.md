@@ -52,9 +52,11 @@ with Graph. Video/screenshare is the remaining Phase 2 item.
 - `src/emoji.rs` — bundled Noto Color Emoji setup (MUST run before
   plugin/raster; see gotchas).
 - `src/tray.rs` — tray icon (procedural SVG-free icon) + menu.
-- `teams-core/` — the protocol crate (local git checkout, wired via
-  `[patch]` in Cargo.toml; delete the patch block to build against the
-  pushed `https://github.com/YacineSahli/teams-core`). Upstream chain:
+- `teams-core/` — the protocol crate (local git checkout for development;
+  the build pulls the published copy from
+  `https://github.com/YacineSahli/teams-core` — clone the sibling and add
+  `[patch."https://github.com/YacineSahli/teams-core"] teams-cli = { path = "teams-core" }`
+  to build against local changes). Upstream chain:
   eisbaw/ost (dead) → better-teams vendored+patched (92 patches, MIT) →
   us. Sync via `git filter-repo --subdirectory-filter rust/ost` re-run +
   `git merge` (deterministic, shared history).
