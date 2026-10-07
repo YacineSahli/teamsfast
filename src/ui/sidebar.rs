@@ -90,6 +90,15 @@ pub fn sidebar(
             });
         }
         SideView::Teams => {
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button(RichText::new("+ Channel").small())
+                    .on_hover_text("Create a channel / join or create a team")
+                    .clicked()
+                {
+                    actions.push(Action::ShowTeamDialog);
+                }
+            });
             ui.separator();
             if ctx.teams.is_empty() {
                 ui.horizontal(|ui| {

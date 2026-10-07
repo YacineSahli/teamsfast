@@ -46,6 +46,21 @@ pub struct ForwardState {
     pub filter: String,
 }
 
+/// "Create channel / join team" dialog state.
+#[derive(Default)]
+pub struct TeamDialogState {
+    pub open: bool,
+    /// Channel tab.
+    pub channel_team: Option<String>,
+    pub channel_name: String,
+    /// Join tab.
+    pub join_query: String,
+    pub searching: bool,
+    pub public_teams: Vec<ost::api::PublicTeamInfo>,
+    /// Create-team tab.
+    pub new_team_name: String,
+}
+
 pub struct TeamsFastApp {
     state: State,
     status: String,
@@ -105,6 +120,8 @@ pub struct TeamsFastApp {
     join_source: String,
     /// Subject hint for the next meeting join's banner label.
     call_label_hint: Option<String>,
+    /// Teams-management dialog (create channel, join/create team).
+    team_dialog: TeamDialogState,
 
     // ---- sections ----
     main_view: MainView,
@@ -214,6 +231,128 @@ fn spawn_tray(waker: egui::Context) -> Option<fastframe_tray::Tray> {
     rx.recv_timeout(Duration::from_secs(3)).unwrap_or(None)
 }
 
+/// Teams management dialog body.
+#[allow(clippy::too_many_lines)]
+fn teams_dialog(
+    ui: &mut egui::Ui,
+    st: &mut TeamDialogState,
+    teams: &[TeamInfo],
+    actions: &mut Vec<Action>,
+) {
+    egui::ScrollArea::vertical()
+        .id_salt("team-dialog-scroll")
+        .max_height(420.0)
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            ui.strong("Create a channel");
+            ui.horizontal(|ui| {
+                let sel = st
+                    .channel_team
+                    .as_deref()
+                    .and_then(|id| teams.iter().find(|t| t.id == id))
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| "Pick team".into());
+                egui::ComboBox::from_id_salt("channel-team")
+                    .selected_text(sel)
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        for t in teams {
+                            let is = st.channel_team.as_deref() == Some(t.id.as_str());
+                            if ui.selectable_label(is, &t.name).clicked() {
+                                st.channel_team = Some(t.id.clone());
+                            }
+                        }
+                    });
+                ui.add(
+                    egui::TextEdit::singleline(&mut st.channel_name)
+                        .hint_text("Channel name")
+                        .desired_width(ui.available_width() - 78.0),
+                );
+                let enabled = !st.channel_name.trim().is_empty()
+                    && st.channel_team.is_some();
+                if ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new(RichText::new("Create").small()),
+                    )
+                    .clicked()
+                {
+                    let team = st.channel_team.clone().unwrap();
+                    let name = st.channel_name.trim().to_string();
+                    st.channel_name.clear();
+                    actions.push(Action::CreateChannel {
+                        team_id: team,
+                        name,
+                    });
+                }
+            });
+            ui.add_space(10.0);
+            ui.separator();
+            ui.strong("Join a public team");
+            ui.horizontal(|ui| {
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut st.join_query)
+                        .hint_text("Search public teams…")
+                        .desired_width(ui.available_width() - 70.0),
+                );
+                let enter =
+                    field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button("Search").clicked() || enter)
+                    && !st.join_query.trim().is_empty()
+                {
+                    actions.push(Action::SearchPublicTeams(
+                        st.join_query.trim().to_string(),
+                    ));
+                }
+            });
+            if st.searching {
+                ui.spinner();
+            }
+            for t in &st.public_teams {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 80.0);
+                        ui.strong(&t.name);
+                        if let Some(d) = &t.description {
+                            ui.add(
+                                egui::Label::new(RichText::new(d).small().weak())
+                                    .truncate()
+                                    .selectable(false),
+                            );
+                        }
+                    });
+                    if ui.small_button("Join").clicked() {
+                        actions.push(Action::JoinTeam {
+                            team_id: t.id.clone(),
+                            name: t.name.clone(),
+                        });
+                    }
+                });
+                ui.separator();
+            }
+            ui.add_space(4.0);
+            ui.separator();
+            ui.strong("Create a team");
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut st.new_team_name)
+                        .hint_text("Team name")
+                        .desired_width(ui.available_width() - 78.0),
+                );
+                if ui
+                    .add_enabled(
+                        !st.new_team_name.trim().is_empty(),
+                        egui::Button::new("Create").small(),
+                    )
+                    .clicked()
+                {
+                    actions.push(Action::CreateTeam(st.new_team_name.trim().to_string()));
+                    st.new_team_name.clear();
+                }
+            });
+        });
+}
+
 impl TeamsFastApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings_load = theme::load_settings();
@@ -282,6 +421,7 @@ impl TeamsFastApp {
             join_open: false,
             join_source: String::new(),
             call_label_hint: None,
+            team_dialog: TeamDialogState::default(),
             main_view: MainView::Chat,
             meetings: Vec::new(),
             calendar_loading: false,
@@ -368,6 +508,10 @@ impl TeamsFastApp {
                 Event::LoginCode { url, code } => {
                     self.login_code = Some((url, code));
                     self.status = "Finish the sign-in in your browser…".into();
+                }
+                Event::PublicTeams(teams) => {
+                    self.team_dialog.public_teams = teams;
+                    self.team_dialog.searching = false;
                 }
                 // ---- calls ----
                 Event::CallStarted { label } => {
@@ -1286,6 +1430,42 @@ impl TeamsFastApp {
                 self.cmd.send(Command::JoinMeeting(source)).ok();
             }
             Action::ShowJoinDialog => self.join_open = true,
+            Action::ShowTeamDialog => {
+                self.team_dialog.open = true;
+                if self.team_dialog.channel_team.is_none() {
+                    self.team_dialog.channel_team =
+                        self.teams.first().map(|t| t.id.clone());
+                }
+            }
+            Action::CreateChannel { team_id, name } => {
+                self.status = format!("creating #{name}…");
+                self.cmd
+                    .send(Command::CreateChannel {
+                        team_id,
+                        name: name.clone(),
+                    })
+                    .ok();
+                self.team_dialog.open = false;
+                self.loading_teams = true;
+                self.cmd.send(Command::LoadTeams).ok();
+            }
+            Action::SearchPublicTeams(query) => {
+                self.team_dialog.searching = true;
+                self.cmd.send(Command::SearchPublicTeams(query)).ok();
+            }
+            Action::JoinTeam { team_id, name } => {
+                self.status = format!("joining {name}…");
+                self.cmd.send(Command::JoinTeam(team_id)).ok();
+                self.loading_teams = true;
+                self.cmd.send(Command::LoadTeams).ok();
+            }
+            Action::CreateTeam(name) => {
+                self.status = format!("creating team {name}…");
+                self.cmd.send(Command::CreateTeam(name)).ok();
+                self.team_dialog.open = false;
+                self.loading_teams = true;
+                self.cmd.send(Command::LoadTeams).ok();
+            }
             Action::SetNotifyLevel { chat_id, level } => {
                 if level == "all" {
                     self.settings.notification_levels.remove(&chat_id);
@@ -2132,6 +2312,27 @@ impl eframe::App for TeamsFastApp {
                     .ok();
                 self.status = "message forwarded".into();
             }
+        }
+
+        // Teams management dialog: create channel / join public team /
+        // create team.
+        if self.team_dialog.open {
+            let mut close = false;
+            egui::Window::new("Teams")
+                .default_width(430.0)
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    let mut actions: Vec<Action> = Vec::new();
+                    teams_dialog(ui, &mut self.team_dialog, &self.teams, &mut actions);
+                    for a in actions {
+                        self.apply(a);
+                    }
+                });
+            if close {
+                self.team_dialog.open = false;
+            }
+            let _ = &mut close;
         }
 
         // Join-with-link dialog.

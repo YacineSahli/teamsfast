@@ -116,6 +116,11 @@ pub enum Command {
     JoinMeeting(String),
     /// Hang up the active call.
     HangUp,
+    // ---- teams management ----
+    CreateChannel { team_id: String, name: String },
+    SearchPublicTeams(String),
+    JoinTeam(String),
+    CreateTeam(String),
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +236,8 @@ pub enum Event {
     CallEnded(String),
     /// The call could not be placed.
     CallFailed(String),
+    /// Public-team search results (join picker).
+    PublicTeams(Vec<ost::api::PublicTeamInfo>),
     Error(String),
 }
 
@@ -569,6 +576,18 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::TestCall => {
                 start_call(&mut ses, &tx, String::new(), true).await;
+            }
+            Command::CreateChannel { team_id, name } => {
+                sections::create_channel(&ses, &tx, &team_id, &name).await;
+            }
+            Command::SearchPublicTeams(query) => {
+                sections::search_public_teams(&ses, &tx, &query).await;
+            }
+            Command::JoinTeam(team_id) => {
+                sections::join_team(&ses, &tx, &team_id).await;
+            }
+            Command::CreateTeam(name) => {
+                sections::create_team(&ses, &tx, &name).await;
             }
             Command::JoinMeeting(source) => {
                 if let Some((thread, label)) = join::resolve_join_target(&ses, &tx, &source).await
