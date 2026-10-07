@@ -31,6 +31,7 @@ enum MainView {
     ToDo,
     Planner,
     Shifts,
+    Notes,
     Activity,
 }
 
@@ -145,6 +146,11 @@ pub struct TeamsFastApp {
     chat_files_loading: bool,
     /// Rename-channel dialog (team, channel, current name).
     channel_rename: Option<(String, String, String)>,
+    /// OneNote state.
+    notebooks: Vec<crate::ui::sections::NotebookTree>,
+    notes_page: Option<ost::api::NotePage>,
+    notes: crate::ui::sections::NotesPanelState,
+    notes_loading: bool,
     shifts: Vec<ost::api::ShiftInfo>,
     shifts_loading: bool,
     activity: Vec<crate::ui::sections::ActivityEntry>,
@@ -187,6 +193,29 @@ pub struct TeamsFastApp {
 
 fn textures_key(url: &str) -> Option<String> {
     Some(url.to_string())
+}
+
+/// Is the current local time inside the quiet window? Handles windows that
+/// cross midnight ("22:00"–"07:00"); unparsable times disable the check.
+fn in_quiet_hours(from: &str, to: &str) -> bool {
+    let parse = |s: &str| -> Option<u32> {
+        let (h, m) = s.trim().split_once(':')?;
+        let h: u32 = h.parse().ok()?;
+        let m: u32 = m.parse().ok()?;
+        (h < 24 && m < 60).then_some(h * 60 + m)
+    };
+    let (Some(from), Some(to)) = (parse(from), parse(to)) else {
+        return false;
+    };
+    let now = {
+        let t = jiff::Zoned::now();
+        t.hour() as u32 * 60 + t.minute() as u32
+    };
+    if from <= to {
+        now >= from && now < to
+    } else {
+        now >= from || now < to
+    }
 }
 
 /// Open a folder in the desktop file manager (created first).
@@ -450,6 +479,10 @@ impl TeamsFastApp {
             chat_files: None,
             chat_files_loading: false,
             channel_rename: None,
+            notebooks: Vec::new(),
+            notes_page: None,
+            notes: Default::default(),
+            notes_loading: false,
             shifts: Vec::new(),
             shifts_loading: false,
             activity: Vec::new(),
@@ -538,6 +571,18 @@ impl TeamsFastApp {
                     self.shifts = shifts;
                     self.shifts_loading = false;
                 }
+                Event::Notes(books) => {
+                    self.notebooks = books;
+                    self.notes_loading = false;
+                }
+                Event::NotePage(page) => {
+                    self.notes_page = Some(page);
+                }
+                Event::MeetNowReady { join_url } => {
+                    self.status = "meeting created — joining…".into();
+                    self.call_label_hint = Some("Meet now".into());
+                    self.cmd.send(Command::JoinMeeting(join_url)).ok();
+                }
                 Event::ChatFiles { chat_id, files } => {
                     let name = self
                         .chats
@@ -621,6 +666,7 @@ impl TeamsFastApp {
                             "todo" => Some(MainView::ToDo),
                             "planner" => Some(MainView::Planner),
                             "shifts" => Some(MainView::Shifts),
+                            "notes" | "onenote" => Some(MainView::Notes),
                             "activity" => Some(MainView::Activity),
                             _ => None,
                         };
@@ -1004,6 +1050,11 @@ impl TeamsFastApp {
     fn notify_desktop(&self, chat_id: String, sender: String, preview: String) {
         if !self.settings.notify {
             return;
+        }
+        if let Some((from, to)) = &self.settings.quiet_hours {
+            if in_quiet_hours(from, to) {
+                return;
+            }
         }
         if self.settings.skip_focused
             && !self.window_hidden
@@ -1515,6 +1566,19 @@ impl TeamsFastApp {
                 self.loading_teams = true;
                 self.cmd.send(Command::LoadTeams).ok();
             }
+            Action::ReadNotePage(page_id) => {
+                self.notes_page = None;
+                self.cmd.send(Command::ReadNotePage { page_id }).ok();
+            }
+            Action::AppendNote { page_id, text } => {
+                self.cmd
+                    .send(Command::AppendNote { page_id, text })
+                    .ok();
+            }
+            Action::MeetNow => {
+                self.status = "creating meeting…".into();
+                self.cmd.send(Command::MeetNow).ok();
+            }
             Action::ShowChatFiles(chat_id) => {
                 self.switch_view(MainView::Files);
                 self.chat_files_loading = true;
@@ -1647,6 +1711,10 @@ impl TeamsFastApp {
                 self.shifts_loading = true;
                 self.cmd.send(Command::LoadShifts).ok();
             }
+            MainView::Notes => {
+                self.notes_loading = true;
+                self.cmd.send(Command::LoadNotes).ok();
+            }
             MainView::Activity => {}
         }
     }
@@ -1657,7 +1725,7 @@ impl TeamsFastApp {
     /// Activity) with the settings gear pinned at the bottom.
     fn rail(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 8] = [
+        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 9] = [
             (MainView::Chat, "Chat", crate::theme::Icon::MessageSquare, "Chats (Ctrl+1)"),
             (MainView::Teams, "Teams", crate::theme::Icon::Users, "Teams & channels (Ctrl+2)"),
             (MainView::Calendar, "Calendar", crate::theme::Icon::Calendar, "Calendar (Ctrl+3)"),
@@ -1665,7 +1733,8 @@ impl TeamsFastApp {
             (MainView::ToDo, "To Do", crate::theme::Icon::ListTodo, "To Do (Ctrl+5)"),
             (MainView::Planner, "Planner", crate::theme::Icon::SquareCheck, "Planner boards (Ctrl+6)"),
             (MainView::Shifts, "Shifts", crate::theme::Icon::Clock, "Shifts this week (Ctrl+7)"),
-            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+8)"),
+            (MainView::Notes, "OneNote", crate::theme::Icon::Archive, "OneNote notebooks (Ctrl+8)"),
+            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+9)"),
         ];
         for (view, _name, icon, tip) in sections {
             let sel = self.main_view == view;
@@ -2313,6 +2382,19 @@ impl eframe::App for TeamsFastApp {
                         self.shifts_loading,
                         &self.palette,
                     ),
+                    MainView::Notes => {
+                        let mut st = std::mem::take(&mut self.notes);
+                        crate::ui::sections::notes_panel(
+                            ui,
+                            &self.notebooks,
+                            self.notes_page.as_ref(),
+                            &mut st,
+                            self.notes_loading,
+                            &self.palette,
+                            &mut actions,
+                        );
+                        self.notes = st;
+                    }
                     MainView::Activity => crate::ui::sections::activity_panel(
                         ui,
                         &self.activity,
@@ -2396,7 +2478,8 @@ impl eframe::App for TeamsFastApp {
             (egui::Key::Num5, MainView::ToDo),
             (egui::Key::Num6, MainView::Planner),
             (egui::Key::Num7, MainView::Shifts),
-            (egui::Key::Num8, MainView::Activity),
+            (egui::Key::Num8, MainView::Notes),
+            (egui::Key::Num9, MainView::Activity),
         ];
         for (key, view) in section_keys {
             if ui.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {

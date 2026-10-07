@@ -155,6 +155,10 @@ pub enum Action {
     },
     /// Show this chat's shared files in the Files section.
     ShowChatFiles(String),
+    ReadNotePage(String),
+    AppendNote { page_id: String, text: String },
+    /// Create an instant meeting and join it.
+    MeetNow,
     /// Start/open the 1:1 with this member's mri.
     ChatWith { mri: String, name: String },
     HangUp,

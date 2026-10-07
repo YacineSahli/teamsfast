@@ -329,6 +329,40 @@ fn notifications(ui: &mut Ui, settings: &mut Settings) {
             .small()
             .weak(),
     );
+    ui.add_space(10.0);
+    ui.strong("Quiet hours");
+    let mut q = settings.quiet_hours.clone().unwrap_or_default();
+    let mut enabled = settings.quiet_hours.is_some();
+    if ui.checkbox(&mut enabled, "Suppress notifications between").changed() {
+        settings.quiet_hours = enabled.then(|| {
+            if q.0.is_empty() { "22:00".into() } else { q.0.clone() }
+        }).map(|f| (f, q.1.clone().is_empty().then(|| "07:00".to_string()).unwrap_or(q.1.clone())));
+        theme::save_settings(settings);
+        q = settings.quiet_hours.clone().unwrap_or_default();
+    }
+    if enabled {
+        ui.horizontal(|ui| {
+            let changed = ui
+                .add(
+                    egui::TextEdit::singleline(&mut q.0)
+                        .hint_text("22:00")
+                        .desired_width(64.0),
+                )
+                .changed()
+                | ui
+                    .add(
+                        egui::TextEdit::singleline(&mut q.1)
+                            .hint_text("07:00")
+                            .desired_width(64.0),
+                    )
+                    .changed();
+            ui.label(RichText::new("and (local time)").small().weak());
+            if changed {
+                settings.quiet_hours = Some(q);
+                theme::save_settings(settings);
+            }
+        });
+    }
 }
 
 fn account(ui: &mut Ui, st: &mut SettingsUi, info: &SettingsInfo<'_>, actions: &mut Vec<Action>) {

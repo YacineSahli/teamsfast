@@ -236,6 +236,10 @@ pub struct Settings {
     /// Ghost mode: hold back read receipts (no mark-read calls).
     #[serde(default)]
     pub ghost_mode: bool,
+    /// Quiet hours window ("HH:MM", "HH:MM"); notifications suppressed
+    /// inside it. None = always notify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_hours: Option<(String, String)>,
 }
 
 fn default_true() -> bool {
@@ -268,6 +272,7 @@ impl Default for Settings {
             pinned_messages: std::collections::HashMap::new(),
             notification_levels: std::collections::HashMap::new(),
             ghost_mode: false,
+            quiet_hours: None,
         })
     }
 }

@@ -132,6 +132,12 @@ pub enum Command {
     },
     /// Recent files shared in one chat.
     ChatFiles(String),
+    // ---- onenote ----
+    LoadNotes,
+    ReadNotePage { page_id: String },
+    AppendNote { page_id: String, text: String },
+    // ---- meet now ----
+    MeetNow,
     // ---- planner + shifts ----
     LoadPlanner,
     LoadShifts,
@@ -266,6 +272,12 @@ pub enum Event {
         chat_id: String,
         files: Vec<ost::api::SharedFile>,
     },
+    /// OneNote notebooks with sections+pages (personal notes).
+    Notes(Vec<crate::ui::sections::NotebookTree>),
+    /// One page's content.
+    NotePage(ost::api::NotePage),
+    /// Meet-now created; join with its link.
+    MeetNowReady { join_url: String },
     Error(String),
 }
 
@@ -629,6 +641,18 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::ChatFiles(chat_id) => {
                 sections::chat_files(&ses, &tx, &chat_id).await;
+            }
+            Command::LoadNotes => {
+                sections::load_notes(&ses, &tx).await;
+            }
+            Command::ReadNotePage { page_id } => {
+                sections::read_note_page(&ses, &tx, &page_id).await;
+            }
+            Command::AppendNote { page_id, text } => {
+                sections::append_note(&ses, &tx, &page_id, &text).await;
+            }
+            Command::MeetNow => {
+                sections::meet_now(&ses, &tx).await;
             }
             Command::LoadPlanner => {
                 sections::load_planner(&ses, &tx).await;

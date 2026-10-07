@@ -274,6 +274,101 @@ pub async fn chat_files(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
     }
 }
 
+// ----------------------------------------------------------------- notes
+
+/// `Command::LoadNotes` — personal OneNote notebooks with sections+pages.
+pub async fn load_notes(ses: &Session, tx: &Sender<Event>) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::list_notebooks_data(c, None).await {
+        Ok(books) => {
+            let mut tree = Vec::new();
+            for b in &books {
+                let sections = ost::api::list_notebook_sections_data(c, &b.id, None)
+                    .await
+                    .unwrap_or_default();
+                tree.push(crate::ui::sections::NotebookTree {
+                    name: b.name.clone(),
+                    sections,
+                });
+            }
+            let _ = tx.send(Event::Notes(tree));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("notebooks: {e:#}")));
+            let _ = tx.send(Event::Notes(Vec::new()));
+        }
+    }
+}
+
+/// `Command::ReadNotePage` — one page's HTML.
+pub async fn read_note_page(ses: &Session, tx: &Sender<Event>, page_id: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::read_note_page_data(c, page_id, None).await {
+        Ok(page) => {
+            let _ = tx.send(Event::NotePage(page));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("note page: {e:#}")));
+        }
+    }
+}
+
+/// `Command::AppendNote` — append a paragraph to a page.
+pub async fn append_note(ses: &Session, tx: &Sender<Event>, page_id: &str, text: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    match ost::api::append_note_paragraph_data(c, page_id, text, None).await {
+        Ok(()) => {
+            let _ = tx.send(Event::Status("note updated ✓".into()));
+            read_note_page(ses, tx, page_id).await;
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("note append: {e:#}")));
+        }
+    }
+}
+
+// --------------------------------------------------------------- meet now
+
+/// `Command::MeetNow` — create an online meeting starting now (+30 min)
+/// and hand back its join URL.
+pub async fn meet_now(ses: &Session, tx: &Sender<Event>) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    let now = jiff::Zoned::now();
+    let end = now.clone() + jiff::Span::new().minutes(30);
+    let fmt = |z: &jiff::Zoned| z.strftime("%Y-%m-%dT%H:%M:%S").to_string();
+    match ost::api::schedule_meeting_data(
+        c,
+        "TeamsFast meeting",
+        &fmt(&now),
+        &fmt(&end),
+        "UTC",
+        true,
+    )
+    .await
+    {
+        Ok(meeting) => {
+            if let Some(url) = meeting.join_url {
+                let _ = tx.send(Event::MeetNowReady { join_url: url });
+            } else {
+                let _ = tx.send(Event::CallFailed(
+                    "meeting created without a join link".into(),
+                ));
+            }
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("meet now: {e:#}")));
+        }
+    }
+}
+
 // ------------------------------------------------------------- planner
 
 /// `Command::LoadPlanner` — every team's plans with buckets + tasks.
