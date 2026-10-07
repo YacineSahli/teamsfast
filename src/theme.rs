@@ -230,6 +230,9 @@ pub struct Settings {
     /// Locally pinned messages: chat id → message ids (top-of-view pins).
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub pinned_messages: std::collections::HashMap<String, Vec<String>>,
+    /// Per-chat notification level: "all" (default) | "mentions" | "off".
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub notification_levels: std::collections::HashMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -260,6 +263,7 @@ impl Default for Settings {
             pinned_chats: Vec::new(),
             muted_chats: Vec::new(),
             pinned_messages: std::collections::HashMap::new(),
+            notification_levels: std::collections::HashMap::new(),
         })
     }
 }

@@ -150,6 +150,50 @@ impl Archive {
         Ok(n as usize)
     }
 
+    /// Local full-text search over cached messages, newest first. Backs the
+    /// offline/tenant-blocked search path.
+    pub fn search_messages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, MessageInfo)>> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pat = format!(
+            "%{}%",
+            q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        );
+        let mut stmt = self.conn.prepare(
+            "SELECT chat_id, id, ts, sender, sender_mri, content, raw, reply_to, client_message_id
+             FROM messages
+             WHERE content LIKE ?1 ESCAPE '\\'
+             ORDER BY ts DESC LIMIT ?2",
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![pat, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                MessageInfo {
+                    id: row.get(1)?,
+                    timestamp: row.get(2)?,
+                    sender: row.get(3)?,
+                    sender_mri: row.get(4)?,
+                    content: row.get(5)?,
+                    raw: row.get(6)?,
+                    reactions: Vec::new(),
+                    reply_to: row.get(7)?,
+                    client_message_id: row.get(8)?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next() {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Replace the cached chat list.
     pub fn save_chats(&self, chats: &[ChatInfo]) -> Result<()> {
         let mut stmt = self

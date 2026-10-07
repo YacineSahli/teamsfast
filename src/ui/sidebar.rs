@@ -30,6 +30,17 @@ pub struct SidebarCtx<'a> {
     pub pinned: &'a std::collections::HashSet<String>,
     /// Known muted chat ids (bell-off hint).
     pub muted: &'a std::collections::HashSet<String>,
+    /// Per-chat notification level map ("all" | "mentions" | "off").
+    pub notify_levels: &'a std::collections::HashMap<String, String>,
+}
+
+impl SidebarCtx<'_> {
+    pub fn notify_level(&self, chat_id: &str) -> &str {
+        self.notify_levels
+            .get(chat_id)
+            .map(|s| s.as_str())
+            .unwrap_or("all")
+    }
 }
 
 pub fn sidebar(
@@ -314,7 +325,7 @@ fn chat_row(
             actions.push(Action::TogglePin(chat.id.clone()));
             ui.close();
         }
-        let muted = ctx.muted.contains(&chat.id);
+        let muted = ctx.muted.contains(&chat.id) || ctx.notify_level(&chat.id) == "off";
         if ui
             .button(if muted { "Unmute" } else { "Mute notifications" })
             .clicked()
@@ -328,6 +339,25 @@ fn chat_row(
         if ui.button("Mark as unread").clicked() {
             actions.push(Action::MarkUnread(chat.id.clone()));
             ui.close();
+        }
+        ui.separator();
+        let level = ctx.notify_level(&chat.id);
+        ui.label(RichText::new("Notifications").small().weak());
+        for (key, text) in [("all", "All messages"), ("mentions", "Mentions only"), ("off", "Off")] {
+            if ui
+                .selectable_label(
+                    level == key,
+                    RichText::new(format!("{}  {text}", if level == key { "●" } else { "○" }))
+                        .small(),
+                )
+                .clicked()
+            {
+                actions.push(Action::SetNotifyLevel {
+                    chat_id: chat.id.clone(),
+                    level: key.to_string(),
+                });
+                ui.close();
+            }
         }
         ui.separator();
         if ui.button("Hide chat").clicked() {
@@ -386,6 +416,7 @@ mod tests {
             show_badges: true,
             pinned: &std::collections::HashSet::new(),
             muted: &std::collections::HashSet::new(),
+            notify_levels: &std::collections::HashMap::new(),
         };
 
         let egui_ctx = egui::Context::default();
@@ -469,6 +500,7 @@ mod tests {
             show_badges: true,
             pinned: &std::collections::HashSet::new(),
             muted: &std::collections::HashSet::new(),
+            notify_levels: &std::collections::HashMap::new(),
         };
         let egui_ctx = egui::Context::default();
         let input = egui::RawInput {
@@ -511,6 +543,7 @@ mod tests {
             show_badges: true,
             pinned: &std::collections::HashSet::new(),
             muted: &std::collections::HashSet::new(),
+            notify_levels: &std::collections::HashMap::new(),
         };
         let egui_ctx = egui::Context::default();
         let input = egui::RawInput {
