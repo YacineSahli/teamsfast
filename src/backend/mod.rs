@@ -106,6 +106,13 @@ pub enum Command {
         item_id: String,
         name: String,
     },
+    // ---- calls ----
+    /// Place a 1:1 audio call to the peer of this chat thread.
+    StartCall(String),
+    /// Ring the Teams echo/test bot (settings "Test call").
+    TestCall,
+    /// Hang up the active call.
+    HangUp,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +219,15 @@ pub enum Event {
         list_id: String,
         tasks: Vec<ost::api::TodoTaskInfo>,
     },
+    // ---- calls ----
+    /// A call was placed and is connecting.
+    CallStarted { label: String },
+    /// Human-readable call progress (connecting / ringing / active).
+    CallStatus(String),
+    /// The call ended (summary line).
+    CallEnded(String),
+    /// The call could not be placed.
+    CallFailed(String),
     Error(String),
 }
 
@@ -258,6 +274,8 @@ pub(crate) struct Session {
     pub older_links: HashMap<String, String>,
     /// Local archive (opens even without network, for cached content).
     pub archive: Option<archive::Archive>,
+    /// Hang-up switch for the active call (None when idle).
+    pub call_stop: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl Session {
@@ -274,6 +292,7 @@ impl Session {
             self_id: None,
             older_links: HashMap::new(),
             archive,
+            call_stop: None,
         }
     }
 }
@@ -541,8 +560,60 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             } => {
                 sections::download_drive_file(&ses, &tx, &drive_id, &item_id, &name).await;
             }
+            // ---- calls ----
+            Command::StartCall(chat_id) => {
+                start_call(&mut ses, &tx, chat_id, false).await;
+            }
+            Command::TestCall => {
+                start_call(&mut ses, &tx, String::new(), true).await;
+            }
+            Command::HangUp => {
+                if let Some(stop) = ses.call_stop.take() {
+                    let _ = stop.send(true);
+                    send!(Event::CallStatus("hanging up…".into()));
+                }
+            }
         }
     }
+}
+
+/// Place a call through teams-core's call driver: its own trouter session,
+/// ICE/TURN, SRTP/Opus and cpal audio, all inside one spawned task. The
+/// watch channel hangs up cooperatively.
+async fn start_call(ses: &mut Session, tx: &Sender<Event>, chat_id: String, echo: bool) {
+    if ses.call_stop.is_some() {
+        let _ = tx.send(Event::CallFailed("a call is already in progress".into()));
+        return;
+    }
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    ses.call_stop = Some(stop_tx);
+    let tx_evt = tx.clone();
+    let label = if echo {
+        "Echo test".to_string()
+    } else {
+        chat_id.clone()
+    };
+    let thread = if echo { None } else { Some(chat_id) };
+    tokio::spawn(async move {
+        let _ = tx_evt.send(Event::CallStarted { label });
+        let _ = tx_evt.send(Event::CallStatus("connecting…".into()));
+        // Safety cap ~55 min; hang-up ends it earlier.
+        let res = ost::calling::run_call_with_stop(
+            3300, false, echo, thread, false, false, false, stop_rx,
+        )
+        .await;
+        match res {
+            Ok(result) => {
+                let _ = tx_evt.send(Event::CallEnded(format!(
+                    "call ended — accepted: {}, {} packets sent / {} received",
+                    result.call_accepted, result.packets_sent, result.packets_received
+                )));
+            }
+            Err(e) => {
+                let _ = tx_evt.send(Event::CallFailed(format!("{e:#}")));
+            }
+        }
+    });
 }
 
 /// Unread state for every chat: the flag compares the chat's last activity
