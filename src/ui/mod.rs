@@ -1,3 +1,4 @@
+pub mod cards;
 pub mod conversation;
 pub mod media;
 pub mod panels;

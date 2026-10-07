@@ -613,10 +613,10 @@ fn bubble_parts(
             quote_preview(ui, ctx, m);
         }
     }
-    // Unsupported connector-card fallback: MS returns a plain-text stub for
-    // cards our client can't render — show a muted card instead of the raw
-    // "Card - access it on ..." line.
-    let unsupported_card = m.raw.contains("cards.unsupported");
+    // Connector/adaptive card: a Swift-b64 payload renders as a card;
+    // the "cards.unsupported" stub (MS sends it when the client can't
+    // display cards) shows a muted placeholder.
+    let decoded_card = crate::ui::cards::extract_card(&m.raw);
 
     // The bubble itself
     let row_id = egui::Id::new(("msg", &m.id));
@@ -637,7 +637,11 @@ fn bubble_parts(
                 })
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
-                    if unsupported_card {
+                    if let Some(card) = decoded_card.as_ref() {
+                        crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions);
+                        return;
+                    }
+                    if m.raw.contains("cards.unsupported") {
                         connector_card(ui);
                         return;
                     }
@@ -695,7 +699,11 @@ fn bubble_parts(
             })
             .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
-                if unsupported_card {
+                if let Some(card) = decoded_card.as_ref() {
+                    crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions);
+                    return;
+                }
+                if m.raw.contains("cards.unsupported") {
                     connector_card(ui);
                     return;
                 }
