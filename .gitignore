@@ -3,3 +3,6 @@
 /teams-core
 /reference
 /.upstream
+
+# Session-local working notes (progress + todo) — not part of the repo
+/NOTES.local.md
