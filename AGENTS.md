@@ -112,6 +112,11 @@ with Graph. Video/screenshare is the remaining Phase 2 item.
 - ScrollArea content INHERITS the parent layout: a vertical ScrollArea
   inside a ui.horizontal row lays its children out HORIZONTALLY. Wrap the
   scroll body in ui.vertical (todo/notes nav columns both hit this).
+- Widget-in-button: `Button::new` takes TEXT; putting an image in a
+  button is `Button::image(img)` (or `.image_and_text`). Passing a
+  widget that pre-adds itself to the Ui (like the old emoji_widget)
+  paints it on the PARENT and leaves the button an empty chip — the
+  hover reaction bar shipped like that for a release.
 - Two ScrollAreas/Grids in one view MUST get unique `id_salt`/ids — the
   defaults clash and egui paints "Second use of scrollbar/Grid ID" error
   chips while corrupting the second widget's state.
