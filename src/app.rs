@@ -844,9 +844,25 @@ impl TeamsFastApp {
                     if std::env::var("TEAMSFAST_SETTINGS").as_deref() == Ok("1") {
                         self.settings_ui.open = true;
                     }
-                    // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call.
+                    // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call;
+                    // TEAMSFAST_VIDEOCALL=1 does the same with the camera on.
                     if std::env::var("TEAMSFAST_TESTCALL").as_deref() == Ok("1") {
-                        self.cmd.send(Command::TestCall).ok();
+                        self.cmd.send(Command::TestCall { video: false }).ok();
+                    }
+                    if std::env::var("TEAMSFAST_VIDEOCALL").as_deref() == Ok("1") {
+                        self.cmd.send(Command::TestCall { video: true }).ok();
+                    }
+                    // QA hook: TEAMSFAST_HANGUP_AFTER=<secs> hangs up N
+                    // seconds after Ready — bounds headless call QA so the
+                    // call summary actually prints.
+                    if let Ok(secs) = std::env::var("TEAMSFAST_HANGUP_AFTER") {
+                        if let Ok(secs) = secs.trim().parse::<u64>() {
+                            let cmd = self.cmd.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_secs(secs));
+                                cmd.send(crate::backend::Command::HangUp).ok();
+                            });
+                        }
                     }
                     // QA hook: TEAMSFAST_RING=1 shows the ringing banner
                     // with a synthetic caller (pixel QA for incoming calls).
@@ -1753,8 +1769,11 @@ impl TeamsFastApp {
             Action::StartCall(chat_id) => {
                 self.cmd.send(Command::StartCall(chat_id)).ok();
             }
+            Action::StartVideoCall(chat_id) => {
+                self.cmd.send(Command::StartVideoCall(chat_id)).ok();
+            }
             Action::TestCall => {
-                self.cmd.send(Command::TestCall).ok();
+                self.cmd.send(Command::TestCall { video: false }).ok();
             }
             Action::AcceptIncoming => {
                 if let Some(ring) = self.incoming.take() {

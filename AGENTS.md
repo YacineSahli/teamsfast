@@ -221,6 +221,10 @@ remaining Phase 2 item.
 - Layout forensics: `TEAMSFAST_LAYOUT_DEBUG=1` prints own-bubble rects.
 - `TEAMSFAST_RING=1` renders the ringing banner with a synthetic caller
   (pixel QA for incoming calls; Accept posts to dead links harmlessly).
+- `TEAMSFAST_VIDEOCALL=1` + `TEAMSFAST_HANGUP_AFTER=<secs>` place a
+  camera-on echo call that hangs up on a timer — bounded headless call
+  QA; the run's stdout carries the call summary
+  (`video_packets_sent=…`, `echo_detected=…`).
 - Screenshot gotchas: always `env -u WAYLAND_DISPLAY DISPLAY=:N`; kill
   Xvfb/app by PID (pkill -f patterns self-match the bash command line).
   A phantom pointer in Xvfb can hold one hover bar open — ignore in QA.
@@ -238,9 +242,15 @@ remaining Phase 2 item.
   run the app with `RUST_LOG=ost=debug`, receive any call, grep the log
   for `NGCallManagerWin` frames (`teams-core/examples/self_ring.rs`
   documents the fan-out experiment).
-- **Video/screenshare** — the last Phase 2 item; audio 1:1 + meeting join
-  work (signaling verified live; this sandbox blocks TURN UDP, so
-  full-duplex audio needs a real network to hear).
+- **Video/screenshare** — increment 1 SHIPPED: 1:1 calls can start with
+  the camera on (chat-header video button → `use_camera`; teams-core's
+  `video-cam` feature = v4l + openh264, deliberately NO SDL2 so the app
+  never links it; the CLI's SDL preview window stays behind
+  `video-capture`, which needs libsdl2-dev to link). Verified live:
+  camera → H.264 → RTP on an echo call (1558 video packets in 40 s).
+  Remaining: remote-video render in the UI (needs a real peer to verify —
+  the echo bot echoes audio only), screenshare via display capture,
+  mid-call camera toggle (modality renegotiation).
 - **Meeting lobby** — joining a lobby-gated meeting places the leg; an
   explicit lobby/admit UI is future work (teams-core has LobbyState).
 - **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,

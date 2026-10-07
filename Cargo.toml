@@ -40,9 +40,11 @@ egui_extras = { version = "0.36", features = ["svg", "image"] }
 # The Teams protocol core: our extraction of the patched ost library.
 # Package is `teams-cli` upstream; the lib target is `ost`. SSH form because
 # the repo is private and this machine's git auth is ssh-only.
-# `audio` enables the calling stack (cpal capture/playback + Opus/SRTP).
+# `audio` enables the calling stack (cpal capture/playback + Opus/SRTP);
+# `video-cam` adds camera capture + H.264 send (v4l/openh264, no SDL2).
 ost = { git = "https://github.com/YacineSahli/teams-core", package = "teams-cli", features = [
     "audio",
+    "video-cam",
 ] }
 
 # The fastframe UI stack: colour emoji, Inter + platform fonts, Lucide

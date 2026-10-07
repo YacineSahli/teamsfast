@@ -122,6 +122,8 @@ pub enum Action {
     // ---- calls ----
     /// Place a 1:1 audio call to this chat's peer.
     StartCall(String),
+    /// Place a 1:1 call with the camera on (video modality, H.264 send).
+    StartVideoCall(String),
     /// Ring the echo/test bot.
     TestCall,
     /// Accept the ringing incoming call.
@@ -278,6 +280,16 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 .clicked()
             {
                 ctx.actions.push(Action::StartCall(ctx.chat_id.clone()));
+            }
+            let video = ui.add(
+                egui::Button::new(crate::theme::Icon::Video.image(ctx.pal.secondary, 15.0))
+                    .fill(egui::Color32::TRANSPARENT),
+            );
+            if video
+                .on_hover_text("Call with camera")
+                .clicked()
+            {
+                ctx.actions.push(Action::StartVideoCall(ctx.chat_id.clone()));
             }
         }
         // Shared files of this conversation (Files section).
