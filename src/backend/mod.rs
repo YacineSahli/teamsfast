@@ -110,8 +110,12 @@ pub enum Command {
     // ---- calls ----
     /// Place a 1:1 audio call to the peer of this chat thread.
     StartCall(String),
-    /// Ring the Teams echo/test bot (settings "Test call").
-    TestCall,
+    /// Place a 1:1 call with the camera on (video modality in the invite;
+    /// H.264 frames streamed from the default V4L2 device).
+    StartVideoCall(String),
+    /// Ring the Teams echo/test bot (settings "Test call"); `video` adds
+    /// the camera (QA: TEAMSFAST_VIDEOCALL=1).
+    TestCall { video: bool },
     /// Join a meeting from a URL / thread id / meet ID.
     JoinMeeting(String),
     /// Accept the ringing incoming call (raw invitation JSON from
@@ -628,10 +632,13 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             // ---- calls ----
             Command::StartCall(chat_id) => {
-                start_call(&mut ses, &tx, chat_id, false).await;
+                start_call(&mut ses, &tx, chat_id, false, false).await;
             }
-            Command::TestCall => {
-                start_call(&mut ses, &tx, String::new(), true).await;
+            Command::StartVideoCall(chat_id) => {
+                start_call(&mut ses, &tx, chat_id, false, true).await;
+            }
+            Command::TestCall { video } => {
+                start_call(&mut ses, &tx, String::new(), true, video).await;
             }
             Command::CreateChannel { team_id, name } => {
                 sections::create_channel(&ses, &tx, &team_id, &name).await;
@@ -686,7 +693,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             Command::JoinMeeting(source) => {
                 if let Some((thread, label)) = join::resolve_join_target(&ses, &tx, &source).await
                 {
-                    start_call_labelled(&mut ses, &tx, thread, false, label).await;
+                    start_call_labelled(&mut ses, &tx, thread, false, label, false).await;
                 }
             }
             Command::AcceptIncoming(raw) => {
@@ -707,10 +714,18 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
 
 /// Place a call through teams-core's call driver: its own trouter session,
 /// ICE/TURN, SRTP/Opus and cpal audio, all inside one spawned task. The
-/// watch channel hangs up cooperatively.
-async fn start_call(ses: &mut Session, tx: &Sender<Event>, chat_id: String, echo: bool) {
+/// watch channel hangs up cooperatively. `video` turns the camera on for
+/// the whole call (320x240@15 H.264 send; there is no mid-call toggle —
+/// renegotiation is future work).
+async fn start_call(
+    ses: &mut Session,
+    tx: &Sender<Event>,
+    chat_id: String,
+    echo: bool,
+    video: bool,
+) {
     let label = if echo { "Echo test".to_string() } else { chat_id.clone() };
-    start_call_labelled(ses, tx, chat_id, echo, label).await;
+    start_call_labelled(ses, tx, chat_id, echo, label, video).await;
 }
 
 /// [`start_call`] with a display label (meeting subject, chat name, …).
@@ -720,6 +735,7 @@ async fn start_call_labelled(
     chat_id: String,
     echo: bool,
     label: String,
+    video: bool,
 ) {
     if ses.call_stop.is_some() {
         let _ = tx.send(Event::CallFailed("a call is already in progress".into()));
@@ -731,10 +747,14 @@ async fn start_call_labelled(
     let thread = if echo { None } else { Some(chat_id) };
     tokio::spawn(async move {
         let _ = tx_evt.send(Event::CallStarted { label });
-        let _ = tx_evt.send(Event::CallStatus("connecting…".into()));
+        let _ = tx_evt.send(Event::CallStatus(if video {
+            "connecting… (camera on)".into()
+        } else {
+            "connecting…".into()
+        }));
         // Safety cap ~55 min; hang-up ends it earlier.
         let res = ost::calling::run_call_with_stop(
-            3300, false, echo, thread, false, false, false, stop_rx,
+            3300, false, echo, thread, video, false, false, stop_rx,
         )
         .await;
         match res {
