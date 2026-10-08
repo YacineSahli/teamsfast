@@ -242,15 +242,17 @@ remaining Phase 2 item.
   run the app with `RUST_LOG=ost=debug`, receive any call, grep the log
   for `NGCallManagerWin` frames (`teams-core/examples/self_ring.rs`
   documents the fan-out experiment).
-- **Video/screenshare** — increment 1 SHIPPED: 1:1 calls can start with
-  the camera on (chat-header video button → `use_camera`; teams-core's
-  `video-cam` feature = v4l + openh264, deliberately NO SDL2 so the app
-  never links it; the CLI's SDL preview window stays behind
-  `video-capture`, which needs libsdl2-dev to link). Verified live:
-  camera → H.264 → RTP on an echo call (1558 video packets in 40 s).
-  Remaining: remote-video render in the UI (needs a real peer to verify —
-  the echo bot echoes audio only), screenshare via display capture,
-  mid-call camera toggle (modality renegotiation).
+- **Video/screenshare** — increments 1+2 SHIPPED: camera send on call
+  start (chat-header video button) AND a call-stage panel (remote tile
+  with decode→egui texture, local preview, mute/camera toggles via
+  soft gates, hang up). teams-core's `video-cam` feature = v4l +
+  openh264, deliberately NO SDL2; `video-capture` keeps the CLI's SDL
+  window (needs libsdl2-dev to link). Verified live: camera → H.264 →
+  RTP (1558 pkts/40 s); tiles pixel-QA'd with TEAMSFAST_FAKEVIDEO=1.
+  Remaining: remote-decode verification against a REAL peer (the echo
+  bot sends no video), screenshare (Wayland: xdg-desktop-portal
+  ScreenCast → PipeWire — the biggest remaining lift), true modality
+  renegotiation (the current toggles are soft gates).
 - **Meeting lobby** — joining a lobby-gated meeting places the leg; an
   explicit lobby/admit UI is future work (teams-core has LobbyState).
 - **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,
