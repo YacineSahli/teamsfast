@@ -65,10 +65,72 @@ pub struct IncomingRing {
 /// (caller-cancel pushes are not capture-verified yet — see NOTES).
 pub const RING_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Drain a frame channel, keeping only the newest frame (live video is
+/// latest-wins; backlog is dropped).
+fn drain_latest(
+    rx: &std::sync::mpsc::Receiver<ost::calling::video::VideoFrame>,
+) -> Option<ost::calling::video::VideoFrame> {
+    let mut latest = None;
+    while let Ok(f) = rx.try_recv() {
+        latest = Some(f);
+    }
+    latest
+}
+
+/// Upload/refresh a video texture from an I420 frame; recreates the
+/// texture when the resolution changes.
+fn apply_frame(
+    ctx: &egui::Context,
+    slot: Option<egui::TextureHandle>,
+    id: &str,
+    frame: &ost::calling::video::VideoFrame,
+) -> egui::TextureHandle {
+    let rgba = frame.to_rgba();
+    let img = egui::ColorImage::from_rgba_unmultiplied(
+        [frame.width as usize, frame.height as usize],
+        &rgba,
+    );
+    if let Some(mut t) = slot {
+        if t.size() == [frame.width as usize, frame.height as usize] {
+            t.set(img, egui::TextureOptions::LINEAR);
+            return t;
+        }
+    }
+    ctx.load_texture(id, img, egui::TextureOptions::LINEAR)
+}
+
+/// QA (TEAMSFAST_FAKEVIDEO=1): animated color bars + scanline so the
+/// remote tile can be pixel-checked without a real peer.
+fn fake_frame(t_ms: u128) -> ost::calling::video::VideoFrame {
+    let (w, h) = (320u32, 240u32);
+    let (wu, hu) = (w as usize, h as usize);
+    let ysz = wu * hu;
+    let mut data = vec![128u8; ysz + ysz / 2];
+    let shift = ((t_ms / 40) as u32 % w) as usize;
+    let bar_w = (w / 6) as usize;
+    for x in 0..wu {
+        let bar = ((x + shift) / bar_w) % 6;
+        let yv = (60 + bar * 30) as u8;
+        let (u, v) = if bar % 2 == 0 { (180u8, 60u8) } else { (90u8, 170u8) };
+        for row in 0..hu {
+            data[row * wu + x] = yv;
+        }
+        let cx = x / 2;
+        for r in 0..hu / 2 {
+            data[ysz + r * (wu / 2) + cx] = u;
+            data[ysz + (wu / 2) * (hu / 2) + r * (wu / 2) + cx] = v;
+        }
+    }
+    let line = ((t_ms / 8) as u32 % h) as usize;
+    for x in 0..wu {
+        data[line * wu + x] = 235;
+    }
+    ost::calling::video::VideoFrame { width: w, height: h, data }
+}
+
 /// Synthetic invitation for the TEAMSFAST_RING=1 QA hook (parseable, with
 /// dead links so an accidental accept fails harmlessly).
-pub fn qa_incoming_ring() -> IncomingRing {
-    let raw = serde_json::json!({
+pub fn qa_incoming_ring() -> IncomingRing {    let raw = serde_json::json!({
         "callInvitation": {
             "callModalities": ["Audio"],
             "links": {
@@ -289,6 +351,16 @@ pub struct TeamsFastApp {
     call: Option<(String, Instant)>,
     /// Ringing incoming call (banner with Accept/Decline).
     incoming: Option<IncomingRing>,
+    /// Live call controls (mute/camera watches + video frame receivers)
+    /// for the call stage UI; one per placed call.
+    call_media: Option<ost::calling::CallControlsHandle>,
+    /// Call stage panel open (tiles + controls).
+    call_view_open: bool,
+    /// Remote/local video textures for the stage (recreated on size change).
+    remote_video_tex: Option<egui::TextureHandle>,
+    local_video_tex: Option<egui::TextureHandle>,
+    /// QA: TEAMSFAST_FAKEVIDEO=1 animates the remote tile without a peer.
+    fake_video: bool,
 
     /// "Join with link" dialog state.
     join_open: bool,
@@ -574,6 +646,42 @@ fn teams_dialog(
 }
 
 impl TeamsFastApp {
+    /// Drain the call's video channels into the stage textures (latest
+    /// wins). No-op without an active call.
+    fn update_call_stage_frames(&mut self, ctx: &egui::Context) {
+        let Some(media) = self.call_media.as_ref() else {
+            return;
+        };
+        let t_ms = self
+            .call
+            .as_ref()
+            .map(|(_, at)| at.elapsed().as_millis())
+            .unwrap_or(0);
+        let remote = match drain_latest(&media.remote_frames) {
+            Some(f) => Some(f),
+            None if self.fake_video => Some(fake_frame(t_ms)),
+            None => None,
+        };
+        if let Some(f) = remote {
+            self.remote_video_tex = Some(apply_frame(
+                ctx,
+                self.remote_video_tex.take(),
+                "teamsfast-remote-video",
+                &f,
+            ));
+        }
+        if let Some(rx) = media.local_preview.as_ref() {
+            if let Some(f) = drain_latest(rx) {
+                self.local_video_tex = Some(apply_frame(
+                    ctx,
+                    self.local_video_tex.take(),
+                    "teamsfast-local-video",
+                    &f,
+                ));
+            }
+        }
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         receipt: Option<fastframe_update::Receipt>,
@@ -643,6 +751,11 @@ impl TeamsFastApp {
             login_code: None,
             call: None,
             incoming: None,
+            call_media: None,
+            call_view_open: false,
+            remote_video_tex: None,
+            local_video_tex: None,
+            fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
             join_open: false,
             join_source: String::new(),
             call_label_hint: None,
@@ -808,6 +921,12 @@ impl TeamsFastApp {
                     // shapes are capture-verified (see NOTES).
                     self.incoming = None;
                 }
+                Event::CallMedia(handle) => {
+                    self.call_media = Some(handle);
+                    self.call_view_open = true;
+                    self.remote_video_tex = None;
+                    self.local_video_tex = None;
+                }
                 Event::CallStarted { label } => {
                     // A hint (meeting subject from the calendar) wins over
                     // the generic "Meeting"/thread-id label.
@@ -824,10 +943,18 @@ impl TeamsFastApp {
                 }
                 Event::CallEnded(summary) => {
                     self.call = None;
+                    self.call_media = None;
+                    self.call_view_open = false;
+                    self.remote_video_tex = None;
+                    self.local_video_tex = None;
                     self.status = summary;
                 }
                 Event::CallFailed(e) => {
                     self.call = None;
+                    self.call_media = None;
+                    self.call_view_open = false;
+                    self.remote_video_tex = None;
+                    self.local_video_tex = None;
                     self.error = Some(format!("call: {e}"));
                 }
                 Event::Ready => {
@@ -2581,6 +2708,7 @@ impl eframe::App for TeamsFastApp {
             let secs = at.elapsed().as_secs();
             let mm = secs / 60;
             let ss = secs % 60;
+            let mut toggle_stage = false;
             egui::Panel::top("call")
                 .frame(
                     egui::Frame::default()
@@ -2605,6 +2733,17 @@ impl eframe::App for TeamsFastApp {
                         ui.add_space(8.0);
                         ui.label(RichText::new("●").color(self.palette.ok).size(13.0));
                         ui.label(RichText::new(format!("{label}  {mm:02}:{ss:02}")).small());
+                        if self.call_media.is_some()
+                            && ui
+                                .small_button(if self.call_view_open {
+                                    "Hide call view"
+                                } else {
+                                    "Show call view"
+                                })
+                                .clicked()
+                        {
+                            toggle_stage = true;
+                        }
                         if ui
                             .add(
                                 egui::Button::new(
@@ -2619,6 +2758,142 @@ impl eframe::App for TeamsFastApp {
                         }
                     });
                 });
+            if toggle_stage {
+                self.call_view_open = !self.call_view_open;
+            }
+        }
+
+        // ---- call stage (right panel): video tiles + live controls ----
+        if self.call_view_open
+            && self.call.is_some()
+            && self.call_media.is_some()
+        {
+            self.update_call_stage_frames(ui.ctx());
+        }
+        if self.call_view_open {
+            if let (Some((label, at)), Some(media)) = (self.call.clone(), self.call_media.as_ref())
+            {
+                let secs = at.elapsed().as_secs();
+                let (mm, ss) = (secs / 60, secs % 60);
+                egui::Panel::right("call_stage")
+                    .default_size(340.0)
+                    .resizable(false)
+                    .show_inside(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("●").color(self.palette.ok).size(12.0));
+                            ui.label(RichText::new(format!("{label}  {mm:02}:{ss:02}")).strong());
+                        });
+                        ui.add_space(6.0);
+                        let avail_w = (ui.available_width() - 16.0).max(120.0);
+                        // Remote tile (or placeholder until frames arrive).
+                        match self.remote_video_tex.as_ref() {
+                            Some(tex) => {
+                                let size = tex.size_vec2();
+                                let h = (avail_w * size.y / size.x).clamp(120.0, 420.0);
+                                ui.add_sized(
+                                    [avail_w, h],
+                                    egui::Image::new((tex.id(), size)),
+                                );
+                            }
+                            None => {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(avail_w, avail_w * 0.72),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter()
+                                    .rect_filled(rect, 8.0, Color32::from_black_alpha(110));
+                                let initial = label
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.to_uppercase().to_string())
+                                    .unwrap_or_else(|| "?".into());
+                                ui.painter().text(
+                                    rect.center() - egui::vec2(0.0, 12.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    initial,
+                                    egui::FontId::proportional(30.0),
+                                    self.palette.secondary,
+                                );
+                                ui.painter().text(
+                                    rect.center() + egui::vec2(0.0, 18.0),
+                                    egui::Align2::CENTER_CENTER,
+                                    "No video yet",
+                                    egui::FontId::proportional(12.0),
+                                    self.palette.secondary,
+                                );
+                            }
+                        }
+                        // Local camera preview (video calls only).
+                        if let Some(tex) = self.local_video_tex.as_ref() {
+                            ui.add_space(4.0);
+                            let size = tex.size_vec2();
+                            let w = 150.0_f32.min(avail_w);
+                            let h = w * size.y / size.x;
+                            ui.add_sized([w, h], egui::Image::new((tex.id(), size)));
+                        }
+                        // Controls pinned to the bottom.
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                let mic_on = *media.mic_on.borrow();
+                                let mic = ui.add(
+                                    egui::Button::new(
+                                        crate::theme::Icon::Mic
+                                            .image(self.palette.secondary, 15.0),
+                                    )
+                                    .fill(Color32::TRANSPARENT)
+                                    .min_size(egui::vec2(36.0, 28.0)),
+                                );
+                                if mic
+                                    .on_hover_text(if mic_on { "Mute" } else { "Unmute" })
+                                    .clicked()
+                                {
+                                    let _ = media.mic_on.send(!mic_on);
+                                }
+                                if media.local_preview.is_some() {
+                                    let cam_on = *media.camera_on.borrow();
+                                    let cam = ui.add(
+                                        egui::Button::new(
+                                            crate::theme::Icon::Video
+                                                .image(self.palette.secondary, 15.0),
+                                        )
+                                        .fill(Color32::TRANSPARENT)
+                                        .min_size(egui::vec2(36.0, 28.0)),
+                                    );
+                                    if cam
+                                        .on_hover_text(if cam_on {
+                                            "Camera off"
+                                        } else {
+                                            "Camera on"
+                                        })
+                                        .clicked()
+                                    {
+                                        let _ = media.camera_on.send(!cam_on);
+                                    }
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Hang up")
+                                                .small()
+                                                .color(self.palette.on_accent),
+                                        )
+                                        .fill(self.palette.danger)
+                                        .min_size(egui::vec2(84.0, 28.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.cmd.send(Command::HangUp).ok();
+                                }
+                            });
+                        });
+                    });
+                // Live tiles + the timer need a steady repaint.
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(66));
+            }
         }
 
         if self.search_open {

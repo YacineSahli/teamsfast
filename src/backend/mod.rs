@@ -281,6 +281,9 @@ pub enum Event {
     /// A call-signalling callback announced an end (caller cancelled while
     /// ringing; the accepted-call case is handled conservatively in the UI).
     CallGone,
+    /// Live call controls for the call stage UI (mute/camera toggles,
+    /// remote + local frame receivers). One per placed call.
+    CallMedia(ost::calling::CallControlsHandle),
     /// Public-team search results (join picker).
     PublicTeams(Vec<ost::api::PublicTeamInfo>),
     /// Planner boards: (team, plan, buckets, tasks).
@@ -752,9 +755,13 @@ async fn start_call_labelled(
         } else {
             "connecting…".into()
         }));
+        // Live call controls (mute/camera gates + frame sinks for the
+        // stage UI); the handle rides to the UI as an event.
+        let (media, media_handle) = ost::calling::call_controls(video);
+        let _ = tx_evt.send(Event::CallMedia(media_handle));
         // Safety cap ~55 min; hang-up ends it earlier.
-        let res = ost::calling::run_call_with_stop(
-            3300, false, echo, thread, video, false, false, stop_rx,
+        let res = ost::calling::run_call_with_controls(
+            3300, false, echo, thread, video, false, false, stop_rx, Some(media),
         )
         .await;
         match res {

@@ -115,7 +115,10 @@ fn main() -> eframe::Result<()> {
     }
     println!("log: {}", log_path.display());
 
-    // QA hook: TEAMSFAST_SIZE=WxH overrides the window size.
+    // QA hook: TEAMSFAST_SIZE=WxH overrides the window size. Explicitly
+    // sized runs also drop the eframe-persisted geometry (saved on graceful
+    // exit) — otherwise the restored 1095x582 from any previous session
+    // wins and the QA window renders clipped.
     let size: [f32; 2] = std::env::var("TEAMSFAST_SIZE")
         .ok()
         .and_then(|s| {
@@ -126,6 +129,14 @@ fn main() -> eframe::Result<()> {
             ])
         })
         .unwrap_or([1240.0, 820.0]);
+    if std::env::var_os("TEAMSFAST_SIZE").is_some() {
+        if let Some(home) = std::env::var_os("HOME") {
+            let _ = std::fs::remove_file(
+                std::path::PathBuf::from(home)
+                    .join(".local/share/teamsfast/app.ron"),
+            );
+        }
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(size)
