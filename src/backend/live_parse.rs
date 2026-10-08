@@ -241,6 +241,12 @@ pub fn strip_html(s: &str) -> String {
             // opening <div> or <br> means a line break for previews
             let tag = &tail[..end];
             let low = tag.to_ascii_lowercase();
+            if low.starts_with("<span") || low.starts_with("</span") {
+                // Connector payloads wrap sentences in spans; glue-free.
+                if depth == 0 && !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+            }
             if low.starts_with("<div") || low.starts_with("<br") || low.starts_with("</div") {
                 if depth == 0 && !out.is_empty() && !out.ends_with(char::is_whitespace) {
                     out.push(' ');

@@ -327,13 +327,49 @@ pub fn render_segments(
                 }
                 Seg::Code(t) => {
                     row_has_content = true;
-                    Frame::default()
-                        .fill(Color32::from_rgb(0x2b, 0x2d, 0x31))
-                        .corner_radius(CornerRadius::same(4))
-                        .inner_margin(egui::Margin::symmetric(4, 1))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(t).monospace().size(12.5));
-                        });
+                    // Long chips can't extend past the bubble either —
+                    // render them as wrapping blocks instead.
+                    if t.contains('\n') || t.chars().count() > 48 {
+                        // Multi-line code: own full-width block below the
+                        // current row. A Frame inside horizontal_wrapped
+                        // inherits the wrapping layout — a wide label
+                        // would wrap into a narrow garbled column and
+                        // overlap the following segments.
+                        if row_has_content {
+                            ui.end_row();
+                        }
+                        Frame::default()
+                            .fill(Color32::from_rgb(0x17, 0x19, 0x1d))
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.label(
+                                    RichText::new(t.trim_end())
+                                        .monospace()
+                                        .size(12.5)
+                                        .color(Color32::from_rgb(0xd8, 0xde, 0xe4)),
+                                );
+                            });
+                        ui.end_row();
+                        row_has_content = false;
+                    } else {
+                        // Inline chip: single line, never wraps inside the
+                        // chip (extend mode) — horizontal_wrapped moves the
+                        // whole chip to the next line instead.
+                        Frame::default()
+                            .fill(Color32::from_rgb(0x2b, 0x2d, 0x31))
+                            .corner_radius(CornerRadius::same(4))
+                            .inner_margin(egui::Margin::symmetric(4, 1))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(t).monospace().size(12.5),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                );
+                            });
+                    }
                 }
                 Seg::Link { text, url } => {
                     row_has_content = true;
