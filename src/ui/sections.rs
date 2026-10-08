@@ -953,6 +953,7 @@ pub fn notes_panel(
                             crate::ui::widgets::render_segments(
                                 ui,
                                 &segs,
+                                pal,
                                 |_, _| false,
                                 |_, _, _| {},
                             );

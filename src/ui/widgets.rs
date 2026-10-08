@@ -304,6 +304,7 @@ fn strip_block_noise(segs: Vec<Seg>) -> Vec<Seg> {
 pub fn render_segments(
     ui: &mut Ui,
     segs: &[Seg],
+    pal: &crate::theme::Palette,
     mut image: impl FnMut(&mut Ui, &str) -> bool,
     mut file: impl FnMut(&mut Ui, &str, &str),
 ) {
@@ -381,7 +382,7 @@ pub fn render_segments(
                         ui.hyperlink_to(
                             RichText::new(shorten_link_text(text))
                                 .underline()
-                                .color(Color32::from_rgb(0x69, 0xa1, 0xe8)),
+                                .color(pal.link),
                             url,
                         );
                     }
@@ -390,14 +391,14 @@ pub fn render_segments(
                     row_has_content = true;
                     ui.label(
                         RichText::new(format!("@{t}"))
-                            .color(Color32::from_rgb(0x8a, 0x88, 0xff))
+                            .color(pal.accent)
                             .strong(),
                     );
                 }
                 Seg::Quote(t) => {
                     row_has_content = true;
                     Frame::default()
-                        .stroke(Stroke::new(2.0, Color32::from_rgb(0x69, 0xa1, 0xe8)))
+                        .stroke(Stroke::new(2.0, pal.link))
                         .inner_margin(egui::Margin::symmetric(6, 2))
                         .show(ui, |ui| {
                             ui.label(RichText::new(t).weak().small());
