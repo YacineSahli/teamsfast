@@ -239,6 +239,21 @@ remaining Phase 2 item.
   Xvfb/app by PID (pkill -f patterns self-match the bash command line).
   A phantom pointer in Xvfb can hold one hover bar open — ignore in QA.
 
+## UI polish (2026-10-08 pass, vision-verified)
+
+Shipped: code-chip/code-block message rendering (extend-mode chips,
+blocks for multiline/long code), span-glue previews, full-width
+banners with right-aligned actions, pulsing ring banner, call-stage
+rework (framed tiles, camera placeholder, bottom-right controls),
+stronger dark danger color, egui::Modal dialogs (centered + scrim +
+Esc/backdrop close, Settings ✕), readable disabled buttons, settings
+active-tab fix, centered painter-based loading/empty body notes
+(body_note — ScrollAreas collapse available rects, never center with
+layouts inside them), Teams channel indent, Meet-now primary button,
+Files metadata separators, Activity Clear guard, rail icon semantics.
+Deferred: own-avatar grid, timestamp anchoring, message grouping,
+hover-toolbar exclusivity, light-theme audit, Shifts header action.
+
 ## Known gaps / deferred
 
 - **Incoming-call ringing hardening** — the accept/decline banner ships
