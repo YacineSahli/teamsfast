@@ -22,17 +22,34 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
 
     let mut members: HashMap<String, String> = HashMap::new();
     let mut resolved_name: Option<String> = None;
-    if let Ok((_, roster)) = list_chat_members_data(c, &chat_id).await {
+    // Roster-name resolution is ONLY meaningful for 1:1 chats: in a
+    // group/meeting the roster is full of members and picking one would
+    // name the chat after a random participant (e.g. "Standup" showing
+    // "Souhail Khalfallah"). Groups take their topic from the chat list.
+    let is_onetoone = chat_id.starts_with("19:")
+        && !chat_id.contains("@thread")
+        && !chat_id.contains("meeting");
+    if is_onetoone {
+        if let Ok((_, roster)) = list_chat_members_data(c, &chat_id).await {
+            for m in roster {
+                if !m.display_name.is_empty() {
+                    members.insert(m.mri.clone(), m.display_name.clone());
+                }
+                let is_me = match ses.self_id.as_deref() {
+                    Some(me) => {
+                        m.user_id.as_deref() == Some(me) || m.mri == format!("8:orgid:{me}")
+                    }
+                    None => false,
+                };
+                if !is_me && m.mri.starts_with("8:orgid:") && !m.display_name.is_empty() {
+                    resolved_name = Some(m.display_name.clone());
+                }
+            }
+        }
+    } else if let Ok((_, roster)) = list_chat_members_data(c, &chat_id).await {
         for m in roster {
             if !m.display_name.is_empty() {
                 members.insert(m.mri.clone(), m.display_name.clone());
-            }
-            let is_me = match ses.self_id.as_deref() {
-                Some(me) => m.user_id.as_deref() == Some(me) || m.mri == format!("8:orgid:{me}"),
-                None => false,
-            };
-            if !is_me && m.mri.starts_with("8:orgid:") && !m.display_name.is_empty() {
-                resolved_name = Some(m.display_name.clone());
             }
         }
     }
