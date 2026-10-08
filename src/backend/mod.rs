@@ -284,6 +284,9 @@ pub enum Event {
     /// Live call controls for the call stage UI (mute/camera toggles,
     /// remote + local frame receivers). One per placed call.
     CallMedia(ost::calling::CallControlsHandle),
+    /// The roster resolved a chat's display name that differs from the
+    /// chat-list entry (e.g. bot-carrying 1:1s) — sidebar update.
+    ChatRenamed { chat_id: String, name: String },
     /// Public-team search results (join picker).
     PublicTeams(Vec<ost::api::PublicTeamInfo>),
     /// Planner boards: (team, plan, buckets, tasks).
@@ -872,7 +875,10 @@ fn unread_map(ses: &Session, chats: &[ChatInfo]) -> std::collections::HashMap<St
             .as_deref()
             .and_then(crate::model::to_epoch_ms)
             .unwrap_or(0);
-        let horizon = horizons.get(&chat.id).copied().unwrap_or(0);
+        // Read position = max(local mark-read, server consumption
+        // horizon) — reading the chat on another client advances ours.
+        let server_ms = chat.last_read_ms.unwrap_or(0);
+        let horizon = horizons.get(&chat.id).copied().unwrap_or(0).max(server_ms);
         if last_ms == 0 || last_ms <= horizon {
             continue;
         }

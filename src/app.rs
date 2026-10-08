@@ -1038,6 +1038,20 @@ impl TeamsFastApp {
                     self.status = "Not signed in".into();
                     self.error = Some(e);
                 }
+                Event::ChatRenamed { chat_id, name } => {
+                    // Roster-resolved name beats the list heuristic (a
+                    // bot-carrying 1:1 falls back to the last sender and
+                    // can show our own name).
+                    if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                        c.name = name.clone();
+                    }
+                    if self.selected.as_deref() == Some(chat_id.as_str())
+                        && !self.selected_title.starts_with("# ")
+                    {
+                        self.selected_title = name;
+                    }
+                    self.sort_chats();
+                }
                 Event::Chats(mut chats) => {
                     let n = chats.len();
                     // Keep roster-resolved names from this session.
@@ -1168,6 +1182,7 @@ impl TeamsFastApp {
                         last_message_time: None,
                         last_message_sender: None,
                         last_message_preview: None,
+                        last_read_ms: None,
                     };
                     if row.name == "[Direct message]" {
                         row.name = "New chat".into();
@@ -1989,6 +2004,7 @@ impl TeamsFastApp {
                             last_message_time: None,
                             last_message_sender: None,
                             last_message_preview: None,
+                        last_read_ms: None,
                         },
                     );
                 }

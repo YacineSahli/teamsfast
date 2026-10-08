@@ -422,6 +422,7 @@ mod tests {
             last_message_time: None,
             last_message_sender: None,
             last_message_preview: Some("preview".into()),
+            last_read_ms: None,
         }
     }
 
