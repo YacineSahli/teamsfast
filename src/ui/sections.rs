@@ -1,7 +1,7 @@
 //! Section panels: Calendar, Files, To Do, Activity. Pure views — data
 //! arrives via App; actions flow back through the shared Action enum.
 
-use crate::model::format_message_time;
+use crate::model::{format_day_label, format_message_time};
 use crate::theme::Palette;
 use crate::ui::conversation::Action;
 use egui::{Color32, RichText, ScrollArea, Ui};
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 /// Centered body note for loading/empty states. Drawn with the painter
 /// (no layout): ScrollAreas and nested layouts collapse available rects,
 /// which pinned every layout-based attempt to the top.
-fn body_note(ui: &mut Ui, spinner: bool, text: &str) {
+fn body_note(ui: &mut Ui, spinner: bool, pal: &Palette, text: &str) {
     let _ = spinner;
     let rect = ui.max_rect();
     let center = egui::pos2(
@@ -27,7 +27,7 @@ fn body_note(ui: &mut Ui, spinner: bool, text: &str) {
         egui::Align2::CENTER_CENTER,
         text,
         egui::FontId::proportional(13.0),
-        egui::Color32::from_rgb(0x9a, 0x9f, 0xa8),
+        pal.secondary,
     );
 }
 
@@ -68,29 +68,33 @@ pub fn calendar_panel(
             }
         });
     });
-        if loading && meetings.is_empty() {
-            body_note(ui, true, "Loading calendar…");
-            return;
-        }
-        if meetings.is_empty() {
-            body_note(ui, false, "No meetings in the coming week.");
-            return;
-        }
-
+    // Header rule always draws (empty sections kept it hidden, so the
+    // header rhythm jumped between tabs).
     ui.separator();
+    if loading && meetings.is_empty() {
+        body_note(ui, true, pal, "Loading calendar…");
+        return;
+    }
+    if meetings.is_empty() {
+        body_note(ui, false, pal, "No meetings in the coming week.");
+        return;
+    }
+
     ScrollArea::vertical().id_salt("cal_scroll").auto_shrink(false).show(ui, |ui| {
 
         let mut last_day = String::new();
         for m in meetings {
+            // Human day label ("Today", "9 Oct") — matches bubble day
+            // separators; the raw ISO slice read as a debug string.
             let day = m
                 .start
                 .as_deref()
-                .map(|s| s.get(0..10).unwrap_or("").to_string())
+                .map(format_day_label)
                 .unwrap_or_default();
             if !day.is_empty() && day != last_day {
                 last_day = day.clone();
                 ui.add_space(6.0);
-                crate::ui::widgets::day_separator(ui, &day);
+                crate::ui::widgets::day_separator(ui, pal, &day);
                 ui.add_space(6.0);
             }
             meeting_row(ui, m, pal, actions);
@@ -111,7 +115,7 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(time).small().color(pal.link).strong());
+                ui.label(RichText::new(time).small().color(pal.secondary).strong());
                 ui.label(
                     RichText::new(if m.subject.is_empty() {
                         "(no title)"
@@ -122,6 +126,9 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                 );
             });
             ui.horizontal(|ui| {
+                // Reserve the action-button height so cards without a join
+                // URL stay the same height as carded ones.
+                ui.set_min_height(20.0);
                 if let Some(who) = &m.organizer {
                     ui.label(RichText::new(format!("by {who}")).small().weak());
                 }
@@ -184,16 +191,16 @@ pub fn files_panel(
             }
         });
     });
-        if loading && files.is_empty() {
-            body_note(ui, true, "Loading files…");
-            return;
-        }
-        if files.is_empty() {
-            body_note(ui, false, "No recent files.");
-            return;
-        }
-
     ui.separator();
+    if loading && files.is_empty() {
+        body_note(ui, true, pal, "Loading files…");
+        return;
+    }
+    if files.is_empty() {
+        body_note(ui, false, pal, "No recent files.");
+        return;
+    }
+
     ScrollArea::vertical().id_salt("files_scroll").auto_shrink(false).show(ui, |ui| {
 
         for f in files {
@@ -247,15 +254,19 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
                         .truncate()
                         .selectable(false),
                 );
-                ui.label(
-                    RichText::new(if modified.is_empty() {
-                        size.clone()
-                    } else {
-                        format!("{size} · {modified}")
-                    })
-                    .small()
-                    .weak(),
-                );
+                // No metadata at all (drive never reported size or date):
+                // no line rather than a bare "—" placeholder; the fixed
+                // 40px row keeps the list rhythm.
+                let unknown_size = size == "—";
+                let meta = match (unknown_size, modified.is_empty()) {
+                    (true, true) => String::new(),
+                    (true, false) => modified.clone(),
+                    (false, true) => size.clone(),
+                    (false, false) => format!("{size} · {modified}"),
+                };
+                if !meta.is_empty() {
+                    ui.label(RichText::new(meta).small().weak());
+                }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !is_folder {
@@ -312,8 +323,14 @@ pub fn chat_files_panel(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
+        let chat_label = chat_name.trim_matches(|c| c == '[' || c == ']');
+        let chat_label = if chat_label == "Direct message" {
+            "Direct message"
+        } else {
+            chat_name
+        };
         ui.heading(
-            RichText::new(format!("Files · {chat_name}"))
+            RichText::new(format!("Files · {chat_label}"))
                 .strong()
                 .size(15.0),
         );
@@ -365,6 +382,7 @@ pub fn todo_panel(
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("To Do").strong().size(17.0));
+        ui.label(RichText::new("lists & tasks").small().weak());
         if loading {
             ui.spinner();
         }
@@ -387,13 +405,13 @@ pub fn todo_panel(
     });
     ui.separator();
     if lists.is_empty() && !loading {
-        ui.label(RichText::new("No To Do lists found.").weak());
+        body_note(ui, false, pal, "No To Do lists found.");
         return;
     }
     let body_h = ui.available_height();
     ui.horizontal(|ui| {
-        // Lists column.
-        ui.allocate_ui(egui::vec2(200.0, body_h), |ui| {
+        // Lists column (same width token as the OneNote nav column).
+        ui.allocate_ui(egui::vec2(240.0, body_h), |ui| {
             ScrollArea::vertical().id_salt("todo_lists_scroll").auto_shrink(false).show(ui, |ui| {
                 // Parent is a horizontal row — force the column layout.
                 ui.vertical(|ui| {
@@ -514,7 +532,7 @@ pub fn todo_panel(
                     });
                 }
                 if shown == 0 {
-                    ui.label(RichText::new("Nothing here.").weak());
+                    body_note(ui, false, pal, "Nothing here — add a task above.");
                 }
             });
         });
@@ -558,10 +576,11 @@ pub fn activity_panel(
         });
     });
     ui.separator();
+    if entries.is_empty() {
+        body_note(ui, false, pal, "Nothing yet — mentions and reactions land here.");
+        return;
+    }
     ScrollArea::vertical().id_salt("activity_scroll").auto_shrink(false).show(ui, |ui| {
-        if entries.is_empty() {
-            body_note(ui, false, "Nothing yet — mentions and reactions land here.");
-        }
         for e in entries {
             let (icon, tint) = match e.kind {
                 "mention" => (crate::theme::Icon::AtSign, pal.warning),
@@ -593,7 +612,7 @@ pub fn activity_panel(
                             ui.label(
                                 RichText::new(&e.chat_name)
                                     .strong()
-                                    .color(Color32::WHITE),
+                                    .color(pal.text),
                             );
                             ui.label(
                                 RichText::new(format!("· {}", e.kind))
@@ -652,16 +671,16 @@ pub fn planner_panel(
             }
         });
     });
-        if loading && boards.is_empty() {
-            body_note(ui, true, "Loading planner…");
-            return;
-        }
-        if boards.is_empty() {
-            body_note(ui, false, "No planner tasks found in your teams.");
-            return;
-        }
-
     ui.separator();
+    if loading && boards.is_empty() {
+        body_note(ui, true, pal, "Loading planner…");
+        return;
+    }
+    if boards.is_empty() {
+        body_note(ui, false, pal, "No planner tasks found in your teams.");
+        return;
+    }
+
     ScrollArea::vertical()
         .id_salt("planner_scroll")
         .auto_shrink(false)
@@ -776,16 +795,16 @@ pub fn shifts_panel(
             }
         });
     });
-    if loading && shifts.is_empty() {
-            body_note(ui, true, "Loading shifts…");
-            return;
-        }
-        if shifts.is_empty() {
-            body_note(ui, false, "No shifts this week (no team schedule or none shared).");
-            return;
-        }
-
     ui.separator();
+    if loading && shifts.is_empty() {
+        body_note(ui, true, pal, "Loading shifts…");
+        return;
+    }
+    if shifts.is_empty() {
+        body_note(ui, false, pal, "No shifts this week (no team schedule or none shared).");
+        return;
+    }
+
     ScrollArea::vertical()
         .id_salt("shifts_scroll")
         .auto_shrink(false)
@@ -874,6 +893,7 @@ pub fn notes_panel(
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("OneNote").strong().size(17.0));
+        ui.label(RichText::new("notebooks & pages").small().weak());
         if loading {
             ui.spinner();
         }
@@ -901,9 +921,12 @@ pub fn notes_panel(
                     for nb in notebooks {
                         ui.strong(&nb.name);
                         for sec in &nb.sections {
-                            ui.label(
-                                RichText::new(format!("  {}", sec.name)).small().weak(),
-                            );
+                            // Real indent, not string spaces — the two-space
+                            // version read as same-level sibling rows.
+                            ui.horizontal(|ui| {
+                                ui.add_space(12.0);
+                                ui.label(RichText::new(&sec.name).small().weak());
+                            });
                             for p in &sec.pages {
                                 let sel = st
                                     .open_page
@@ -981,7 +1004,7 @@ pub fn notes_panel(
                     });
                 }
                 None => {
-                    ui.label(RichText::new("Pick a page on the left.").weak());
+                    body_note(ui, false, pal, "Pick a page on the left.");
                 }
             }
         });

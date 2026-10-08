@@ -66,7 +66,7 @@ pub fn settings_window(
 
     let modal = egui::Modal::new(egui::Id::new("settings_modal"));
     let resp = modal.show(ui.ctx(), |ui| {
-        ui.set_width(520.0);
+        ui.set_width(470.0);
         // Header row: title + close affordance (the modal itself also
         // closes on Esc / backdrop click).
         ui.horizontal(|ui| {
@@ -75,7 +75,8 @@ pub fn settings_window(
                 if ui
                     .add(
                         egui::Button::new(crate::theme::Icon::X.image(pal.secondary, 13.0))
-                            .fill(egui::Color32::TRANSPARENT),
+                            .fill(egui::Color32::TRANSPARENT)
+                            .min_size(egui::vec2(22.0, 22.0)),
                     )
                     .clicked()
                 {
@@ -130,7 +131,7 @@ pub fn settings_window(
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| match tab {
-                    Some(SettingsTab::General) => general(ui, settings, info, actions),
+                    Some(SettingsTab::General) => general(ui, settings, info, pal, actions),
                     Some(SettingsTab::Appearance) => appearance(ui, settings, info, pal, actions),
                     Some(SettingsTab::Notifications) => notifications(ui, settings),
                     Some(SettingsTab::Account) => account(ui, st, info, actions),
@@ -150,7 +151,13 @@ fn toggle(ui: &mut Ui, label: &str, value: &mut bool) -> bool {
     ui.checkbox(value, label).changed()
 }
 
-fn general(ui: &mut Ui, settings: &mut Settings, info: &SettingsInfo<'_>, actions: &mut Vec<Action>) {
+fn general(
+    ui: &mut Ui,
+    settings: &mut Settings,
+    info: &SettingsInfo<'_>,
+    pal: &crate::theme::Palette,
+    actions: &mut Vec<Action>,
+) {
     ui.strong("Startup");
     if toggle(
         ui,
@@ -186,11 +193,11 @@ fn general(ui: &mut Ui, settings: &mut Settings, info: &SettingsInfo<'_>, action
     ui.strong("Connection");
     ui.horizontal(|ui| {
         let dot = if info.offline {
-            egui::Color32::from_rgb(0xd1, 0xa5, 0x4a)
+            pal.warning
         } else if info.live {
-            egui::Color32::from_rgb(0x6f, 0xd1, 0x94)
+            pal.ok
         } else {
-            egui::Color32::from_rgb(0x9a, 0x9d, 0xa3)
+            pal.dim
         };
         let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
         ui.painter().circle_filled(r.center(), 4.0, dot);

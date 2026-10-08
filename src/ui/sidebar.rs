@@ -58,8 +58,12 @@ pub fn sidebar(
             let avail = ui.available_width();
             ui.allocate_ui(egui::vec2(avail, 26.0), |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Same 24px height as the search field beside it.
                     if ui
-                        .small_button("+ New")
+                        .add(
+                            egui::Button::new(RichText::new("+ New").small())
+                                .min_size(egui::vec2(0.0, 24.0)),
+                        )
                         .on_hover_text("New chat (Ctrl+N)")
                         .clicked()
                     {
@@ -90,25 +94,28 @@ pub fn sidebar(
             });
         }
         SideView::Teams => {
+            // Header rhythm matches the section panels: heading + subtitle +
+            // right-aligned action, then the separator.
             ui.horizontal(|ui| {
-                if ui
-                    .small_button(RichText::new("+ Channel").small())
-                    .on_hover_text("Create a channel / join or create a team")
-                    .clicked()
-                {
-                    actions.push(Action::ShowTeamDialog);
+                ui.heading(RichText::new("Teams").strong().size(17.0));
+                ui.label(RichText::new("your teams & channels").small().weak());
+                if *loading_teams && ctx.teams.is_empty() {
+                    ui.spinner();
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button(RichText::new("+ Channel").small())
+                        .on_hover_text("Create a channel / join or create a team")
+                        .clicked()
+                    {
+                        actions.push(Action::ShowTeamDialog);
+                    }
+                });
             });
             ui.separator();
-            if ctx.teams.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(RichText::new("loading teams…").weak());
-                });
-                if !*loading_teams {
-                    *loading_teams = true;
-                    ctx.cmd.send(Command::LoadTeams).ok();
-                }
+            if ctx.teams.is_empty() && !*loading_teams {
+                *loading_teams = true;
+                ctx.cmd.send(Command::LoadTeams).ok();
             }
             ScrollArea::vertical()
                 .id_salt("teams_list_scroll")
@@ -127,9 +134,14 @@ pub fn sidebar(
                             let sel = ctx.selected == Some(&ch.id);
                             ui.horizontal(|ui| {
                                 ui.add_space(32.0);
-                                let row = ui.selectable_label(
-                                    sel,
-                                    RichText::new(format!("# {}", ch.name)).small(),
+                                // Truncate with ellipsis — selectable_label
+                                // hard-clips long channel names at the border.
+                                let row = ui.add(
+                                    egui::Button::new(
+                                        RichText::new(format!("# {}", ch.name)).small(),
+                                    )
+                                    .truncate()
+                                    .selected(sel),
                                 );
                                 if row.clicked() {
                                     actions.push(Action::OpenChat(ch.id.clone()));
@@ -318,10 +330,16 @@ fn chat_row(
                                     );
                                 }
                                 if chat.is_group {
-                                    ui.label(
-                                        RichText::new("👥")
-                                            .size(13.0)
-                                            .color(ctx.pal.secondary),
+                                    // Monochrome icon, not the 👥 emoji — the
+                                    // Noto glyph's saturated blue was the only
+                                    // strong blue in a purple-accent theme.
+                                    ui.add(
+                                        egui::Image::from_bytes(
+                                            crate::theme::Icon::Users.uri(),
+                                            crate::theme::Icon::Users.bytes(),
+                                        )
+                                        .tint(ctx.pal.secondary)
+                                        .fit_to_exact_size(egui::Vec2::splat(12.0)),
                                     );
                                 }
                             },

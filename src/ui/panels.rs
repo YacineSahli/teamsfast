@@ -2,6 +2,7 @@
 //! (AGENT 1 EXTENDS THIS FILE for search refinement + people picking.)
 
 use crate::backend::Command;
+use crate::theme::Palette;
 use crate::ui::conversation::Action;
 use egui::{RichText, ScrollArea};
 use ost::api::SearchHitInfo;
@@ -16,6 +17,7 @@ pub fn search_panel(
     cmd: &UnboundedSender<Command>,
     running_query: &str,
     note: Option<&str>,
+    pal: &Palette,
     actions: &mut Vec<Action>,
 ) -> bool {
     let mut close = false;
@@ -31,10 +33,7 @@ pub fn search_panel(
         });
     });
     if let Some(note) = note {
-        ui.colored_label(
-            egui::Color32::from_rgb(0xd1, 0xa5, 0x4a),
-            RichText::new(note).small(),
-        );
+        ui.colored_label(pal.warning, RichText::new(note).small());
     }
     ui.separator();
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -54,11 +53,7 @@ pub fn search_panel(
                 ui.allocate_exact_size(egui::vec2(avail, 36.0), egui::Sense::click());
             response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
             if response.hovered() {
-                ui.painter().rect_filled(
-                    rect,
-                    4.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
-                );
+                ui.painter().rect_filled(rect, 4.0, pal.surface_hover);
             }
             let mut child =
                 ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(3.0)));
@@ -69,19 +64,14 @@ pub fn search_panel(
                     RichText::new(&h.sender)
                         .strong()
                         .size(12.5)
-                        .color(egui::Color32::from_rgb(0x8a, 0x88, 0xff)),
+                        .color(pal.link),
                 );
                 ui.add(
                     egui::Label::new(RichText::new(&h.preview).small())
                         .truncate()
                         .selectable(false),
                 );
-                ui.label(
-                    RichText::new(&h.timestamp)
-                        .small()
-                        .weak()
-                        .color(egui::Color32::from_rgb(0x9a, 0x9d, 0xa3)),
-                );
+                ui.label(RichText::new(&h.timestamp).small().weak().color(pal.secondary));
             }
 
             if response.clicked() && !target.is_empty() {

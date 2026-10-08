@@ -215,7 +215,9 @@ pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
 /// Presence availability → indicator colour.
 pub fn presence_color(availability: &str) -> Color32 {
     match availability.to_ascii_lowercase().as_str() {
-        "available" | "availableidle" => Color32::from_rgb(0x6f, 0xd1, 0x94),
+        // One green that reads on both dark and light top bars (the pale
+        // dark-theme green washed out to 1.6:1 on light).
+        "available" | "availableidle" => Color32::from_rgb(0x2f, 0x9e, 0x63),
         "busy" | "donotdisturb" | "donotdisturbidle" | "inacall"
         | "inameeting" | "presenting" | "inconferrence" => Color32::from_rgb(0xe0, 0x7a, 0x7a),
         "away" | "berightback" | "awayidle" | "offwork" => {
