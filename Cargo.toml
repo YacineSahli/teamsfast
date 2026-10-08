@@ -50,6 +50,7 @@ ost = { git = "https://github.com/YacineSahli/teams-core", package = "teams-cli"
 # The fastframe UI stack: colour emoji, Inter + platform fonts, Lucide
 # icons, editable themes, nicer wheel scrolling.
 fastframe-emoji = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
