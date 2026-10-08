@@ -2748,7 +2748,12 @@ impl eframe::App for TeamsFastApp {
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
                         ui.label(RichText::new("●").color(self.palette.ok).size(13.0));
-                        ui.label(RichText::new(format!("{label}  {mm:02}:{ss:02}")).small());
+                        let phase = self
+                            .call_media
+                            .as_ref()
+                            .map(|m| m.phase.borrow().to_string());
+                        let state = phase.as_deref().unwrap_or("connecting…");
+                        ui.label(RichText::new(format!("{label} — {state}  {mm:02}:{ss:02}")).small());
                         if self.call_media.is_some()
                             && ui
                                 .small_button(if self.call_view_open {
@@ -2799,7 +2804,14 @@ impl eframe::App for TeamsFastApp {
                         ui.horizontal(|ui| {
                             ui.add_space(8.0);
                             ui.label(RichText::new("●").color(self.palette.ok).size(12.0));
-                            ui.label(RichText::new(format!("{label}  {mm:02}:{ss:02}")).strong());
+                            let phase = media
+                                .phase
+                                .borrow()
+                                .to_string();
+                            ui.label(
+                                RichText::new(format!("{label} — {phase}  {mm:02}:{ss:02}"))
+                                    .strong(),
+                            );
                         });
                         ui.add_space(6.0);
                         let avail_w = (ui.available_width() - 16.0).max(120.0);
