@@ -81,6 +81,9 @@ fn init_logging(log_path: &std::path::Path, panic_path: &std::path::Path) {
         .init();
 }
 
+/// Handle of the running window, for focusing from a second launch.
+static APP_CTX: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
 fn main() -> eframe::Result<()> {
     // Incoming calls must ring in the UI, never auto-answer. teams-core's
     // trouter loop answers invitations unless this is set (the documented
@@ -104,6 +107,38 @@ fn main() -> eframe::Result<()> {
     }
     if let Some(res) = teamsfast::debug_dispatch(&args) {
         return res;
+    }
+
+    // Single instance: a second GUI launch hands "show" to the running
+    // copy (which focuses itself) and exits. Scoped per binary so the dev
+    // build and the installed copy don't evict each other; QA runs
+    // (TEAMSFAST_SIZE set) bypass the guard entirely.
+    if std::env::var_os("TEAMSFAST_SIZE").is_none() {
+        let mut slot = fastframe_instance::Slot::new("teamsfast");
+        if let Ok(exe) = std::env::current_exe() {
+            slot = slot.scoped(exe.to_string_lossy().as_ref());
+        }
+        let _instance = slot.claim("show", |request| {
+            if request == "show"
+                && let Some(ctx) = APP_CTX.get()
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
+                return Some("ok".to_owned());
+            }
+            None
+        });
+        match _instance {
+            fastframe_instance::Claim::First(guard) => {
+                // Hold the slot for the process lifetime.
+                std::mem::forget(guard);
+            }
+            _ => {
+                println!("TeamsFast is already running; focusing that window.");
+                return Ok(());
+            }
+        }
     }
 
     let (log_path, panic_path) = log_paths();
@@ -155,6 +190,7 @@ fn main() -> eframe::Result<()> {
             } else {
                 teamsfast::apply_style(&cc.egui_ctx);
             }
+            let _ = APP_CTX.set(cc.egui_ctx.clone());
             Ok(Box::new(TeamsFastApp::new(cc, receipt, launch_error)))
         }),
     )
