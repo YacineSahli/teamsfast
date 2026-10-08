@@ -62,14 +62,29 @@ pub fn settings_window(
 ) {
     st.tab.get_or_insert(SettingsTab::General);
     let mut open = st.open;
+    let _ = &mut open;
 
-    egui::Window::new("Settings")
-        .open(&mut open)
-        .default_width(520.0)
-        .default_height(420.0)
-        .collapsible(false)
-        .resizable(true)
-        .show(ui.ctx(), |ui| {
+    let modal = egui::Modal::new(egui::Id::new("settings_modal"));
+    let resp = modal.show(ui.ctx(), |ui| {
+        ui.set_width(520.0);
+        // Header row: title + close affordance (the modal itself also
+        // closes on Esc / backdrop click).
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Settings").strong().size(15.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(crate::theme::Icon::X.image(pal.secondary, 13.0))
+                            .fill(egui::Color32::TRANSPARENT),
+                    )
+                    .clicked()
+                {
+                    open = false;
+                }
+            });
+        });
+        ui.add_space(4.0);
+        {
             // Tab strip.
             ui.horizontal(|ui| {
                 let mut tab = st.tab;
@@ -84,8 +99,10 @@ pub fn settings_window(
                     let sel = tab == Some(t);
                     let resp = ui.selectable_label(
                         sel,
+                        // Selected = accent pill; accent-on-accent text is
+                        // invisible, so the selected tab uses on_accent.
                         RichText::new(t.title()).strong().small().color(if sel {
-                            pal.accent
+                            pal.on_accent
                         } else {
                             pal.text
                         }),
@@ -120,7 +137,11 @@ pub fn settings_window(
                     Some(SettingsTab::Storage) => storage(ui, st, info, actions),
                     _ => about(ui),
                 });
-        });
+        }
+    });
+    if resp.should_close() {
+        open = false;
+    }
     st.open = open;
 }
 

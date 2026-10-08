@@ -370,6 +370,12 @@ pub fn apply_style(ctx: &egui::Context) {
     v.widgets.inactive.bg_fill = Color32::from_rgb(0x2b, 0x2d, 0x35);
     v.widgets.hovered.bg_fill = Color32::from_rgb(0x36, 0x39, 0x44);
     v.widgets.active.bg_fill = Color32::from_rgb(0x5b, 0x5f, 0xc7);
+    // Disabled buttons must still read as buttons (was: near-invisible
+    // gray-on-gray, e.g. the Teams dialog's disabled "Create").
+    v.widgets.inactive.fg_stroke = egui::Stroke::new(1.2, Color32::from_rgb(0x8a, 0x8f, 0x99));
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x45));
+    v.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0, Color32::from_rgb(0x9a, 0x9f, 0xa8));
     v.hyperlink_color = Color32::from_rgb(0x69, 0xa1, 0xe8);
     v.override_text_color = Some(Color32::from_rgb(0xe8, 0xea, 0xed));
     ctx.set_visuals(v);

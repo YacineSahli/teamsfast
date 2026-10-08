@@ -3523,75 +3523,70 @@ impl eframe::App for TeamsFastApp {
         // Teams management dialog: create channel / join public team /
         // create team.
         if self.team_dialog.open {
-            let mut close = false;
-            egui::Window::new("Teams")
-                .default_width(430.0)
-                .collapsible(false)
-                .resizable(false)
-                .show(ui.ctx(), |ui| {
-                    let mut actions: Vec<Action> = Vec::new();
-                    teams_dialog(ui, &mut self.team_dialog, &self.teams, &mut actions);
-                    for a in actions {
-                        self.apply(a);
-                    }
-                });
-            if close {
+            let modal = egui::Modal::new(egui::Id::new("teams_mgmt_modal"));
+            let resp = modal.show(ui.ctx(), |ui| {
+                ui.set_width(430.0);
+                ui.label(RichText::new("Teams").strong().size(15.0));
+                ui.add_space(6.0);
+                let mut actions: Vec<Action> = Vec::new();
+                teams_dialog(ui, &mut self.team_dialog, &self.teams, &mut actions);
+                for a in actions {
+                    self.apply(a);
+                }
+            });
+            if resp.should_close() {
                 self.team_dialog.open = false;
             }
-            let _ = &mut close;
         }
 
-        // Join-with-link dialog.
+        // Join-with-link dialog (modal: centered, scrim, Esc/backdrop close).
         if self.join_open {
             let mut join_now = false;
             let mut close = false;
-            egui::Window::new("Join a meeting")
-                .default_width(460.0)
-                .collapsible(false)
-                .resizable(false)
-                .show(ui.ctx(), |ui| {
-                    ui.label(
-                        RichText::new(
-                            "Paste a Teams meeting link, a meeting thread ID, or a meeting ID.",
+            let modal = egui::Modal::new(egui::Id::new("join_meeting_modal"));
+            let resp = modal.show(ui.ctx(), |ui| {
+                ui.set_width(440.0);
+                ui.label(RichText::new("Join a meeting").strong().size(15.0));
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Paste a Teams meeting link, a meeting thread ID, or a meeting ID.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.add_space(6.0);
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut self.join_source)
+                        .hint_text("https://teams.microsoft.com/l/meetup-join/…")
+                        .desired_width(ui.available_width()),
+                );
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(10.0);
+                // Actions right-aligned; primary last.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Join").strong().color(self.palette.on_accent),
+                            )
+                            .fill(self.palette.accent)
+                            .min_size(egui::vec2(84.0, 26.0)),
                         )
-                        .small()
-                        .weak(),
-                    );
-                    ui.add_space(4.0);
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut self.join_source)
-                            .hint_text("https://teams.microsoft.com/l/meetup-join/…")
-                            .desired_width(ui.available_width()),
-                    );
-                    let enter =
-                        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("Join").strong().color(self.palette.on_accent),
-                                )
-                                .fill(self.palette.accent)
-                                .min_size(egui::vec2(70.0, 24.0)),
-                            )
-                            .clicked()
-                            || enter
-                        {
-                            join_now = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new("Cancel")
-                                    .min_size(egui::vec2(70.0, 24.0)),
-                            )
-                            .clicked()
-                        {
-                            close = true;
-                        }
-                    });
+                        .clicked()
+                        || enter
+                    {
+                        join_now = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 26.0)))
+                        .clicked()
+                    {
+                        close = true;
+                    }
                 });
-            if close {
+            });
+            if resp.should_close() || close {
                 self.join_open = false;
             }
             if join_now {
