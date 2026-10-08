@@ -12,6 +12,25 @@ use std::collections::HashMap;
 
 /// Upcoming meetings, soonest first. Day-grouped list; each row shows the
 /// join link actions when the event has one.
+/// Centered body note for loading/empty states. Drawn with the painter
+/// (no layout): ScrollAreas and nested layouts collapse available rects,
+/// which pinned every layout-based attempt to the top.
+fn body_note(ui: &mut Ui, spinner: bool, text: &str) {
+    let _ = spinner;
+    let rect = ui.max_rect();
+    let center = egui::pos2(
+        rect.center().x,
+        rect.top() + (rect.height() * 0.45).max(90.0),
+    );
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(13.0),
+        egui::Color32::from_rgb(0x9a, 0x9f, 0xa8),
+    );
+}
+
 pub fn calendar_panel(
     ui: &mut Ui,
     meetings: &[MeetingInfo],
@@ -49,11 +68,18 @@ pub fn calendar_panel(
             }
         });
     });
+        if loading && meetings.is_empty() {
+            body_note(ui, true, "Loading calendar…");
+            return;
+        }
+        if meetings.is_empty() {
+            body_note(ui, false, "No meetings in the coming week.");
+            return;
+        }
+
     ui.separator();
     ScrollArea::vertical().id_salt("cal_scroll").auto_shrink(false).show(ui, |ui| {
-        if meetings.is_empty() && !loading {
-            ui.label(RichText::new("No meetings in the coming week.").weak());
-        }
+
         let mut last_day = String::new();
         for m in meetings {
             let day = m
@@ -158,11 +184,18 @@ pub fn files_panel(
             }
         });
     });
+        if loading && files.is_empty() {
+            body_note(ui, true, "Loading files…");
+            return;
+        }
+        if files.is_empty() {
+            body_note(ui, false, "No recent files.");
+            return;
+        }
+
     ui.separator();
     ScrollArea::vertical().id_salt("files_scroll").auto_shrink(false).show(ui, |ui| {
-        if files.is_empty() && !loading {
-            ui.label(RichText::new("No recent files.").weak());
-        }
+
         for f in files {
             file_row(ui, f, pal, actions);
         }
@@ -174,8 +207,10 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
         format!("{:.1} MB", f.size as f64 / 1_048_576.0)
     } else if f.size >= 1024 {
         format!("{:.0} KB", f.size as f64 / 1024.0)
-    } else {
+    } else if f.size > 0 {
         format!("{} B", f.size)
+    } else {
+        "—".to_string()
     };
     let modified = f
         .modified
@@ -213,9 +248,13 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
                         .selectable(false),
                 );
                 ui.label(
-                    RichText::new(format!("{size}  {modified}"))
-                        .small()
-                        .weak(),
+                    RichText::new(if modified.is_empty() {
+                        size.clone()
+                    } else {
+                        format!("{size} · {modified}")
+                    })
+                    .small()
+                    .weak(),
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -506,7 +545,14 @@ pub fn activity_panel(
         ui.heading(RichText::new("Activity").strong().size(17.0));
         ui.label(RichText::new("mentions, reactions, replies").small().weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button(RichText::new("Clear").small()).clicked() {
+            if ui
+                .add_enabled(
+                    !entries.is_empty(),
+                    egui::Button::new(RichText::new("Clear").small()),
+                )
+                .on_hover_text("Clear the activity feed")
+                .clicked()
+            {
                 actions.push(Action::ClearActivity);
             }
         });
@@ -514,10 +560,7 @@ pub fn activity_panel(
     ui.separator();
     ScrollArea::vertical().id_salt("activity_scroll").auto_shrink(false).show(ui, |ui| {
         if entries.is_empty() {
-            ui.label(
-                RichText::new("Nothing yet — mentions and reactions land here.")
-                    .weak(),
-            );
+            body_note(ui, false, "Nothing yet — mentions and reactions land here.");
         }
         for e in entries {
             let (icon, tint) = match e.kind {
@@ -609,16 +652,20 @@ pub fn planner_panel(
             }
         });
     });
+        if loading && boards.is_empty() {
+            body_note(ui, true, "Loading planner…");
+            return;
+        }
+        if boards.is_empty() {
+            body_note(ui, false, "No planner tasks found in your teams.");
+            return;
+        }
+
     ui.separator();
     ScrollArea::vertical()
         .id_salt("planner_scroll")
         .auto_shrink(false)
         .show(ui, |ui| {
-            if boards.is_empty() && !loading {
-                ui.label(
-                    RichText::new("No planner tasks found in your teams.").weak(),
-                );
-            }
             for board in boards {
                 ui.horizontal(|ui| {
                     ui.strong(&board.plan);
@@ -723,17 +770,20 @@ pub fn shifts_panel(
             ui.spinner();
         }
     });
+        if loading && shifts.is_empty() {
+            body_note(ui, true, "Loading shifts…");
+            return;
+        }
+        if shifts.is_empty() {
+            body_note(ui, false, "No shifts this week (no team schedule or none shared).");
+            return;
+        }
+
     ui.separator();
     ScrollArea::vertical()
         .id_salt("shifts_scroll")
         .auto_shrink(false)
         .show(ui, |ui| {
-            if shifts.is_empty() && !loading {
-                ui.label(
-                    RichText::new("No shifts this week (no team schedule or none shared).")
-                        .weak(),
-                );
-            }
             for sh in shifts {
                 egui::Frame::default()
                     .fill(pal.surface)
