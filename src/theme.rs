@@ -41,7 +41,7 @@ impl Palette {
             accent: Color32::from_rgb(0x5b, 0x5f, 0xc7),
             accent_hover: Color32::from_rgb(0x75, 0x79, 0xd6),
             on_accent: Color32::WHITE,
-            danger: Color32::from_rgb(0xe0, 0x7a, 0x7a),
+            danger: Color32::from_rgb(0xcf, 0x44, 0x44),
             warning: Color32::from_rgb(0xd1, 0xa5, 0x4a),
             outline: Color32::from_rgb(0x3a, 0x3d, 0x47),
             link: Color32::from_rgb(0x69, 0xa1, 0xe8),
