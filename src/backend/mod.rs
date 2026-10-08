@@ -753,11 +753,8 @@ async fn start_call_labelled(
     let thread = if echo { None } else { Some(chat_id) };
     tokio::spawn(async move {
         let _ = tx_evt.send(Event::CallStarted { label });
-        let _ = tx_evt.send(Event::CallStatus(if video {
-            "connecting… (camera on)".into()
-        } else {
-            "connecting…".into()
-        }));
+        // No static status text: the CallMedia handle's live phase
+        // (calling…/ringing…/connected) drives the banner.
         // Live call controls (mute/camera gates + frame sinks for the
         // stage UI); the handle rides to the UI as an event.
         let (media, media_handle) = ost::calling::call_controls(video);

@@ -2555,6 +2555,219 @@ impl eframe::App for TeamsFastApp {
         });
 
         // Section rail (icon strip, far left).
+        if self.offline.is_some() {
+            egui::Panel::top("offline")
+                .frame(
+                    egui::Frame::default()
+                        .fill(
+                            Color32::from_rgba_unmultiplied(
+                                self.palette.warning.r(),
+                                self.palette.warning.g(),
+                                self.palette.warning.b(),
+                                36,
+                            ),
+                        )
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(
+                                self.palette.warning.r(),
+                                self.palette.warning.g(),
+                                self.palette.warning.b(),
+                                120,
+                            ),
+                        )),
+                )
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("⚠").color(self.palette.warning));
+                        ui.label(
+                            RichText::new(
+                                "Offline — showing cached data. Messages you send now can't be delivered.",
+                            )
+                            .small(),
+                        );
+                        if ui.small_button("Retry now").clicked() {
+                            self.last_offline_retry = Instant::now();
+                            self.cmd.send(Command::CheckReady).ok();
+                        }
+                    });
+                });
+        }
+
+        if let Some(ring) = self.incoming.clone() {
+            // Caller-cancel pushes are not capture-verified yet, so the
+            // banner self-expires past the ring window.
+            if ring.at.elapsed() > RING_TIMEOUT {
+                self.incoming = None;
+            } else {
+                let busy = self.call.is_some();
+                let palette = &self.palette;
+                let mut actions: Vec<Action> = Vec::new();
+                // Pulse the border so the ring is noticeable even when the
+                // user is reading chats elsewhere.
+                let pulse = ((ui.input(|i| i.time) * 3.0).sin() * 0.5 + 0.5) as f32;
+                let ring_alpha = (110.0 + 130.0 * pulse) as u8;
+                egui::Panel::top("ringing")
+                    .frame(
+                        egui::Frame::default()
+                            .fill(Color32::from_rgba_unmultiplied(
+                                self.palette.danger.r(),
+                                self.palette.danger.g(),
+                                self.palette.danger.b(),
+                                44,
+                            ))
+                            .stroke(egui::Stroke::new(
+                                1.6,
+                                Color32::from_rgba_unmultiplied(
+                                    self.palette.danger.r(),
+                                    self.palette.danger.g(),
+                                    self.palette.danger.b(),
+                                    ring_alpha,
+                                ),
+                            )),
+                    )
+                    .show_inside(ui, |ui| {
+                        let mut accept = false;
+                        let mut decline = false;
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("📞").size(15.0));
+                            let video = if ring.has_video { " · video" } else { "" };
+                            let ring_secs = ring.at.elapsed().as_secs();
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} — incoming call{} · {}s",
+                                    ring.name, video, ring_secs
+                                ))
+                                .strong(),
+                            );
+                            // Actions pinned right, comfortable targets.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("Decline")
+                                                    .small()
+                                                    .color(Color32::WHITE),
+                                            )
+                                            .fill(palette.danger)
+                                            .min_size(egui::vec2(96.0, 30.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        decline = true;
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !busy,
+                                            egui::Button::new(
+                                                RichText::new("Accept")
+                                                    .small()
+                                                    .strong()
+                                                    .color(Color32::from_rgb(0x0a, 0x24, 0x16)),
+                                            )
+                                            .fill(palette.ok)
+                                            .min_size(egui::vec2(96.0, 30.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        accept = true;
+                                    }
+                                    if busy {
+                                        ui.label(
+                                            RichText::new("busy — accept disabled")
+                                                .weak()
+                                                .small(),
+                                        );
+                                    }
+                                },
+                            );
+                        });
+                        if accept {
+                            actions.push(Action::AcceptIncoming);
+                        }
+                        if decline {
+                            actions.push(Action::DeclineIncoming);
+                        }
+                    });
+                for a in actions {
+                    self.apply(a);
+                }
+            }
+        }
+
+        if let Some((label, at)) = self.call.clone() {
+            let secs = at.elapsed().as_secs();
+            let mm = secs / 60;
+            let ss = secs % 60;
+            let mut toggle_stage = false;
+            egui::Panel::top("call")
+                .frame(
+                    egui::Frame::default()
+                        .fill(Color32::from_rgba_unmultiplied(
+                            self.palette.ok.r(),
+                            self.palette.ok.g(),
+                            self.palette.ok.b(),
+                            30,
+                        ))
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(
+                                self.palette.ok.r(),
+                                self.palette.ok.g(),
+                                self.palette.ok.b(),
+                                120,
+                            ),
+                        )),
+                )
+                .show_inside(ui, |ui| {
+                    let phase = self
+                        .call_media
+                        .as_ref()
+                        .map(|m| m.phase.borrow().to_string())
+                        .unwrap_or_else(|| "calling…".into());
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("●").color(self.palette.ok).size(13.0));
+                        ui.label(
+                            RichText::new(format!("{label} — {phase}  {mm:02}:{ss:02}")).small(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Hang up").small().color(Color32::WHITE),
+                                    )
+                                    .fill(self.palette.danger)
+                                    .min_size(egui::vec2(84.0, 26.0)),
+                                )
+                                .clicked()
+                            {
+                                self.cmd.send(Command::HangUp).ok();
+                            }
+                            if self.call_media.is_some()
+                                && ui
+                                    .small_button(if self.call_view_open {
+                                        "Hide call view"
+                                    } else {
+                                        "Show call view"
+                                    })
+                                    .clicked()
+                            {
+                                toggle_stage = true;
+                            }
+                        });
+                    });
+                });
+            if toggle_stage {
+                self.call_view_open = !self.call_view_open;
+            }
+        }
+
+
         egui::Panel::left("rail")
             .default_size(46.0)
             .resizable(false)
@@ -2609,191 +2822,6 @@ impl eframe::App for TeamsFastApp {
                 });
         }
 
-        if self.offline.is_some() {
-            egui::Panel::top("offline")
-                .frame(
-                    egui::Frame::default()
-                        .fill(
-                            Color32::from_rgba_unmultiplied(
-                                self.palette.warning.r(),
-                                self.palette.warning.g(),
-                                self.palette.warning.b(),
-                                36,
-                            ),
-                        )
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            Color32::from_rgba_unmultiplied(
-                                self.palette.warning.r(),
-                                self.palette.warning.g(),
-                                self.palette.warning.b(),
-                                120,
-                            ),
-                        )),
-                )
-                .show_inside(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("⚠").color(self.palette.warning));
-                        ui.label(
-                            RichText::new(
-                                "Offline — showing cached data. Messages you send now can't be delivered.",
-                            )
-                            .small(),
-                        );
-                        if ui.small_button("Retry now").clicked() {
-                            self.last_offline_retry = Instant::now();
-                            self.cmd.send(Command::CheckReady).ok();
-                        }
-                    });
-                });
-        }
-
-        if let Some(ring) = self.incoming.clone() {
-            // Caller-cancel pushes are not capture-verified yet, so the
-            // banner self-expires past the ring window.
-            if ring.at.elapsed() > RING_TIMEOUT {
-                self.incoming = None;
-            } else {
-                let busy = self.call.is_some();
-                let palette = &self.palette;
-                let mut actions: Vec<Action> = Vec::new();
-                egui::Panel::top("ringing")
-                    .frame(
-                        egui::Frame::default()
-                            .fill(Color32::from_rgba_unmultiplied(
-                                self.palette.danger.r(),
-                                self.palette.danger.g(),
-                                self.palette.danger.b(),
-                                34,
-                            ))
-                            .stroke(egui::Stroke::new(
-                                1.0,
-                                Color32::from_rgba_unmultiplied(
-                                    self.palette.danger.r(),
-                                    self.palette.danger.g(),
-                                    self.palette.danger.b(),
-                                    150,
-                                ),
-                            )),
-                    )
-                    .show_inside(ui, |ui| {
-                        let mut accept = false;
-                        let mut decline = false;
-                        ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(RichText::new("📞").size(14.0));
-                            let video = if ring.has_video { " · video" } else { "" };
-                            ui.label(
-                                RichText::new(format!("{} — incoming call{}", ring.name, video))
-                                    .small(),
-                            );
-                            if ui
-                                .add_enabled(
-                                    !busy,
-                                    egui::Button::new(
-                                        RichText::new("Accept").small().color(palette.on_accent),
-                                    )
-                                    .fill(palette.ok)
-                                    .min_size(egui::vec2(70.0, 22.0)),
-                                )
-                                .clicked()
-                            {
-                                accept = true;
-                            }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Decline").small().color(palette.on_accent),
-                                    )
-                                    .fill(palette.danger)
-                                    .min_size(egui::vec2(70.0, 22.0)),
-                                )
-                                .clicked()
-                            {
-                                decline = true;
-                            }
-                            if busy {
-                                ui.label(RichText::new("(busy — accept disabled)").weak().small());
-                            }
-                        });
-                        if accept {
-                            actions.push(Action::AcceptIncoming);
-                        }
-                        if decline {
-                            actions.push(Action::DeclineIncoming);
-                        }
-                    });
-                for a in actions {
-                    self.apply(a);
-                }
-            }
-        }
-
-        if let Some((label, at)) = self.call.clone() {
-            let secs = at.elapsed().as_secs();
-            let mm = secs / 60;
-            let ss = secs % 60;
-            let mut toggle_stage = false;
-            egui::Panel::top("call")
-                .frame(
-                    egui::Frame::default()
-                        .fill(Color32::from_rgba_unmultiplied(
-                            self.palette.ok.r(),
-                            self.palette.ok.g(),
-                            self.palette.ok.b(),
-                            30,
-                        ))
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            Color32::from_rgba_unmultiplied(
-                                self.palette.ok.r(),
-                                self.palette.ok.g(),
-                                self.palette.ok.b(),
-                                120,
-                            ),
-                        )),
-                )
-                .show_inside(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("●").color(self.palette.ok).size(13.0));
-                        let phase = self
-                            .call_media
-                            .as_ref()
-                            .map(|m| m.phase.borrow().to_string());
-                        let state = phase.as_deref().unwrap_or("connecting…");
-                        ui.label(RichText::new(format!("{label} — {state}  {mm:02}:{ss:02}")).small());
-                        if self.call_media.is_some()
-                            && ui
-                                .small_button(if self.call_view_open {
-                                    "Hide call view"
-                                } else {
-                                    "Show call view"
-                                })
-                                .clicked()
-                        {
-                            toggle_stage = true;
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("Hang up").small().color(self.palette.on_accent),
-                                )
-                                .fill(self.palette.danger)
-                                .min_size(egui::vec2(70.0, 22.0)),
-                            )
-                            .clicked()
-                        {
-                            self.cmd.send(Command::HangUp).ok();
-                        }
-                    });
-                });
-            if toggle_stage {
-                self.call_view_open = !self.call_view_open;
-            }
-        }
-
         // ---- call stage (right panel): video tiles + live controls ----
         if self.call_view_open
             && self.call.is_some()
@@ -2806,6 +2834,7 @@ impl eframe::App for TeamsFastApp {
             {
                 let secs = at.elapsed().as_secs();
                 let (mm, ss) = (secs / 60, secs % 60);
+                let phase = media.phase.borrow().to_string();
                 egui::Panel::right("call_stage")
                     .default_size(340.0)
                     .resizable(false)
@@ -2814,30 +2843,37 @@ impl eframe::App for TeamsFastApp {
                         ui.horizontal(|ui| {
                             ui.add_space(8.0);
                             ui.label(RichText::new("●").color(self.palette.ok).size(12.0));
-                            let phase = media
-                                .phase
-                                .borrow()
-                                .to_string();
+                            // Name + full state already show in the banner;
+                            // the stage header carries phase + timer only.
                             ui.label(
-                                RichText::new(format!("{label} — {phase}  {mm:02}:{ss:02}"))
-                                    .strong(),
+                                RichText::new(format!("{phase}  {mm:02}:{ss:02}")).strong(),
                             );
                         });
                         ui.add_space(6.0);
                         let avail_w = (ui.available_width() - 16.0).max(120.0);
-                        // Remote tile (or placeholder until frames arrive).
+                        // Remote tile (or placeholder until frames arrive),
+                        // framed so bare video doesn't sit raw on the panel.
+                        let tile_h = 300.0_f32;
                         match self.remote_video_tex.as_ref() {
                             Some(tex) => {
                                 let size = tex.size_vec2();
-                                let h = (avail_w * size.y / size.x).clamp(120.0, 420.0);
-                                ui.add_sized(
+                                let h = (avail_w * size.y / size.x).min(tile_h);
+                                let resp = ui.add_sized(
                                     [avail_w, h],
                                     egui::Image::new((tex.id(), size)),
                                 );
+                                ui.painter().rect_stroke(
+                                    resp.rect,
+                                    8,
+                                    egui::Stroke::new(1.0, Color32::from_black_alpha(90)),
+                                    egui::StrokeKind::Inside,
+                                );
+                                ui.add_space(2.0);
+                                ui.label(RichText::new(&label).weak().small());
                             }
                             None => {
                                 let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(avail_w, avail_w * 0.72),
+                                    egui::vec2(avail_w, tile_h * 0.72),
                                     egui::Sense::hover(),
                                 );
                                 ui.painter()
@@ -2863,71 +2899,123 @@ impl eframe::App for TeamsFastApp {
                                 );
                             }
                         }
-                        // Local camera preview (video calls only).
-                        if let Some(tex) = self.local_video_tex.as_ref() {
+                        // Local camera preview (video calls only), in flow
+                        // right under the remote tile.
+                        if media.local_preview.is_some() {
                             ui.add_space(4.0);
-                            let size = tex.size_vec2();
-                            let w = 150.0_f32.min(avail_w);
-                            let h = w * size.y / size.x;
-                            ui.add_sized([w, h], egui::Image::new((tex.id(), size)));
-                        }
-                        // Controls pinned to the bottom.
-                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                ui.add_space(8.0);
-                                let mic_on = *media.mic_on.borrow();
-                                let mic = ui.add(
-                                    egui::Button::new(
-                                        crate::theme::Icon::Mic
-                                            .image(self.palette.secondary, 15.0),
-                                    )
-                                    .fill(Color32::TRANSPARENT)
-                                    .min_size(egui::vec2(36.0, 28.0)),
-                                );
-                                if mic
-                                    .on_hover_text(if mic_on { "Mute" } else { "Unmute" })
-                                    .clicked()
-                                {
-                                    let _ = media.mic_on.send(!mic_on);
-                                }
-                                if media.local_preview.is_some() {
-                                    let cam_on = *media.camera_on.borrow();
-                                    let cam = ui.add(
-                                        egui::Button::new(
-                                            crate::theme::Icon::Video
-                                                .image(self.palette.secondary, 15.0),
-                                        )
-                                        .fill(Color32::TRANSPARENT)
-                                        .min_size(egui::vec2(36.0, 28.0)),
+                            match self.local_video_tex.as_ref() {
+                                Some(tex) => {
+                                    let size = tex.size_vec2();
+                                    let w = 150.0_f32.min(avail_w);
+                                    let h = w * size.y / size.x;
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(w, h),
+                                        egui::Sense::hover(),
                                     );
-                                    if cam
-                                        .on_hover_text(if cam_on {
-                                            "Camera off"
-                                        } else {
-                                            "Camera on"
-                                        })
+                                    ui.painter().image(
+                                        tex.id(),
+                                        rect,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        Color32::WHITE,
+                                    );
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        6,
+                                        egui::Stroke::new(1.0, Color32::from_black_alpha(90)),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                None => {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(150.0, 112.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        6.0,
+                                        Color32::from_black_alpha(80),
+                                    );
+                                    ui.painter().text(
+                                        rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        "camera…",
+                                        egui::FontId::proportional(11.0),
+                                        self.palette.secondary,
+                                    );
+                                }
+                            }
+                        }
+                        // Bottom strip: controls anchored to the panel's
+                        // bottom-right (explicit rect — egui cross-align
+                        // inside bottom_up would leave them flush-left).
+                        let ctrl_h = 46.0;
+                        let ctrl_rect = egui::Rect::from_min_max(
+                            egui::pos2(ui.max_rect().left(), ui.max_rect().bottom() - ctrl_h),
+                            egui::pos2(ui.max_rect().right(), ui.max_rect().bottom() - 10.0),
+                        );
+                        let mut ctrl_ui = ui.new_child(
+                            egui::UiBuilder::new().max_rect(ctrl_rect),
+                        );
+                        ctrl_ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("Hang up")
+                                                    .small()
+                                                    .color(Color32::WHITE),
+                                            )
+                                            .fill(self.palette.danger)
+                                            .min_size(egui::vec2(84.0, 30.0)),
+                                        )
                                         .clicked()
                                     {
-                                        let _ = media.camera_on.send(!cam_on);
+                                        self.cmd.send(Command::HangUp).ok();
                                     }
-                                }
-                                if ui
-                                    .add(
+                                    if media.local_preview.is_some() {
+                                        let cam_on = *media.camera_on.borrow();
+                                        let cam = ui.add(
+                                            egui::Button::new(
+                                                crate::theme::Icon::Video
+                                                    .image(self.palette.secondary, 15.0),
+                                            )
+                                            .fill(Color32::from_rgba_unmultiplied(
+                                                255, 255, 255, 16,
+                                            ))
+                                            .min_size(egui::vec2(36.0, 30.0)),
+                                        );
+                                        if cam
+                                            .on_hover_text(if cam_on {
+                                                "Camera off"
+                                            } else {
+                                                "Camera on"
+                                            })
+                                            .clicked()
+                                        {
+                                            let _ = media.camera_on.send(!cam_on);
+                                        }
+                                    }
+                                    let mic_on = *media.mic_on.borrow();
+                                    let mic = ui.add(
                                         egui::Button::new(
-                                            RichText::new("Hang up")
-                                                .small()
-                                                .color(self.palette.on_accent),
+                                            crate::theme::Icon::Mic
+                                                .image(self.palette.secondary, 15.0),
                                         )
-                                        .fill(self.palette.danger)
-                                        .min_size(egui::vec2(84.0, 28.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    self.cmd.send(Command::HangUp).ok();
-                                }
-                            });
-                        });
+                                        .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 16))
+                                        .min_size(egui::vec2(36.0, 30.0)),
+                                    );
+                                    if mic
+                                        .on_hover_text(if mic_on { "Mute" } else { "Unmute" })
+                                        .clicked()
+                                    {
+                                        let _ = media.mic_on.send(!mic_on);
+                                    }
+                            },
+                        );
                     });
                 // Live tiles + the timer need a steady repaint.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(66));
