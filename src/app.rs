@@ -922,8 +922,12 @@ impl TeamsFastApp {
                     self.incoming = None;
                 }
                 Event::CallMedia(handle) => {
+                    // Video calls open the stage; voice calls stay on the
+                    // banner — a large placeholder tile on an audio call
+                    // just reads as an empty video screen. The local-
+                    // preview sink exists only when the camera is on.
+                    self.call_view_open = handle.local_preview.is_some();
                     self.call_media = Some(handle);
-                    self.call_view_open = true;
                     self.remote_video_tex = None;
                     self.local_video_tex = None;
                 }
@@ -938,7 +942,13 @@ impl TeamsFastApp {
                 }
                 Event::CallStatus(s) => {
                     if let Some((label, at)) = self.call.take() {
-                        self.call = Some((format!("{label} — {s}"), at));
+                        // With live controls the banner shows the driver's
+                        // phase; appending static text duplicates it.
+                        if self.call_media.is_some() {
+                            self.call = Some((label, at));
+                        } else {
+                            self.call = Some((format!("{label} — {s}"), at));
+                        }
                     }
                 }
                 Event::CallEnded(summary) => {
