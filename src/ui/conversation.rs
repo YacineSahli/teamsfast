@@ -358,9 +358,23 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 last_day = day;
             }
             let own = is_own(m, ctx);
-            let grouped = i > 0
-                && ctx.messages[i - 1].sender_mri == m.sender_mri
-                && m.timestamp.get(0..16) == ctx.messages[i - 1].timestamp.get(0..16);
+            // Group consecutive messages from the same sender within a
+            // 5-minute window (Teams behaviour; the old same-minute rule
+            // split runs that pause for a moment).
+            let grouped = i > 0 && {
+                let prev = &ctx.messages[i - 1];
+                if prev.sender_mri != m.sender_mri {
+                    false
+                } else {
+                    match (
+                        crate::model::to_epoch_ms(m.timestamp.as_str()),
+                        crate::model::to_epoch_ms(prev.timestamp.as_str()),
+                    ) {
+                        (Some(t), Some(pt)) => t.saturating_sub(pt) <= 300_000,
+                        _ => m.timestamp.get(0..16) == prev.timestamp.get(0..16),
+                    }
+                }
+            };
             message_row(ui, ctx, m, own, grouped);
         }
         // Own sends in flight / failed: translucent bubble, Retry on error.

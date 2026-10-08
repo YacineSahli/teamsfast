@@ -3259,6 +3259,7 @@ impl eframe::App for TeamsFastApp {
                         &self.shifts,
                         self.shifts_loading,
                         &self.palette,
+                        &mut actions,
                     ),
                     MainView::Notes => {
                         let mut st = std::mem::take(&mut self.notes);
