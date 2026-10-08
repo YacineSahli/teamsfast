@@ -168,7 +168,17 @@ remaining Phase 2 item.
 - `@unq.gbl.spaces` chats: ost's chat-LIST name resolver fails on them
   ("[Direct message]" placeholder) but the roster works — our open_chat
   resolves names via `list_chat_members_data` (also fixes "?" senders).
-  Same fix should be upstreamed to ost's resolver.
+  ROOT CAUSE (fixed 2026-10-08, upstream me): 1:1 rosters often carry a
+  BOT member (Cortana quick-reply, `28:…`) — a resolver that requires
+  "exactly one non-self member" bails and falls back to the last-message
+  sender, showing the USER'S OWN NAME when they spoke last. Fix:
+  filter `28:` MRIs (`resolve_mate_name`); open_chat also heals the
+  cached chat list when the roster resolves a different name.
+- Read state: the server `consumptionhorizon` (ChatInfo.last_read_ms,
+  from the conversations-list properties/threadProperties) is authoritative
+  for "read on another client" — unread = last message > max(local
+  horizon, server horizon). Horizons are not persisted in the archive
+  cache; offline falls back to local-only (pre-2026-10-08 behavior).
 - Theme presets from fastframe contain an `outline` color — Palette::set
   must map it or every shared preset warns "unknown color".
 - Own-message detection needs `self_id` (Graph /me `id`, bare GUID) —
