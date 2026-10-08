@@ -230,7 +230,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                         if let Some(m) = ctx.messages.iter().find(|m| &m.id == id) {
                             ui.label(
                                 RichText::new(format!(
-                                    "{}: {}",
+                                    "📌 {}: {}",
                                     sender_label(m, ctx),
                                     crate::ui::widgets::segs_to_plain(&parse_html(&m.raw))
                                         .lines()
@@ -238,7 +238,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                                         .unwrap_or("")
                                 ))
                                 .small()
-                                .weak(),
+                                .color(ctx.pal.secondary),
                             );
                             shown += 1;
                         }
@@ -318,7 +318,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 ui.label(
                     RichText::new(format!("{user} is typing…"))
                         .small()
-                        .color(Color32::from_rgb(0x8a, 0x88, 0xff)),
+                        .color(ctx.pal.link),
                 );
             });
         }
@@ -481,7 +481,8 @@ pub fn conversation_composer(
 
     if let Some((_, who, snippet)) = &ctx.reply {
         Frame::default()
-            .fill(Color32::from_rgb(0x2b, 0x2d, 0x3a))
+            .fill(ctx.pal.surface)
+            .stroke(Stroke::new(1.0, ctx.pal.outline))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
@@ -523,7 +524,7 @@ pub fn conversation_composer(
     }
 
     let compose_fill = if ctx.edit.is_some() || ctx.reply.is_some() {
-        Color32::from_rgb(0x2b, 0x2d, 0x3a)
+        ctx.pal.surface_hover
     } else {
         ctx.pal.surface
     };
@@ -578,8 +579,10 @@ pub fn conversation_composer(
                 let send_response = ui.add_enabled(
                     ready,
                     egui::Button::new(
-                        crate::theme::Icon::Send
-                            .image(ctx.pal.on_accent, 17.0),
+                        crate::theme::Icon::Send.image(
+                            if ready { ctx.pal.on_accent } else { ctx.pal.dim },
+                            17.0,
+                        ),
                     )
                     .fill(if ready {
                         ctx.pal.accent
@@ -774,7 +777,7 @@ fn bubble_parts(
                         return;
                     }
                     if m.raw.contains("cards.unsupported") {
-                        connector_card(ui);
+                        connector_card(ui, ctx.pal);
                         return;
                     }
                     // Own bubbles live in an RTL row — reset to LTR inside
@@ -790,6 +793,7 @@ fn bubble_parts(
                             render_segments(
                                 ui,
                                 &segments,
+                                ctx.pal,
                                 |ui, url| show_image(ui, ctx, url),
                                 |ui, name, url| {
                                     if ui
@@ -836,7 +840,7 @@ fn bubble_parts(
                     return;
                 }
                 if m.raw.contains("cards.unsupported") {
-                    connector_card(ui);
+                    connector_card(ui, ctx.pal);
                     return;
                 }
                 ui.with_layout(
@@ -850,6 +854,7 @@ fn bubble_parts(
                         render_segments(
                             ui,
                             &segments,
+                            ctx.pal,
                             |ui, url| show_image(ui, ctx, url),
                             |ui, name, url| {
                                 if ui
@@ -991,8 +996,8 @@ fn bubble_parts(
             .show(ui.ctx(), |ui| {
                 ui.horizontal(|ui| {
                     Frame::default()
-                        .fill(Color32::from_rgb(0x26, 0x28, 0x33))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x47)))
+                        .fill(ctx.pal.surface)
+                        .stroke(Stroke::new(1.0, ctx.pal.outline))
                         .corner_radius(CornerRadius::same(10))
                         .inner_margin(egui::Margin::symmetric(6, 4))
                         .show(ui, |ui| {
@@ -1121,10 +1126,10 @@ fn bubble_parts(
 
 /// Muted rendering for connector/bot cards the client can't display
 /// (Teams returns the "Card - access it on cards.unsupported" stub).
-fn connector_card(ui: &mut egui::Ui) {
+fn connector_card(ui: &mut egui::Ui, pal: &Palette) {
     Frame::default()
-        .fill(Color32::from_rgb(0x23, 0x25, 0x2b))
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x47)))
+        .fill(pal.panel)
+        .stroke(egui::Stroke::new(1.0, pal.outline))
         .corner_radius(egui::CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
@@ -1175,7 +1180,7 @@ fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
     if let Some(pid) = &m.reply_to {
         if let Some(parent) = ctx.messages.iter().find(|p| &p.id == pid) {
             Frame::default()
-                .fill(Color32::from_rgb(0x25, 0x27, 0x30))
+                .fill(Color32::from_black_alpha(16))
                 .corner_radius(CornerRadius::same(4))
                 .inner_margin(egui::Margin::symmetric(6, 2))
                 .show(ui, |ui| {
@@ -1255,7 +1260,8 @@ fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
             ctx.actions.push(Action::FetchImage(url.to_string()));
         }
         Frame::default()
-            .fill(Color32::from_rgb(0x22, 0x24, 0x2a))
+            .fill(ctx.pal.surface)
+            .stroke(Stroke::new(1.0, ctx.pal.outline))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
