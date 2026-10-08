@@ -226,6 +226,9 @@ impl Archive {
                 last_message_time: row.get(3)?,
                 last_message_sender: row.get(4)?,
                 last_message_preview: row.get(5)?,
+                // Server horizons are not persisted; online refreshes
+                // re-fetch them, offline falls back to local read state.
+                last_read_ms: None,
             })
         })?;
         Ok(rows.filter_map(Result::ok).collect())
@@ -395,6 +398,7 @@ mod tests {
                 last_message_time: Some("1760000000000".into()),
                 last_message_sender: Some("A".into()),
                 last_message_preview: Some("hey".into()),
+                last_read_ms: None,
             }])
             .unwrap();
         let chats = archive.load_chats().unwrap();

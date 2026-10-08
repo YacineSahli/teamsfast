@@ -44,9 +44,10 @@ fn dump_chats() -> Result<()> {
             let chats = crate::backend::list_chats_headless(client, 60).await?;
             for c in &chats {
                 println!(
-                    "{} | group={:5} | {}",
+                    "{} | group={:5} | read_ms={:?} | {}",
                     c.id,
                     c.is_group,
+                    c.last_read_ms,
                     if c.name.is_empty() { "(no name)" } else { &c.name }
                 );
             }

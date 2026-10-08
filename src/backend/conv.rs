@@ -37,6 +37,24 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
         }
     }
 
+    // The roster's 1:1 name beats the chat-list heuristic (which falls
+    // back to the last sender and can show our own name). Heal the cached
+    // list so the sidebar matches the header.
+    if let Some(name) = resolved_name.as_ref().filter(|n| !n.trim().is_empty()) {
+        if let Some(archive) = ses.archive.as_ref()
+            && let Ok(mut chats) = archive.load_chats()
+            && let Some(chat) = chats.iter_mut().find(|c| c.id == chat_id)
+            && chat.name != *name
+        {
+            chat.name = name.clone();
+            let _ = archive.save_chats(&chats);
+            let _ = tx.send(Event::ChatRenamed {
+                chat_id: chat_id.clone(),
+                name: name.clone(),
+            });
+        }
+    }
+
     // Cached history paints instantly (also works offline).
     if let Some(archive) = ses.archive.as_ref()
         && let Ok(cached) = archive.load_messages(&chat_id, 50)
