@@ -120,31 +120,37 @@ pub fn sidebar(
                             avatar(ui, &team.name, 22.0);
                             ui.strong(&team.name);
                         });
+                        // Channels indent under their team (hierarchy cue;
+                        // they previously out-dented left of the team name).
+                        ui.add_space(0.0);
                         for ch in &team.channels {
                             let sel = ctx.selected == Some(&ch.id);
-                            let row = ui.selectable_label(
-                                sel,
-                                RichText::new(format!("# {}", ch.name)),
-                            );
-                            if row.clicked() {
-                                actions.push(Action::OpenChat(ch.id.clone()));
-                            }
-                            row.context_menu(|ui| {
-                                if ui.button("Rename channel…").clicked() {
-                                    actions.push(Action::RenameChannel {
-                                        team_id: team.id.clone(),
-                                        channel_id: ch.id.clone(),
-                                        name: ch.name.clone(),
-                                    });
-                                    ui.close();
+                            ui.horizontal(|ui| {
+                                ui.add_space(32.0);
+                                let row = ui.selectable_label(
+                                    sel,
+                                    RichText::new(format!("# {}", ch.name)).small(),
+                                );
+                                if row.clicked() {
+                                    actions.push(Action::OpenChat(ch.id.clone()));
                                 }
-                                if ui.button("Delete channel").clicked() {
-                                    actions.push(Action::DeleteChannel {
-                                        team_id: team.id.clone(),
-                                        channel_id: ch.id.clone(),
-                                    });
-                                    ui.close();
-                                }
+                                row.context_menu(|ui| {
+                                    if ui.button("Rename channel…").clicked() {
+                                        actions.push(Action::RenameChannel {
+                                            team_id: team.id.clone(),
+                                            channel_id: ch.id.clone(),
+                                            name: ch.name.clone(),
+                                        });
+                                        ui.close();
+                                    }
+                                    if ui.button("Delete channel").clicked() {
+                                        actions.push(Action::DeleteChannel {
+                                            team_id: team.id.clone(),
+                                            channel_id: ch.id.clone(),
+                                        });
+                                        ui.close();
+                                    }
+                                });
                             });
                         }
                     }
