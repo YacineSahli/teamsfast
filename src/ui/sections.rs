@@ -762,6 +762,7 @@ pub fn shifts_panel(
     shifts: &[ost::api::ShiftInfo],
     loading: bool,
     pal: &Palette,
+    actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("Shifts").strong().size(17.0));
@@ -769,8 +770,13 @@ pub fn shifts_panel(
         if loading {
             ui.spinner();
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+                actions.push(Action::ReloadSection);
+            }
+        });
     });
-        if loading && shifts.is_empty() {
+    if loading && shifts.is_empty() {
             body_note(ui, true, "Loading shifts…");
             return;
         }
