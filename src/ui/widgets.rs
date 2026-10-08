@@ -1,6 +1,7 @@
 //! UI widgets: avatars, HTML content rendering.
 
 use crate::model::{avatar_color, initials};
+use crate::theme::Palette;
 use egui::{Color32, CornerRadius, FontId, Frame, RichText, Stroke, TextFormat, Ui, epaint};
 
 /// A quiet icon button (Lucide icon, ghost style): 30x30 hit area,
@@ -454,7 +455,7 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
 }
 
 /// Day separator: hairline rules flanking a centered date chip.
-pub fn day_separator(ui: &mut Ui, label: &str) {
+pub fn day_separator(ui: &mut Ui, pal: &Palette, label: &str) {
     let avail = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(avail, 20.0), egui::Sense::hover());
     let y = rect.center().y;
@@ -470,8 +471,7 @@ pub fn day_separator(ui: &mut Ui, label: &str) {
         gal,
         ui.style().visuals.weak_text_color(),
     );
-    let stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22));
+    let stroke = egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.55));
     ui.painter().line_segment(
         [
             egui::pos2(rect.left() + 12.0, y),

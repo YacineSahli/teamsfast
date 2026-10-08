@@ -129,6 +129,37 @@ remaining Phase 2 item.
 - `egui::Panel::left` has no `exact_width`; use `default_size` +
   `resizable(false)`.
 
+### egui 0.36, part 3 (pixel-audit findings — do not regress)
+- `Color32::from_rgba_unmultiplied(...)` tints in **Panel frames render as
+  opaque dark slabs** on this stack (the light-theme ring banner was
+  near-black). Never tint banners with alpha; blend with
+  `crate::theme::tint_over(base, fg, alpha)` over `pal.panel` (dark/light
+  ring/offline/call banners all use it).
+- `egui::FontWeight` is GONE (0.36 variable fonts): bold painter text =
+  `LayoutJob` + `sections[0].format.coords = VariationCoords::new([(b"wght", 700.0)])`
+  via `ctx.fonts_mut`. `FontFamily::Name("Bold")` compiles but falls back
+  to a non-bold font.
+- `centered_and_justified` centers HORIZONTALLY only — vertical is
+  top-anchored. Center empty states with painter text (see body_note /
+  the Ready-branch empty state), not layout.
+- Hardcoded `Color32::from_rgb` in ui/ = light-theme breakage waiting to
+  happen (30 sites cleaned in the audit). Any new color goes in the
+  Palette; "one green for both themes" presence is 0x2f9e63.
+- Section panels MUST draw `ui.separator()` BEFORE the empty/loading
+  early-return, or empty sections lose the header rule (planner/shifts
+  shipped like that).
+- Hover action bar anchors with the MEASURED previous-frame bar rect
+  (bar_h/bar_w); a hardcoded offset smaller than the real bar digs into
+  the bubble's first text line. Bubbles clipped at the viewport top
+  anchor tooltip-style above the pointer. TEAMSFAST_HOVER is exclusive
+  with pointer hover (Xvfb's phantom pointer otherwise paints a second
+  bar mid-shot).
+- `add_space` in a `ui.vertical` adds VERTICAL space — indenting needs a
+  horizontal wrapper (OneNote section indent shipped as a no-op).
+- Call timers: one epoch only — `call_connected_at` (first frame the
+  phase watch reads connected). Banner and stage share it; counting from
+  placement showed two different durations on screen at once.
+
 ### Build env (this machine)
 - The call stack needs `alsa-sys` → alsa.pc. System has runtime
   libasound only; headers come from the Flatpak GNOME SDK via a local

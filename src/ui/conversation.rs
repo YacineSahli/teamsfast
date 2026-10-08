@@ -353,7 +353,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             if is_new_day {
                 let label = day.clone();
                 ui.add_space(6.0);
-                crate::ui::widgets::day_separator(ui, &label);
+                crate::ui::widgets::day_separator(ui, ctx.pal, &label);
                 ui.add_space(6.0);
                 last_day = day;
             }
@@ -497,7 +497,8 @@ pub fn conversation_composer(
     }
     if let Some((_, current)) = &ctx.edit {
         Frame::default()
-            .fill(Color32::from_rgb(0x3a, 0x33, 0x2b))
+            .fill(ctx.pal.surface)
+            .stroke(Stroke::new(1.0, ctx.pal.warning))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
@@ -580,7 +581,9 @@ pub fn conversation_composer(
                     ready,
                     egui::Button::new(
                         crate::theme::Icon::Send.image(
-                            if ready { ctx.pal.on_accent } else { ctx.pal.dim },
+                            // `dim` vanished on the light composer; secondary
+                            // still reads as disabled next to the armed accent.
+                            if ready { ctx.pal.on_accent } else { ctx.pal.secondary },
                             17.0,
                         ),
                     )
@@ -925,7 +928,7 @@ fn bubble_parts(
                         RichText::new("Seen")
                             .small()
                             .weak()
-                            .color(Color32::from_rgb(0x6f, 0xd1, 0x94)),
+                            .color(ctx.pal.ok),
                     )
                     .on_hover_text(format!("Seen by {names}"));
                 }
@@ -967,24 +970,41 @@ fn bubble_parts(
         .map(|(p, r)| expand(r, 8.0).contains(p))
         .unwrap_or(false);
     // QA hook: force the bar open on the LAST message for screenshots
-    // (headless runs have no reliable pointer position).
-    let forced = std::env::var("TEAMSFAST_HOVER").as_deref() == Ok("1")
+    // (headless runs have no reliable pointer position). Exclusive with
+    // pointer hover — Xvfb's phantom pointer otherwise opens a second
+    // bar on whatever it lands on and the shot shows both.
+    let hook = std::env::var("TEAMSFAST_HOVER").as_deref() == Ok("1");
+    let forced = hook
         && std::ptr::eq(m as *const _, ctx.messages.last().unwrap_or(m) as *const _);
-    let open = in_bubble || in_bar || forced;
+    let open = if hook { forced } else { in_bubble || in_bar };
 
     if open {
         let clip = ui.clip_rect();
         // Emoji row (6 x 32) + separator + Reply/Edit/Delete/Copy.
         const BAR_W: f32 = 396.0;
-        let anchor_x = (bubble_rect.right() - BAR_W + 10.0)
+        // Measured bar size from the previous frame (content-sized and
+        // stable); BAR_W/48 cover the first frame. Anchoring with the real
+        // width keeps the bar's right edge aligned to the bubble's.
+        let (bar_w, bar_h) = bar_rect_prev
+            .map(|r| (r.width(), r.height()))
+            .unwrap_or((BAR_W, 48.0));
+        let anchor_x = (bubble_rect.right() - bar_w)
             .max(clip.left() + 8.0)
-            .min(clip.right() - BAR_W - 8.0);
-        // Prefer above the bubble; when there is no room (top of the
-        // scroll area) sit below it instead of overlapping the content.
-        let anchor_y = if bubble_rect.top() - 44.0 >= clip.top() + 2.0 {
-            bubble_rect.top() - 44.0
+            .min(clip.right() - bar_w - 8.0);
+        // Prefer above the bubble with a 4px gap. The old hardcoded 44px
+        // offset was smaller than the real bar height, so the bar dug into
+        // the bubble's first text line. When the bubble is clipped at the
+        // viewport top (tall card), anchor tooltip-style just above the
+        // pointer — the below-fallback covered the NEXT message's first
+        // line there.
+        let anchor_y = if bubble_rect.top() < clip.top() + 2.0 {
+            pointer2
+                .map(|p| (p.y - bar_h - 10.0).max(clip.top() + 4.0))
+                .unwrap_or_else(|| (bubble_rect.bottom() + 6.0).min(clip.bottom() - bar_h - 4.0))
+        } else if bubble_rect.top() - bar_h - 4.0 >= clip.top() + 2.0 {
+            bubble_rect.top() - bar_h - 4.0
         } else {
-            (bubble_rect.bottom() + 4.0).min(clip.bottom() - 44.0)
+            (bubble_rect.bottom() + 6.0).min(clip.bottom() - bar_h - 4.0)
         };
         let anchor = egui::pos2(anchor_x, anchor_y);
         let actions_sink: std::rc::Rc<std::cell::RefCell<Vec<Action>>> =
@@ -1117,6 +1137,14 @@ fn bubble_parts(
                 });
             })
             .response;
+        if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
+            log::info!(
+                "hover bar msg={} rect={:?} bubble={:?} forced={in_bubble}/{in_bar}",
+                &m.id[m.id.len().saturating_sub(6)..],
+                bar.rect,
+                bubble_rect
+            );
+        }
         ui.ctx()
             .data_mut(|d| d.insert_temp::<egui::Rect>(hover_id, bar.rect));
     } else if bar_rect_prev.is_some() {
@@ -1158,7 +1186,7 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
             format!("{} by {}", r.emoji, names.join(", "))
         };
         let chip = Frame::default()
-            .fill(Color32::from_rgb(0x38, 0x3a, 0x45))
+            .fill(ctx.pal.bubble_in)
             .corner_radius(CornerRadius::same(10))
             .inner_margin(egui::Margin::symmetric(6, 2))
             .show(ui, |ui| {

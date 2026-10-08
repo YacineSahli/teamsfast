@@ -98,7 +98,9 @@ impl Palette {
         v.widgets.hovered.bg_fill = self.surface_hover;
         v.widgets.active.bg_fill = self.accent;
         v.hyperlink_color = self.link;
-        v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.outline);
+        // `outline` disappears on the surface-coloured modal (unchecked
+        // checkbox boxes were invisible); `dim` reads on both bases.
+        v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.dim);
         v.override_text_color = Some(self.text);
         ctx.set_visuals(v);
     }
@@ -373,12 +375,22 @@ pub fn apply_style(ctx: &egui::Context) {
     // Disabled buttons must still read as buttons (was: near-invisible
     // gray-on-gray, e.g. the Teams dialog's disabled "Create").
     v.widgets.inactive.fg_stroke = egui::Stroke::new(1.2, Color32::from_rgb(0x8a, 0x8f, 0x99));
-    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(0x3a, 0x3d, 0x45));
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(0x6b, 0x6e, 0x76));
     v.widgets.noninteractive.fg_stroke =
         egui::Stroke::new(1.0, Color32::from_rgb(0x9a, 0x9f, 0xa8));
     v.hyperlink_color = Color32::from_rgb(0x69, 0xa1, 0xe8);
     v.override_text_color = Some(Color32::from_rgb(0xe8, 0xea, 0xed));
     ctx.set_visuals(v);
+}
+
+/// Opaque `fg`-over-`base` blend at `alpha` (0.0–1.0). Panel-frame fills
+/// with `Color32::from_rgba_unmultiplied` render as opaque dark slabs on
+/// this egui build (the light ring banner was near-black), so tinted
+/// banners blend manually over the panel colour instead.
+pub fn tint_over(base: Color32, fg: Color32, alpha: f32) -> Color32 {
+    let a = alpha.clamp(0.0, 1.0);
+    let mix = |f: u8, b: u8| (f as f32 * a + b as f32 * (1.0 - a)).round() as u8;
+    Color32::from_rgb(mix(fg.r(), base.r()), mix(fg.g(), base.g()), mix(fg.b(), base.b()))
 }
 
 /// Render `emoji` to RGBA at `height` px through the installed emoji font
