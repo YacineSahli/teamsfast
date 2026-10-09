@@ -67,6 +67,27 @@ pub const RING_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Drain a frame channel, keeping only the newest frame (live video is
 /// latest-wins; backlog is dropped).
+fn pal_ok_r(app: &TeamsFastApp) -> u8 {
+    app.palette.ok.r()
+}
+fn pal_ok_g(app: &TeamsFastApp) -> u8 {
+    app.palette.ok.g()
+}
+fn pal_ok_b(app: &TeamsFastApp) -> u8 {
+    app.palette.ok.b()
+}
+
+/// True when the active call has reached `connected` (admitted for
+/// meeting joins). Used by the stage's lobby view.
+fn connected_stage(app: &TeamsFastApp) -> bool {
+    app.call_connected_at.is_some()
+        && app
+            .call_media
+            .as_ref()
+            .map(|m| m.phase.borrow().to_string() == "connected")
+            .unwrap_or(false)
+}
+
 fn drain_latest(
     rx: &std::sync::mpsc::Receiver<ost::calling::video::VideoFrame>,
 ) -> Option<ost::calling::video::VideoFrame> {
@@ -352,6 +373,12 @@ pub struct TeamsFastApp {
     /// When the call first reported `connected` — the banner timer counts
     /// from here, not from placement (ringing time is not call time).
     call_connected_at: Option<Instant>,
+    /// True when the active call is a MEETING join (lobby UI applies).
+    call_is_meeting: bool,
+    /// Join/lobby machine over the active meeting call
+    /// (joining → lobby → admitted; pure transitions from teams-core).
+    lobby: ost::api::LobbyState,
+    lobby_placed_at: Option<Instant>,
     /// Ringing incoming call (banner with Accept/Decline).
     incoming: Option<IncomingRing>,
     /// Live call controls (mute/camera watches + video frame receivers)
@@ -779,6 +806,9 @@ impl TeamsFastApp {
             login_code: None,
             call: None,
             call_connected_at: None,
+            call_is_meeting: false,
+            lobby: ost::api::LobbyState::Idle,
+            lobby_placed_at: None,
             incoming: None,
             call_media: None,
             call_view_open: false,
@@ -948,6 +978,8 @@ impl TeamsFastApp {
                 }
                 Event::MeetNowReady { join_url } => {
                     self.status = "meeting created — joining…".into();
+                    self.call_is_meeting = true;
+                    self.lobby = ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Start);
                     self.call_label_hint = Some("Meet now".into());
                     self.cmd.send(Command::JoinMeeting(join_url)).ok();
                 }
@@ -991,12 +1023,23 @@ impl TeamsFastApp {
                     // banner — a large placeholder tile on an audio call
                     // just reads as an empty video screen. The local-
                     // preview sink exists only when the camera is on.
-                    self.call_view_open = handle.local_preview.is_some();
+                    // Meeting joins keep the stage the join already opened
+                    // (the lobby room is the content until admitted).
+                    self.call_view_open = handle.local_preview.is_some()
+                        || (self.call_is_meeting && self.call_view_open);
                     self.call_media = Some(handle);
                     self.remote_video_tex = None;
                     self.local_video_tex = None;
                 }
                 Event::CallStarted { label } => {
+                    if self.call_is_meeting {
+                        self.lobby =
+                            ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Placed);
+                        self.lobby_placed_at = Some(Instant::now());
+                        // The meeting join deserves the full stage: the
+                        // lobby/room is the content until admitted.
+                        self.call_view_open = true;
+                    }
                     // A hint (meeting subject from the calendar) wins over
                     // the generic "Meeting"/thread-id label.
                     let label = self
@@ -1019,6 +1062,9 @@ impl TeamsFastApp {
                 Event::CallEnded(summary) => {
                     self.call = None;
                     self.call_connected_at = None;
+                    self.call_is_meeting = false;
+                    self.lobby = ost::api::LobbyState::Idle;
+                    self.lobby_placed_at = None;
                     self.call_media = None;
                     self.call_view_open = false;
                     self.remote_video_tex = None;
@@ -1028,6 +1074,9 @@ impl TeamsFastApp {
                 Event::CallFailed(e) => {
                     self.call = None;
                     self.call_connected_at = None;
+                    self.call_is_meeting = false;
+                    self.lobby = ost::api::LobbyState::Idle;
+                    self.lobby_placed_at = None;
                     self.call_media = None;
                     self.call_view_open = false;
                     self.remote_video_tex = None;
@@ -1050,6 +1099,15 @@ impl TeamsFastApp {
                     }
                     // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call;
                     // TEAMSFAST_VIDEOCALL=1 does the same with the camera on.
+                    // QA hook: TEAMSFAST_MOCKLOBBY=1 pins the meeting-join
+                    // lobby view on the echo call (a real lobby needs a
+                    // gated meeting + admission).
+                    if std::env::var("TEAMSFAST_MOCKLOBBY").as_deref() == Ok("1") {
+                        self.call_is_meeting = true;
+                        self.lobby = ost::api::LobbyState::Lobby;
+                        self.lobby_placed_at = Some(Instant::now());
+                        self.call_view_open = true;
+                    }
                     if std::env::var("TEAMSFAST_TESTCALL").as_deref() == Ok("1") {
                         self.cmd.send(Command::TestCall { video: false }).ok();
                     }
@@ -1430,6 +1488,28 @@ impl TeamsFastApp {
         {
             self.last_offline_retry = Instant::now();
             self.cmd.send(Command::CheckReady).ok();
+        }
+
+        // Drive the meeting-lobby machine: connected = admitted; a join
+        // still placing after the grace window reads as the lobby.
+        if self.call.is_some()
+            && self.call_is_meeting
+            && let Some(media) = self.call_media.as_ref()
+        {
+            let phase = media.phase.borrow().to_string();
+            if phase.starts_with("connected") {
+                self.lobby = ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Admit);
+            } else if matches!(
+                self.lobby,
+                ost::api::LobbyState::Joining | ost::api::LobbyState::Lobby
+            ) && self
+                .lobby_placed_at
+                .map(|t| t.elapsed() >= Duration::from_secs(12))
+                .unwrap_or(false)
+            {
+                self.lobby =
+                    ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::LobbySignal);
+            }
         }
 
         // Presence poll every 60 s while signed in.
@@ -2035,6 +2115,8 @@ impl TeamsFastApp {
             Action::JoinMeeting { source, label } => {
                 self.join_open = false;
                 self.status = "Resolving meeting…".into();
+                self.call_is_meeting = true;
+                self.lobby = ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Start);
                 self.call_label_hint = label;
                 self.cmd.send(Command::JoinMeeting(source)).ok();
             }
@@ -2837,12 +2919,49 @@ impl eframe::App for TeamsFastApp {
                         .as_ref()
                         .map(|m| m.phase.borrow().to_string())
                         .unwrap_or_else(|| "calling…".into());
+                    // Meeting joins speak lobby: joining → waiting in the
+                    // lobby → (connected = admitted). 1:1 calls keep
+                    // calling…/ringing…/connected.
+                    let status = if self.call_is_meeting {
+                        match self.lobby {
+                            ost::api::LobbyState::Lobby => "waiting in the lobby…".to_string(),
+                            ost::api::LobbyState::Admitted => phase.clone(),
+                            _ => "joining meeting…".to_string(),
+                        }
+                    } else {
+                        phase.clone()
+                    };
+                    let connected = self.call_connected_at.is_some();
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
-                        ui.label(RichText::new("●").color(self.palette.ok).size(13.0));
-                        ui.label(
-                            RichText::new(format!("{label} — {phase}  {mm:02}:{ss:02}")).small(),
+                        // Caller avatar + name: the ringing UI for outgoing
+                        // calls was a bare status line before.
+                        let init = crate::model::initials(&label);
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(22.0, 30.0),
+                            egui::Sense::hover(),
                         );
+                        ui.painter().circle_filled(rect.center(), 11.0, crate::model::avatar_color(&label));
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            init,
+                            egui::FontId::proportional(10.0),
+                            Color32::WHITE,
+                        );
+                        if !connected {
+                            ui.spinner();
+                        }
+                        if connected {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{label} — {status} {mm:02}:{ss:02}"
+                                ))
+                                .small(),
+                            );
+                        } else {
+                            ui.label(RichText::new(format!("{label} — {status}")).small());
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Same 96x30 + 8px window margin as the ring
                             // banner buttons.
@@ -2869,6 +2988,39 @@ impl eframe::App for TeamsFastApp {
                                     .clicked()
                             {
                                 toggle_stage = true;
+                            }
+                            // Mute from the banner too — voice calls may
+                            // never open the stage.
+                            if let Some(media) = self.call_media.as_ref() {
+                                let mic_on = *media.mic_on.borrow();
+                                let mic = ui
+                                    .add(
+                                        egui::Button::new(
+                                            crate::theme::Icon::Mic.image(
+                                                if mic_on {
+                                                    self.palette.text
+                                                } else {
+                                                    self.palette.danger
+                                                },
+                                                15.0,
+                                            ),
+                                        )
+                                        .fill(if mic_on {
+                                            Color32::TRANSPARENT
+                                        } else {
+                                            egui::Color32::from_rgba_unmultiplied(
+                                                self.palette.danger.r(),
+                                                self.palette.danger.g(),
+                                                self.palette.danger.b(),
+                                                60,
+                                            )
+                                        })
+                                        .min_size(egui::vec2(30.0, 30.0)),
+                                    )
+                                    .on_hover_text(if mic_on { "Mute" } else { "Unmute (muted)" });
+                                if mic.clicked() {
+                                    let _ = media.mic_on.send(!mic_on);
+                                }
                             }
                         });
                     });
@@ -2952,8 +3104,9 @@ impl eframe::App for TeamsFastApp {
                 let (mm, ss) = (secs / 60, secs % 60);
                 let phase = media.phase.borrow().to_string();
                 egui::Panel::right("call_stage")
-                    .default_size(340.0)
-                    .resizable(false)
+                    // exact: default_size collapsed to ~142px on this egui
+                    // in some frames, squeezing the tile text.
+                    .exact_size(340.0)
                     .show_inside(ui, |ui| {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
@@ -2970,6 +3123,57 @@ impl eframe::App for TeamsFastApp {
                         // Remote tile (or placeholder until frames arrive),
                         // framed so bare video doesn't sit raw on the panel.
                         let tile_h = 300.0_f32;
+                        // Meeting joins show the lobby room until admitted.
+                        let in_lobby = self.call_is_meeting && !connected_stage(self);
+                        if in_lobby {
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(avail_w, tile_h * 0.72),
+                                egui::Sense::hover(),
+                            );
+                            let p = ui.painter();
+                            p.rect_filled(rect, 8.0, Color32::from_black_alpha(110));
+                            // Pulsing dots (Teams-style wait), then the
+                            // copy — painter-drawn so everything composites
+                            // INSIDE the tile.
+                            let t = ui.input(|i| i.time);
+                            let cx = rect.center().x;
+                            let cy = rect.center().y - 44.0;
+                            for i in 0..3 {
+                                let phase = (t * 2.2 + i as f64 * 0.45).sin();
+                                let alpha = (140.0 + 70.0 * phase) as u8;
+                                let r = 4.5 + 1.2 * phase as f32;
+                                p.circle_filled(
+                                    egui::pos2(cx - 18.0 + i as f32 * 18.0, cy),
+                                    r,
+                                    Color32::from_rgba_unmultiplied(
+                                        pal_ok_r(self),
+                                        pal_ok_g(self),
+                                        pal_ok_b(self),
+                                        alpha,
+                                    ),
+                                );
+                            }
+                            p.text(
+                                egui::pos2(cx, cy + 26.0),
+                                egui::Align2::CENTER_CENTER,
+                                if self.lobby == ost::api::LobbyState::Lobby {
+                                    "Waiting in the lobby"
+                                } else {
+                                    "Joining meeting"
+                                },
+                                egui::FontId::proportional(15.0),
+                                self.palette.text,
+                            );
+                            p.text(
+                                egui::pos2(cx, cy + 46.0),
+                                egui::Align2::CENTER_CENTER,
+                                "Someone in the meeting will let you in.",
+                                egui::FontId::proportional(12.0),
+                                self.palette.secondary,
+                            );
+                            ui.add_space(2.0);
+                            ui.label(RichText::new(&label).weak().small());
+                        } else {
                         match self.remote_video_tex.as_ref() {
                             Some(tex) => {
                                 let size = tex.size_vec2();
@@ -3015,6 +3219,7 @@ impl eframe::App for TeamsFastApp {
                                 );
                             }
                         }
+                        } // end non-lobby stage
                         // Local camera preview (video calls only), in flow
                         // right under the remote tile.
                         if media.local_preview.is_some() {
