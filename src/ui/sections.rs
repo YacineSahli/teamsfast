@@ -4,7 +4,7 @@
 use crate::model::{format_day_label, format_message_time};
 use crate::theme::Palette;
 use crate::ui::conversation::Action;
-use egui::{Color32, RichText, ScrollArea, Ui};
+use egui::{RichText, ScrollArea, Ui};
 use ost::api::{MeetingInfo, SharedFile, TodoListInfo, TodoTaskInfo};
 use std::collections::HashMap;
 
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 /// Centered body note for loading/empty states. Drawn with the painter
 /// (no layout): ScrollAreas and nested layouts collapse available rects,
 /// which pinned every layout-based attempt to the top.
-fn body_note(ui: &mut Ui, spinner: bool, pal: &Palette, text: &str) {
+pub fn body_note(ui: &mut Ui, spinner: bool, pal: &Palette, text: &str) {
     let _ = spinner;
     let rect = ui.max_rect();
     let center = egui::pos2(

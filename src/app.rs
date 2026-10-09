@@ -1050,8 +1050,6 @@ impl TeamsFastApp {
                             "files" => Some(MainView::Files),
                             "todo" => Some(MainView::ToDo),
                             "planner" => Some(MainView::Planner),
-                            "shifts" => Some(MainView::Shifts),
-                            "notes" | "onenote" => Some(MainView::Notes),
                             "activity" => Some(MainView::Activity),
                             _ => None,
                         };
@@ -2121,15 +2119,9 @@ impl TeamsFastApp {
                 self.planner_loading = true;
                 self.cmd.send(Command::LoadPlanner).ok();
             }
-            MainView::Shifts => {
-                self.shifts_loading = true;
-                self.cmd.send(Command::LoadShifts).ok();
-            }
-            MainView::Notes => {
-                self.notes_loading = true;
-                self.cmd.send(Command::LoadNotes).ok();
-            }
-            MainView::Activity => {}
+            // Shifts/Notes removed from the UI (2026-10-09); arms kept as
+            // no-ops so the enum variants stay valid for cached state.
+            MainView::Shifts | MainView::Notes | MainView::Activity => {}
         }
     }
 
@@ -2284,16 +2276,16 @@ impl TeamsFastApp {
     /// Activity) with the settings gear pinned at the bottom.
     fn rail(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 9] = [
+        // OneNote and Shifts removed (2026-10-09) — thin usage; backend
+        // section handlers stay for a future return.
+        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 7] = [
             (MainView::Chat, "Chat", crate::theme::Icon::MessageSquare, "Chats (Ctrl+1)"),
             (MainView::Teams, "Teams", crate::theme::Icon::Users, "Teams & channels (Ctrl+2)"),
             (MainView::Calendar, "Calendar", crate::theme::Icon::Calendar, "Calendar (Ctrl+3)"),
             (MainView::Files, "Files", crate::theme::Icon::FileText, "Files (Ctrl+4)"),
             (MainView::ToDo, "To Do", crate::theme::Icon::SquareCheck, "To Do (Ctrl+5)"),
             (MainView::Planner, "Planner", crate::theme::Icon::ListTodo, "Planner boards (Ctrl+6)"),
-            (MainView::Shifts, "Shifts", crate::theme::Icon::Clock, "Shifts this week (Ctrl+7)"),
-            (MainView::Notes, "OneNote", crate::theme::Icon::Archive, "OneNote notebooks (Ctrl+8)"),
-            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+9)"),
+            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+7)"),
         ];
         for (view, _name, icon, tip) in sections {
             let sel = self.main_view == view;
@@ -3319,25 +3311,15 @@ impl eframe::App for TeamsFastApp {
                         &self.palette,
                         &mut actions,
                     ),
-                    MainView::Shifts => crate::ui::sections::shifts_panel(
-                        ui,
-                        &self.shifts,
-                        self.shifts_loading,
-                        &self.palette,
-                        &mut actions,
-                    ),
-                    MainView::Notes => {
-                        let mut st = std::mem::take(&mut self.notes);
-                        crate::ui::sections::notes_panel(
+                    // Shifts/Notes removed from the UI; the arms remain as
+                    // a plain note so a stale view enum can't crash.
+                    MainView::Shifts | MainView::Notes => {
+                        crate::ui::sections::body_note(
                             ui,
-                            &self.notebooks,
-                            self.notes_page.as_ref(),
-                            &mut st,
-                            self.notes_loading,
+                            self.shifts_loading || self.notes_loading,
                             &self.palette,
-                            &mut actions,
+                            "This section was removed.",
                         );
-                        self.notes = st;
                     }
                     MainView::Activity => crate::ui::sections::activity_panel(
                         ui,
@@ -3421,9 +3403,7 @@ impl eframe::App for TeamsFastApp {
             (egui::Key::Num4, MainView::Files),
             (egui::Key::Num5, MainView::ToDo),
             (egui::Key::Num6, MainView::Planner),
-            (egui::Key::Num7, MainView::Shifts),
-            (egui::Key::Num8, MainView::Notes),
-            (egui::Key::Num9, MainView::Activity),
+            (egui::Key::Num7, MainView::Activity),
         ];
         for (key, view) in section_keys {
             if ui.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {
