@@ -575,6 +575,7 @@ fn teams_dialog(
     ui: &mut egui::Ui,
     st: &mut TeamDialogState,
     teams: &[TeamInfo],
+    pal: &crate::theme::Palette,
     actions: &mut Vec<Action>,
 ) {
     egui::ScrollArea::vertical()
@@ -611,7 +612,9 @@ fn teams_dialog(
                     .add_enabled(
                         enabled,
                         egui::Button::new(RichText::new("Create").small())
-                            .min_size(egui::vec2(68.0, 24.0)),
+                            .min_size(egui::vec2(68.0, 26.0))
+                            .fill(pal.accent)
+                            .corner_radius(egui::CornerRadius::same(8)),
                     )
                     .clicked()
                 {
@@ -637,7 +640,8 @@ fn teams_dialog(
                     field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let search = ui.add(
                     egui::Button::new(RichText::new("Search").small())
-                        .min_size(egui::vec2(68.0, 24.0)),
+                        .min_size(egui::vec2(68.0, 26.0))
+                        .corner_radius(egui::CornerRadius::same(8)),
                 );
                 if (search.clicked() || enter) && !st.join_query.trim().is_empty()
                 {
@@ -665,7 +669,8 @@ fn teams_dialog(
                     if ui
                         .add(
                             egui::Button::new(RichText::new("Join").small())
-                                .min_size(egui::vec2(68.0, 24.0)),
+                                .min_size(egui::vec2(68.0, 26.0))
+                                .corner_radius(egui::CornerRadius::same(8)),
                         )
                         .clicked()
                     {
@@ -690,7 +695,9 @@ fn teams_dialog(
                     .add_enabled(
                         !st.new_team_name.trim().is_empty(),
                         egui::Button::new(RichText::new("Create").small())
-                            .min_size(egui::vec2(68.0, 24.0)),
+                            .min_size(egui::vec2(68.0, 26.0))
+                            .fill(pal.accent)
+                            .corner_radius(egui::CornerRadius::same(8)),
                     )
                     .clicked()
                 {
@@ -2591,37 +2598,33 @@ impl TeamsFastApp {
                     ui.painter()
                         .circle_filled(rect.center(), 4.0, self.palette.ok);
                     ui.add_space(2.0);
-                    let refresh = ui
-                        .add(egui::Button::new(
-                            crate::theme::Icon::Refresh
-                                .image(self.palette.text, 16.0),
-                        ))
+                    // Ghost icon buttons: transparent at rest — the visual
+                    // style's inactive fill otherwise paints four chips.
+                    let ghost_btn =
+                        |ui: &mut egui::Ui, icon: crate::theme::Icon, tint: Color32| {
+                            ui.add(
+                                egui::Button::new(icon.image(tint, 16.0))
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(egui::Stroke::NONE),
+                            )
+                        };
+                    let tint = self.palette.text;
+                    let refresh = ghost_btn(ui, crate::theme::Icon::Refresh, tint)
                         .on_hover_text("Refresh chats");
                     if refresh.clicked() {
                         self.apply(Action::Refresh);
                     }
-                    let new_chat = ui
-                        .add(egui::Button::new(
-                            crate::theme::Icon::Plus.image(self.palette.text, 16.0),
-                        ))
+                    let new_chat = ghost_btn(ui, crate::theme::Icon::Plus, tint)
                         .on_hover_text("New chat (Ctrl+N)");
                     if new_chat.clicked() {
                         self.apply(Action::ShowNewChat);
                     }
-                    let search = ui
-                        .add(egui::Button::new(
-                            crate::theme::Icon::Search
-                                .image(self.palette.text, 16.0),
-                        ))
+                    let search = ghost_btn(ui, crate::theme::Icon::Search, tint)
                         .on_hover_text("Search messages (Ctrl+F)");
                     if search.clicked() {
                         self.apply(Action::OpenSearch);
                     }
-                    let gear = ui
-                        .add(egui::Button::new(
-                            crate::theme::Icon::Settings
-                                .image(self.palette.text, 16.0),
-                        ))
+                    let gear = ghost_btn(ui, crate::theme::Icon::Settings, tint)
                         .on_hover_text("Settings (Ctrl+,)");
                     if gear.clicked() {
                         self.settings_ui.open = true;
@@ -2632,7 +2635,8 @@ impl TeamsFastApp {
             ui.label(&self.status);
             if self.state == State::Ready
                 && !self.trouter_on
-                && ui.small_button("Go live").clicked()
+                && crate::ui::widgets::btn::secondary(ui, &self.palette, "Go live")
+                    .clicked()
             {
                 self.cmd.send(Command::StartTrouter).ok();
             }
@@ -2803,7 +2807,9 @@ impl eframe::App for TeamsFastApp {
                             )
                             .small(),
                         );
-                        if ui.small_button("Retry now").clicked() {
+                        if crate::ui::widgets::btn::secondary(ui, &self.palette, "Retry now")
+                            .clicked()
+                        {
                             self.last_offline_retry = Instant::now();
                             self.cmd.send(Command::CheckReady).ok();
                         }
@@ -2845,9 +2851,36 @@ impl eframe::App for TeamsFastApp {
                     .show_inside(ui, |ui| {
                         let mut accept = false;
                         let mut decline = false;
+                        // Left danger stripe (premium cue over a plain
+                        // border).
+                        let band = ui.max_rect();
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                band.left_top(),
+                                egui::vec2(3.0, band.height()),
+                            ),
+                            0.0,
+                            self.palette.danger,
+                        );
                         ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(RichText::new("📞").size(15.0));
+                            ui.add_space(11.0);
+                            // Caller avatar disc.
+                            let (av, _) = ui.allocate_exact_size(
+                                egui::vec2(26.0, 26.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().circle_filled(
+                                av.center(),
+                                13.0,
+                                crate::model::avatar_color(&ring.name),
+                            );
+                            ui.painter().text(
+                                av.center(),
+                                egui::Align2::CENTER_CENTER,
+                                crate::model::initials(&ring.name),
+                                egui::FontId::proportional(10.5),
+                                Color32::WHITE,
+                            );
                             let video = if ring.has_video { " · video" } else { "" };
                             let ring_secs = ring.at.elapsed().as_secs();
                             ui.label(
@@ -2861,23 +2894,10 @@ impl eframe::App for TeamsFastApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    // Margin from the window edge (Decline
-                                    // sat ~1px from it).
-                                    ui.add_space(8.0);
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                RichText::new("Decline")
-                                                    .small()
-                                                    .color(Color32::WHITE),
-                                            )
-                                            .fill(palette.danger)
-                                            .min_size(egui::vec2(96.0, 30.0)),
-                                        )
-                                        .clicked()
-                                    {
-                                        decline = true;
-                                    }
+                                    // RTL: Accept added first = rightmost
+                                    // (standard call order); 16px from the
+                                    // window edge, 12px between buttons.
+                                    ui.add_space(16.0);
                                     if ui
                                         .add_enabled(
                                             !busy,
@@ -2903,11 +2923,28 @@ impl eframe::App for TeamsFastApp {
                                                     }),
                                             )
                                             .fill(palette.ok)
-                                            .min_size(egui::vec2(96.0, 30.0)),
+                                            .min_size(egui::vec2(96.0, 30.0))
+                                            .corner_radius(egui::CornerRadius::same(8)),
                                         )
                                         .clicked()
                                     {
                                         accept = true;
+                                    }
+                                    ui.add_space(12.0);
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("Decline")
+                                                    .small()
+                                                    .color(Color32::WHITE),
+                                            )
+                                            .fill(palette.danger)
+                                            .min_size(egui::vec2(96.0, 30.0))
+                                            .corner_radius(egui::CornerRadius::same(8)),
+                                        )
+                                        .clicked()
+                                    {
+                                        decline = true;
                                     }
                                     if busy {
                                         ui.label(
@@ -3797,7 +3834,7 @@ impl eframe::App for TeamsFastApp {
                             }
                         });
                     ui.add_space(4.0);
-                    if ui.button("Cancel").clicked() {
+                    if crate::ui::widgets::btn::secondary(ui, &self.palette, "Cancel").clicked() {
                         close = true;
                     }
                 });
@@ -3860,7 +3897,9 @@ impl eframe::App for TeamsFastApp {
                             self.loading_teams = true;
                             self.cmd.send(Command::LoadTeams).ok();
                         }
-                        if ui.button("Cancel").clicked() {
+                        if crate::ui::widgets::btn::secondary(ui, &self.palette, "Cancel")
+                            .clicked()
+                        {
                             self.channel_rename = None;
                         }
                     });
@@ -3886,28 +3925,44 @@ impl eframe::App for TeamsFastApp {
                     });
                     ui.add_space(6.0);
                     ui.separator();
-                    if ui
-                        .button("Chat")
-                        .clicked()
-                    {
-                        let mri = mri.clone();
-                        let name = name.clone();
-                        self.apply(Action::ChatWith { mri, name });
-                    }
-                    if ui.button("Close").clicked() {
-                        self.contact = None;
-                    }
+                    ui.horizontal(|ui| {
+                        if crate::ui::widgets::btn::primary(ui, &self.palette, "Chat")
+                            .clicked()
+                        {
+                            let mri = mri.clone();
+                            let name = name.clone();
+                            self.apply(Action::ChatWith { mri, name });
+                        }
+                        if crate::ui::widgets::btn::secondary(ui, &self.palette, "Close")
+                            .clicked()
+                        {
+                            self.contact = None;
+                        }
+                    });
                 });
         }
 
         // Teams management dialog: create channel / join public team /
         // create team.
         if self.team_dialog.open {
-            let modal = egui::Modal::new(egui::Id::new("teams_mgmt_modal"));
+            let modal = egui::Modal::new(egui::Id::new("teams_mgmt_modal")).frame(
+                egui::Frame::default()
+                    .fill(self.palette.surface)
+                    .stroke(egui::Stroke::new(1.0, self.palette.outline))
+                    .shadow(egui::Shadow {
+                        offset: [0, 10],
+                        blur: 28,
+                        spread: 0,
+                        color: Color32::from_black_alpha(70),
+                    })
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(16)),
+            );
             let mut close_teams = false;
             let resp = modal.show(ui.ctx(), |ui| {
                 ui.set_width(430.0);
                 ui.horizontal(|ui| {
+                    ui.label(RichText::new("Teams").strong().size(15.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(
@@ -3921,12 +3976,11 @@ impl eframe::App for TeamsFastApp {
                         {
                             close_teams = true;
                         }
-                        ui.label(RichText::new("Teams").strong().size(15.0));
                     });
                 });
                 ui.add_space(6.0);
                 let mut actions: Vec<Action> = Vec::new();
-                teams_dialog(ui, &mut self.team_dialog, &self.teams, &mut actions);
+                teams_dialog(ui, &mut self.team_dialog, &self.teams, &self.palette, &mut actions);
                 for a in actions {
                     self.apply(a);
                 }
@@ -3940,10 +3994,25 @@ impl eframe::App for TeamsFastApp {
         if self.join_open {
             let mut join_now = false;
             let mut close = false;
-            let modal = egui::Modal::new(egui::Id::new("join_meeting_modal"));
+            // Modal::frame REPLACES the default popup frame — rebuild the
+            // full look (fill/stroke/shadow) plus the 16px padding.
+            let modal = egui::Modal::new(egui::Id::new("join_meeting_modal")).frame(
+                egui::Frame::default()
+                    .fill(self.palette.surface)
+                    .stroke(egui::Stroke::new(1.0, self.palette.outline))
+                    .shadow(egui::Shadow {
+                        offset: [0, 10],
+                        blur: 28,
+                        spread: 0,
+                        color: Color32::from_black_alpha(70),
+                    })
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(16)),
+            );
             let resp = modal.show(ui.ctx(), |ui| {
                 ui.set_width(440.0);
                 ui.horizontal(|ui| {
+                    ui.label(RichText::new("Join a meeting").strong().size(15.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(
@@ -3957,7 +4026,6 @@ impl eframe::App for TeamsFastApp {
                         {
                             close = true;
                         }
-                        ui.label(RichText::new("Join a meeting").strong().size(15.0));
                     });
                 });
                 ui.add_space(6.0);
@@ -3991,8 +4059,7 @@ impl eframe::App for TeamsFastApp {
                     {
                         join_now = true;
                     }
-                    if ui
-                        .add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 26.0)))
+                    if crate::ui::widgets::btn::secondary(ui, &self.palette, "Cancel")
                         .clicked()
                     {
                         close = true;
@@ -4022,7 +4089,9 @@ impl eframe::App for TeamsFastApp {
                     for n in &names {
                         ui.label(n);
                     }
-                    if ui.button("Close").clicked() {
+                    if crate::ui::widgets::btn::secondary(ui, &self.palette, "Close")
+                        .clicked()
+                    {
                         self.reaction_popup = None;
                     }
                 });

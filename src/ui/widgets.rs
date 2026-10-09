@@ -4,6 +4,50 @@ use crate::model::{avatar_color, initials};
 use crate::theme::Palette;
 use egui::{Color32, CornerRadius, FontId, Frame, RichText, Stroke, TextFormat, Ui, epaint};
 
+// ---------------------------------------------------------------- buttons
+
+/// Button heights/radii shared across the app so every surface reads as
+/// one design system.
+pub mod btn {
+    use super::*;
+
+    pub const H: f32 = 26.0; // standard control height
+
+    fn base(text: &str, color: Color32) -> egui::Button<'_> {
+        egui::Button::new(RichText::new(text).size(12.5).color(color))
+            .min_size(egui::vec2(0.0, H))
+            .corner_radius(egui::CornerRadius::same(8))
+    }
+
+    /// Filled accent — the ONE primary action on a surface.
+    pub fn primary(ui: &mut Ui, pal: &Palette, text: &str) -> egui::Response {
+        ui.add(base(text, pal.on_accent).fill(pal.accent))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+
+    /// Outlined surface — secondary action.
+    pub fn secondary(ui: &mut Ui, pal: &Palette, text: &str) -> egui::Response {
+        ui.add(
+            base(text, pal.text)
+                .fill(pal.surface)
+                .stroke(egui::Stroke::new(1.0, pal.outline)),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+
+    /// Filled danger — destructive / hang up.
+    pub fn danger(ui: &mut Ui, pal: &Palette, text: &str) -> egui::Response {
+        ui.add(base(text, Color32::WHITE).fill(pal.danger))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+
+    /// Text-only quiet action (headers, toolbars).
+    pub fn ghost(ui: &mut Ui, pal: &Palette, text: &str) -> egui::Response {
+        ui.add(base(text, pal.secondary).fill(Color32::TRANSPARENT))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+}
+
 /// A quiet icon button (Lucide icon, ghost style): 30x30 hit area,
 /// transparent at rest, surface tint on hover, with a tooltip.
 pub fn icon_button(ui: &mut Ui, icon: crate::theme::Icon, tip: &str) -> egui::Response {

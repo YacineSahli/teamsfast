@@ -103,10 +103,13 @@ pub fn sidebar(
                     ui.spinner();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button(RichText::new("+ Channel").small())
-                        .on_hover_text("Create a channel / join or create a team")
-                        .clicked()
+                    if crate::ui::widgets::btn::ghost(
+                        ui,
+                        ctx.pal,
+                        "+ Channel",
+                    )
+                    .on_hover_text("Create a channel / join or create a team")
+                    .clicked()
                     {
                         actions.push(Action::ShowTeamDialog);
                     }

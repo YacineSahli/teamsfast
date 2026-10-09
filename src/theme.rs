@@ -102,7 +102,43 @@ impl Palette {
         // checkbox boxes were invisible); `dim` reads on both bases.
         v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.dim);
         v.override_text_color = Some(self.text);
+
+        // ---- design polish: menus, popups, buttons ----
+        // Rounded floating surfaces with soft shadows: context menus,
+        // combo boxes and tooltips all inherit these.
+        v.menu_corner_radius = egui::CornerRadius::same(10);
+        v.popup_shadow = egui::Shadow::NONE;
+        v.window_shadow = egui::Shadow {
+            offset: [0, 10],
+            blur: 28,
+            spread: 0,
+            color: Color32::from_black_alpha(70),
+        };
+        v.window_corner_radius = egui::CornerRadius::same(12);
+        // Buttons: a touch larger + rounder, generous hit padding, smooth.
+        for w in [
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+        ] {
+            w.corner_radius = egui::CornerRadius::same(8);
+            w.bg_stroke = egui::Stroke::NONE;
+            w.expansion = 2.0;
+        }
+        v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, self.outline);
+        // Unchecked checkboxes draw their box with this stroke — without it
+        // they vanish (regression caught in the beauty pass).
+        v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.dim);
+        v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, self.text);
         ctx.set_visuals(v);
+        // Spacing/style-level bits (button padding, menu margins, timing).
+        ctx.all_styles_mut(|style| {
+            style.spacing.button_padding = egui::vec2(12.0, 4.0);
+            style.spacing.menu_margin = egui::Margin::same(5);
+            style.spacing.menu_spacing = 2.0;
+            style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+            style.animation_time = 0.14;
+        });
     }
 }
 
@@ -380,7 +416,14 @@ pub fn apply_style(ctx: &egui::Context) {
         egui::Stroke::new(1.0, Color32::from_rgb(0x9a, 0x9f, 0xa8));
     v.hyperlink_color = Color32::from_rgb(0x69, 0xa1, 0xe8);
     v.override_text_color = Some(Color32::from_rgb(0xe8, 0xea, 0xed));
+    v.menu_corner_radius = egui::CornerRadius::same(10);
+    v.popup_shadow = egui::Shadow::NONE;
     ctx.set_visuals(v);
+    ctx.all_styles_mut(|style| {
+        style.spacing.button_padding = egui::vec2(12.0, 4.0);
+        style.spacing.menu_margin = egui::Margin::same(5);
+        style.spacing.menu_spacing = 2.0;
+    });
 }
 
 /// Opaque `fg`-over-`base` blend at `alpha` (0.0–1.0). Panel-frame fills
