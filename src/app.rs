@@ -373,6 +373,8 @@ pub struct TeamsFastApp {
     /// When the call first reported `connected` — the banner timer counts
     /// from here, not from placement (ringing time is not call time).
     call_connected_at: Option<Instant>,
+    /// Incoming-call ringer stop flag; Some while the banner rings.
+    ringer: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// True when the active call is a MEETING join (lobby UI applies).
     call_is_meeting: bool,
     /// Join/lobby machine over the active meeting call
@@ -806,6 +808,7 @@ impl TeamsFastApp {
             login_code: None,
             call: None,
             call_connected_at: None,
+            ringer: None,
             call_is_meeting: false,
             lobby: ost::api::LobbyState::Idle,
             lobby_placed_at: None,
@@ -864,6 +867,45 @@ impl TeamsFastApp {
             update_receipt: receipt,
             launch_error,
         }
+    }
+
+    /// Stop the incoming-call ringer (accept / decline / caller gone /
+    /// banner expiry).
+    fn stop_ringer(&mut self) {
+        if let Some(flag) = self.ringer.take() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Ring for an incoming call: repeating tone until answered/declined/
+    /// gone (capped at the banner's ring window). Detached thread — the
+    /// tone owns its playback stream.
+    fn start_ringer(&mut self) {
+        self.stop_ringer();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.ringer = Some(flag.clone());
+        std::thread::Builder::new()
+            .name("ringer".into())
+            .spawn(move || {
+                ost::calling::audio::play_ring_until(
+                    425.0,
+                    1000,
+                    2000,
+                    flag,
+                    (RING_TIMEOUT.as_millis() as u64).max(1000),
+                );
+            })
+            .ok();
+    }
+
+    /// Short call-ended beep (detached).
+    fn play_end_beep(&mut self) {
+        std::thread::Builder::new()
+            .name("end-beep".into())
+            .spawn(|| {
+                let _ = ost::calling::audio::play_tone_freq(425.0, 450);
+            })
+            .ok();
     }
 
     /// Hide the window: unmap on X11, minimize on Wayland (a Wayland
@@ -1011,12 +1053,14 @@ impl TeamsFastApp {
                         raw,
                         at: Instant::now(),
                     });
+                    self.start_ringer();
                 }
                 Event::CallGone => {
                     // Caller cancelled while ringing: drop the banner. The
                     // accepted-call case stays manual until the callback
                     // shapes are capture-verified (see NOTES).
                     self.incoming = None;
+                    self.stop_ringer();
                 }
                 Event::CallMedia(handle) => {
                     // Video calls open the stage; voice calls stay on the
@@ -1060,6 +1104,7 @@ impl TeamsFastApp {
                     }
                 }
                 Event::CallEnded(summary) => {
+                    self.play_end_beep();
                     self.call = None;
                     self.call_connected_at = None;
                     self.call_is_meeting = false;
@@ -1072,6 +1117,7 @@ impl TeamsFastApp {
                     self.status = summary;
                 }
                 Event::CallFailed(e) => {
+                    self.play_end_beep();
                     self.call = None;
                     self.call_connected_at = None;
                     self.call_is_meeting = false;
@@ -2103,11 +2149,13 @@ impl TeamsFastApp {
                 self.cmd.send(Command::TestCall { video: false }).ok();
             }
             Action::AcceptIncoming => {
+                self.stop_ringer();
                 if let Some(ring) = self.incoming.take() {
                     self.cmd.send(Command::AcceptIncoming(ring.raw)).ok();
                 }
             }
             Action::DeclineIncoming => {
+                self.stop_ringer();
                 if let Some(ring) = self.incoming.take() {
                     self.cmd.send(Command::DeclineIncoming(ring.raw)).ok();
                 }
@@ -2768,6 +2816,7 @@ impl eframe::App for TeamsFastApp {
             // banner self-expires past the ring window.
             if ring.at.elapsed() > RING_TIMEOUT {
                 self.incoming = None;
+                self.stop_ringer();
             } else {
                 let busy = self.call.is_some();
                 let palette = &self.palette;
