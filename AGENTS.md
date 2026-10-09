@@ -184,6 +184,15 @@ remaining Phase 2 item.
   wall components (`meeting_span`) or they shift by the local offset.
 
 ### Build env (this machine)
+- SCREENSHARE SPIKE (teams-core 80bd059, local only): `screen` feature =
+  xdg-desktop-portal ScreenCast + PipeWire capture emitting I420
+  VideoFrames; compiles, runtime unverified (interactive portal dialog).
+  Local build needs the pkg-config shims `~/.local/lib/teamfast-pc/`
+  (libpipewire-0.3.pc + libspa-0.2.pc point at the GNOME SDK 50 headers,
+  same pattern as the alsa shim) and the temp
+  `[patch."https://github.com/YacineSahli/teams-core"]` in Cargo.toml
+  (NOT committed). Next: wire screen frames into the video send loop +
+  a stage "Share screen" button; clean pw main-loop teardown.
 - The call stack needs `alsa-sys` → alsa.pc. System has runtime
   libasound only; headers come from the Flatpak GNOME SDK via a local
   shim (`~/.local/lib/teamfast-pc/alsa.pc` + lib/libasound.so symlink to
