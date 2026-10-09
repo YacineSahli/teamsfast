@@ -98,6 +98,8 @@ pub enum Action {
     // ---- sections ----
     /// Re-fetch the data of the visible section.
     ReloadSection,
+    /// Calendar week/month navigation: fetch an arbitrary window.
+    LoadCalendarRange { start_unix: u64, days: u64 },
     /// Open a URL with the system handler.
     OpenLink(String),
     /// Copy text to the clipboard.
@@ -203,6 +205,9 @@ pub struct ConvCtx<'a> {
     /// Active-call banner text (None when idle).
     pub call_label: Option<&'a str>,
     pub textures: &'a std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
+    /// Known image sizes (url -> [w,h]) — placeholders reserve the final
+    /// box so an arriving image doesn't reflow the conversation.
+    pub image_sizes: &'a std::collections::HashMap<String, [usize; 2]>,
     pub pending_images: &'a mut HashSet<String>,
     /// Emoji raster cache: cluster -> texture (colour, from bundled Noto).
     pub emoji_textures: &'a mut HashMap<String, egui::TextureHandle>,
@@ -1294,10 +1299,15 @@ fn emoji_widget(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, cluster: &str, px: f32
 /// Inline image: textured when loaded, fetch requested once, placeholder
 /// otherwise (failed URLs stay in `pending_images` so they never retry).
 fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
+    // Display box: width-capped at 340, height-capped at 460. Placeholder
+    // reserves the SAME box (from the archive's decoded sizes) so an image
+    // arriving mid-session doesn't reflow the conversation.
+    let display_box = |w: usize, h: usize| -> egui::Vec2 {
+        let scale = (340.0 / w as f32).min(460.0 / h as f32).min(1.0);
+        egui::vec2(w as f32 * scale, h as f32 * scale)
+    };
     if let Some((tex, size)) = ctx.textures.get(url) {
-        let max_w = 340.0f32;
-        let scale = (max_w / size[0] as f32).min(1.0);
-        let disp = egui::vec2(size[0] as f32 * scale, size[1] as f32 * scale);
+        let disp = display_box(size[0], size[1]);
         let resp = ui.add(egui::Image::new((tex.id(), disp)).sense(Sense::click()));
         if resp.clicked() {
             ctx.actions.push(Action::OpenImage(url.to_string()));
@@ -1307,14 +1317,27 @@ fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
         if ctx.pending_images.insert(url.to_string()) {
             ctx.actions.push(Action::FetchImage(url.to_string()));
         }
-        Frame::default()
-            .fill(ctx.pal.surface)
-            .stroke(Stroke::new(1.0, ctx.pal.outline))
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                ui.label(RichText::new("🖼 image unavailable").weak().small());
-            });
+        let box_size = ctx
+            .image_sizes
+            .get(url)
+            .map(|[w, h]| display_box(*w, *h))
+            .unwrap_or(egui::vec2(340.0, 200.0));
+        let (rect, _) =
+            ui.allocate_exact_size(box_size, Sense::hover());
+        ui.painter().rect_filled(rect, 6, ctx.pal.surface);
+        ui.painter().rect_stroke(
+            rect,
+            6,
+            Stroke::new(1.0, ctx.pal.outline),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "⏳ loading image…",
+            egui::FontId::proportional(12.0),
+            ctx.pal.secondary,
+        );
         false
     }
 }
@@ -1352,6 +1375,7 @@ mod tests {
         let messages = vec![test_message()];
         let empty: std::collections::HashMap<String, String> = HashMap::new();
         let textures: HashMap<String, (egui::TextureHandle, [usize; 2])> = HashMap::new();
+        let image_sizes: HashMap<String, [usize; 2]> = HashMap::new();
         let mut pending_images: HashSet<String> = HashSet::new();
         let mut emoji_textures: HashMap<String, egui::TextureHandle> = HashMap::new();
 
@@ -1382,6 +1406,7 @@ mod tests {
                     can_call: false,
                     call_label: None,
                     textures: &textures,
+                    image_sizes: &image_sizes,
                     pending_images,
                     emoji_textures,
                     pal: &Palette::dark(),

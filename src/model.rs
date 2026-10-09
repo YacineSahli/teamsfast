@@ -51,6 +51,11 @@ pub fn format_message_time(ts: &str) -> String {
 /// Day-separator label: `"Today"`, `"Yesterday"`, `"3 Oct"`, `"3 Oct 2025"`.
 /// Local date, matching the local bubble timestamps.
 pub fn format_day_label(ts: &str) -> String {
+    // Naive ISO (Graph calendar): the wall components ARE the label — no
+    // zone round-trip.
+    if let Some((y, m, d)) = naive_components(ts) {
+        return day_label_from(y, m, d);
+    }
     let Ok(zdt) = ts
         .trim()
         .parse::<jiff::Timestamp>()
@@ -59,6 +64,20 @@ pub fn format_day_label(ts: &str) -> String {
         return String::new();
     };
     let (y, m, d) = (zdt.year() as i64, zdt.month() as i64, zdt.day() as i64);
+    day_label_from(y, m, d)
+}
+
+/// Fixed-position naive ISO components ("YYYY-MM-DD…").
+fn naive_components(ts: &str) -> Option<(i64, i64, i64)> {
+    let t = ts.trim();
+    if t.len() < 10 || t.as_bytes().get(4) != Some(&b'-') {
+        return None;
+    }
+    let num = |a: usize| t.get(a..a + 2)?.parse::<i64>().ok();
+    Some((t.get(0..4)?.parse().ok()?, num(5)?, num(8)?))
+}
+
+fn day_label_from(y: i64, m: i64, d: i64) -> String {
     let now = jiff::Zoned::now();
     let (ny, nm, nd) = (now.year() as i64, now.month() as i64, now.day() as i64);
     let today = y == ny && m == nm && d == nd;
@@ -87,9 +106,13 @@ pub fn to_epoch_ms(raw: &str) -> Option<u64> {
     if let Ok(ms) = t.parse::<u64>() {
         return Some(ms);
     }
-    t.parse::<jiff::Timestamp>()
-        .ok()
-        .map(|ts| ts.as_millisecond().max(0) as u64)
+    if let Ok(ts) = t.parse::<jiff::Timestamp>() {
+        return Some(ts.as_millisecond().max(0) as u64);
+    }
+    // Naive ISO (Graph calendar dateTime has no zone): treat as UTC, same
+    // as format_message_time's fallback, so calendar filtering and the
+    // week/month grids agree with the rendered times.
+    parse_iso_secs(t).map(|secs| (secs.max(0) as u64) * 1000)
 }
 
 /// `"14:32"` for a chat-list timestamp (epoch-milliseconds string or ISO);
@@ -336,4 +359,16 @@ mod tests {
         assert_eq!(format_chat_time(&Some("nonsense".into())), "");
         assert_eq!(format_chat_time(&None), "");
     }
+}
+
+/// One activity entry (mentions / reactions / replies) mined from live
+/// events or from cached history at startup.
+#[derive(Clone, Debug)]
+pub struct ActivityEntry {
+    pub kind: &'static str, // "mention" | "reaction" | "reply" | "message"
+    pub chat_id: String,
+    pub chat_name: String,
+    pub who: String,
+    pub preview: String,
+    pub at_ms: u64,
 }

@@ -359,6 +359,9 @@ pub struct TeamsFastApp {
     call_media: Option<ost::calling::CallControlsHandle>,
     /// Call stage panel open (tiles + controls).
     call_view_open: bool,
+    /// Known image sizes (url -> w,h): placeholders reserve the final
+    /// box so loading images doesn't reflow the conversation.
+    image_sizes: HashMap<String, [usize; 2]>,
     /// Remote/local video textures for the stage (recreated on size change).
     remote_video_tex: Option<egui::TextureHandle>,
     local_video_tex: Option<egui::TextureHandle>,
@@ -379,6 +382,13 @@ pub struct TeamsFastApp {
     main_view: MainView,
     meetings: Vec<ost::api::MeetingInfo>,
     calendar_loading: bool,
+    /// Calendar view mode + navigation state (week/month grids).
+    cal_view: crate::ui::sections::CalView,
+    cal_week_offset: i32,
+    cal_month_offset: i32,
+    /// Window the current `meetings` set covers (unix secs), for lazy
+    /// fetches when week/month navigation leaves it.
+    calendar_fetched: Option<(u64, u64)>,
     drive_files: Vec<ost::api::SharedFile>,
     files_loading: bool,
     todo_lists: Vec<ost::api::TodoListInfo>,
@@ -439,6 +449,9 @@ pub struct TeamsFastApp {
 
     tray: Option<fastframe_tray::Tray>,
     window_hidden: bool,
+    /// Wayland toplevels cannot unmap themselves (winit no-ops
+    /// Visible(false)), so "hide" minimizes there instead of hiding.
+    on_wayland: bool,
 
     cmd: tokio::sync::mpsc::UnboundedSender<Command>,
     events: Receiver<Event>,
@@ -754,6 +767,7 @@ impl TeamsFastApp {
             egui_ctx: Some(cc.egui_ctx.clone()),
             tray: spawn_tray(cc.egui_ctx.clone()),
             window_hidden: false,
+            on_wayland: std::env::var_os("WAYLAND_DISPLAY").is_some(),
             pending_theme: settings_load.theme.clone(),
             offline: None,
             last_offline_retry: Instant::now() - Duration::from_secs(60),
@@ -768,6 +782,7 @@ impl TeamsFastApp {
             incoming: None,
             call_media: None,
             call_view_open: false,
+            image_sizes: HashMap::new(),
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
@@ -779,6 +794,10 @@ impl TeamsFastApp {
             main_view: MainView::Chat,
             meetings: Vec::new(),
             calendar_loading: false,
+            cal_view: crate::ui::sections::CalView::List,
+            cal_week_offset: 0,
+            cal_month_offset: 0,
+            calendar_fetched: None,
             drive_files: Vec::new(),
             files_loading: false,
             todo_lists: Vec::new(),
@@ -817,6 +836,18 @@ impl TeamsFastApp {
         }
     }
 
+    /// Hide the window: unmap on X11, minimize on Wayland (a Wayland
+    /// toplevel cannot unmap itself — `Visible(false)` is a no-op there,
+    /// which left both the ✕ button and the tray Hide dead on Wayland).
+    fn hide_window(&mut self, ctx: &egui::Context) {
+        if self.on_wayland {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        self.window_hidden = true;
+    }
+
     fn sync_tray(&mut self, ui: &mut egui::Ui) {
         use crate::tray::{action, TrayAction};
         let Some(tray) = self.tray.as_ref() else {
@@ -830,13 +861,15 @@ impl TeamsFastApp {
                 TrayAction::Show => {
                     ui.ctx()
                         .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    // Restore a Wayland "hidden" window: it was minimized,
+                    // not unmapped (unmap is impossible there).
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.window_hidden = false;
                 }
                 TrayAction::Hide => {
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    self.window_hidden = true;
+                    self.hide_window(ui.ctx());
                 }
                 TrayAction::Quit => {
                     // Mark a real quit so the close-to-tray handler lets
@@ -868,6 +901,23 @@ impl TeamsFastApp {
                     // Retry the session periodically; on success Ready fires.
                 }
                 Event::SelfId(id) => self.self_id = Some(id),
+                Event::ActivitySeeded(seeded) => {
+                    // Merge with anything live events already added; drop
+                    // duplicates by (chat, preview, second).
+                    for e in seeded {
+                        let dup = self.activity.iter().any(|x| {
+                            x.chat_id == e.chat_id
+                                && x.preview == e.preview
+                                && x.at_ms / 1000 == e.at_ms / 1000
+                        });
+                        if !dup {
+                            self.activity.push(e);
+                        }
+                    }
+                    self.activity
+                        .sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+                    self.activity.truncate(200);
+                }
                 Event::LoginResult(Ok(())) => {
                     self.status = "Signed in".into();
                     self.login_code = None;
@@ -1049,13 +1099,20 @@ impl TeamsFastApp {
                             "calendar" | "cal" => Some(MainView::Calendar),
                             "files" => Some(MainView::Files),
                             "todo" => Some(MainView::ToDo),
-                            "planner" => Some(MainView::Planner),
                             "activity" => Some(MainView::Activity),
                             _ => None,
                         };
                         if let Some(view) = view {
                             self.switch_view(view);
                         }
+                    }
+                    // QA hook: TEAMSFAST_CALVIEW=<list|week|month>.
+                    if let Ok(v) = std::env::var("TEAMSFAST_CALVIEW") {
+                        self.cal_view = match v.trim().to_ascii_lowercase().as_str() {
+                            "week" => crate::ui::sections::CalView::Week,
+                            "month" => crate::ui::sections::CalView::Month,
+                            _ => crate::ui::sections::CalView::List,
+                        };
                     }
                 }
                 Event::NeedLogin(e) => {
@@ -1217,7 +1274,24 @@ impl TeamsFastApp {
                 }
                 Event::ImageReady { url, rgba, size } => {
                     self.pending_images.remove(&url);
+                    let dim = [size[0], size[1]];
+                    if self.image_sizes.get(&url) != Some(&dim) {
+                        self.image_sizes.insert(url.clone(), dim);
+                        self.cmd
+                            .send(Command::SaveImageSize {
+                                url: url.clone(),
+                                w: size[0],
+                                h: size[1],
+                            })
+                            .ok();
+                    }
                     self.queued_textures.push((url, rgba, size));
+                }
+                Event::ImageSizes(sizes) => {
+                    self.image_sizes = sizes
+                        .into_iter()
+                        .map(|(u, (w, h))| (u, [w, h]))
+                        .collect();
                 }
                 Event::ImageFailed(url) => {
                     // Keep the url in pending_images: no infinite refetch
@@ -1885,6 +1959,12 @@ impl TeamsFastApp {
             }
             // ---- sections ----
             Action::ReloadSection => self.reload_section(),
+            Action::LoadCalendarRange { start_unix, days } => {
+                self.calendar_fetched = Some((start_unix, start_unix + days * 86_400));
+                self.cmd
+                    .send(Command::LoadCalendarRange { start_unix, days })
+                    .ok();
+            }
             Action::OpenLink(url) => {
                 if let Err(e) = open::that_detached(&url) {
                     self.error = Some(format!("open link: {e:#}"));
@@ -2105,7 +2185,16 @@ impl TeamsFastApp {
             }
             MainView::Calendar => {
                 self.calendar_loading = true;
-                self.cmd.send(Command::LoadCalendar).ok();
+                self.cal_week_offset = 0;
+                self.cal_month_offset = 0;
+                let start = jiff::Zoned::now().with().hour(0).minute(0).second(0).subsec_nanosecond(0).build().map(|z| z.timestamp().as_second() as u64).unwrap_or(0);
+                self.calendar_fetched = Some((start, start + 35 * 86_400));
+                self.cmd
+                    .send(Command::LoadCalendarRange {
+                        start_unix: start,
+                        days: 35,
+                    })
+                    .ok();
             }
             MainView::Files => {
                 self.files_loading = true;
@@ -2115,13 +2204,9 @@ impl TeamsFastApp {
                 self.todo_loading = true;
                 self.cmd.send(Command::LoadTodo).ok();
             }
-            MainView::Planner => {
-                self.planner_loading = true;
-                self.cmd.send(Command::LoadPlanner).ok();
-            }
-            // Shifts/Notes removed from the UI (2026-10-09); arms kept as
-            // no-ops so the enum variants stay valid for cached state.
-            MainView::Shifts | MainView::Notes | MainView::Activity => {}
+            // Shifts/Notes/Planner removed from the UI (2026-10); arms kept
+            // as no-ops so the enum variants stay valid for cached state.
+            MainView::Planner | MainView::Shifts | MainView::Notes | MainView::Activity => {}
         }
     }
 
@@ -2276,16 +2361,15 @@ impl TeamsFastApp {
     /// Activity) with the settings gear pinned at the bottom.
     fn rail(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        // OneNote and Shifts removed (2026-10-09) — thin usage; backend
-        // section handlers stay for a future return.
-        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 7] = [
+        // OneNote, Shifts and Planner removed (2026-10) — thin usage;
+        // backend section handlers stay for a future return.
+        let sections: [(MainView, &'static str, crate::theme::Icon, &str); 6] = [
             (MainView::Chat, "Chat", crate::theme::Icon::MessageSquare, "Chats (Ctrl+1)"),
             (MainView::Teams, "Teams", crate::theme::Icon::Users, "Teams & channels (Ctrl+2)"),
             (MainView::Calendar, "Calendar", crate::theme::Icon::Calendar, "Calendar (Ctrl+3)"),
             (MainView::Files, "Files", crate::theme::Icon::FileText, "Files (Ctrl+4)"),
             (MainView::ToDo, "To Do", crate::theme::Icon::SquareCheck, "To Do (Ctrl+5)"),
-            (MainView::Planner, "Planner", crate::theme::Icon::ListTodo, "Planner boards (Ctrl+6)"),
-            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+7)"),
+            (MainView::Activity, "Activity", crate::theme::Icon::Activity, "Activity (Ctrl+6)"),
         ];
         for (view, _name, icon, tip) in sections {
             let sel = self.main_view == view;
@@ -2525,9 +2609,7 @@ impl eframe::App for TeamsFastApp {
         {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            self.window_hidden = true;
+            self.hide_window(ui.ctx());
         }
 
         // Notification clicks: open that conversation and raise the window.
@@ -3119,6 +3201,7 @@ impl eframe::App for TeamsFastApp {
                 },
                 call_label: self.call.as_ref().map(|(l, _)| l.as_str()),
                 textures: &self.textures,
+                image_sizes: &self.image_sizes,
                 pending_images: &mut self.pending_images,
                 emoji_textures: &mut self.emoji_textures,
                 pal: &self.palette,
@@ -3269,6 +3352,10 @@ impl eframe::App for TeamsFastApp {
                         self.calendar_loading,
                         &self.palette,
                         &mut actions,
+                        &mut self.cal_view,
+                        &mut self.cal_week_offset,
+                        &mut self.cal_month_offset,
+                        self.calendar_fetched,
                     ),
                     MainView::Files => {
                         if let Some((chat_id, chat_name, files)) = &self.chat_files {
@@ -3304,19 +3391,13 @@ impl eframe::App for TeamsFastApp {
                         );
                         self.todo = st;
                     }
-                    MainView::Planner => crate::ui::sections::planner_panel(
-                        ui,
-                        &self.planner,
-                        self.planner_loading,
-                        &self.palette,
-                        &mut actions,
-                    ),
-                    // Shifts/Notes removed from the UI; the arms remain as
-                    // a plain note so a stale view enum can't crash.
-                    MainView::Shifts | MainView::Notes => {
+                    // Planner/Shifts/Notes removed from the UI; the arms
+                    // remain as a plain note so a stale view enum can't
+                    // crash.
+                    MainView::Planner | MainView::Shifts | MainView::Notes => {
                         crate::ui::sections::body_note(
                             ui,
-                            self.shifts_loading || self.notes_loading,
+                            false,
                             &self.palette,
                             "This section was removed.",
                         );
@@ -3402,8 +3483,7 @@ impl eframe::App for TeamsFastApp {
             (egui::Key::Num3, MainView::Calendar),
             (egui::Key::Num4, MainView::Files),
             (egui::Key::Num5, MainView::ToDo),
-            (egui::Key::Num6, MainView::Planner),
-            (egui::Key::Num7, MainView::Activity),
+            (egui::Key::Num6, MainView::Activity),
         ];
         for (key, view) in section_keys {
             if ui.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {

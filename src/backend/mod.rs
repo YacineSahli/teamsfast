@@ -62,6 +62,8 @@ pub enum Command {
     Search { query: String, from: usize },
     LoadTeams,
     FetchImage(String),
+    /// Persist a decoded image's size for layout reservation next open.
+    SaveImageSize { url: String, w: usize, h: usize },
     UploadFile { chat_id: String, path: PathBuf },
     /// Download a shared file to ~/Downloads and open it.
     DownloadFile { url: String, name: String },
@@ -89,6 +91,8 @@ pub enum Command {
     ReadReceipts(String),
     // ---- sections ----
     LoadCalendar,
+    /// Meetings for an arbitrary window (week/month navigation).
+    LoadCalendarRange { start_unix: u64, days: u64 },
     LoadFiles,
     LoadTodo,
     LoadTodoTasks(String),
@@ -172,6 +176,11 @@ pub enum Event {
     /// Device-code login: the URL + code to show in the GUI.
     LoginCode { url: String, code: String },
     Ready,
+    /// Cached-history activity (mentions/replies) mined once at startup.
+    ActivitySeeded(Vec<crate::model::ActivityEntry>),
+    /// Known image sizes from the archive (url -> w,h) for placeholder
+    /// reservation; sent once at startup.
+    ImageSizes(HashMap<String, (usize, usize)>),
     /// Our own display name (Graph whoami).
     SelfName(String),
     /// Our own Entra object id (for own-message detection).
@@ -391,6 +400,59 @@ fn offline_or_login(ses: &Session, tx: &Sender<Event>, error: String) {
     }
 }
 
+/// Seed the Activity feed from cached history: mentions of us (@items
+/// referencing our Entra id) and replies. Live events keep appending on
+/// top. Quiet at startup is what made the Activity tab read as broken.
+fn seed_activity(ses: &Session, tx: &Sender<Event>) {
+    use crate::model::ActivityEntry;
+    let Some(archive) = ses.archive.as_ref() else {
+        return;
+    };
+    let Ok(chats) = archive.load_chats() else {
+        return;
+    };
+    let self_id = ses.self_id.clone().unwrap_or_default();
+    let mut entries: Vec<ActivityEntry> = Vec::new();
+    for chat in chats.iter().take(15) {
+        let Ok(msgs) = archive.load_messages(&chat.id, 50) else {
+            continue;
+        };
+        for m in msgs {
+            let mention = !self_id.is_empty() && m.raw.contains("<at") && m.raw.contains(&self_id);
+            let reply = m.reply_to.is_some();
+            if !mention && !reply {
+                continue;
+            }
+            let preview: String = m
+                .content
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(140)
+                .collect();
+            entries.push(ActivityEntry {
+                kind: if mention { "mention" } else { "reply" },
+                chat_id: chat.id.clone(),
+                chat_name: if chat.name.is_empty() || chat.name == "[Direct message]" {
+                    "Direct message".to_string()
+                } else {
+                    chat.name.clone()
+                },
+                who: m.sender.clone(),
+                preview,
+                at_ms: crate::model::to_epoch_ms(&m.timestamp).unwrap_or(0),
+            });
+        }
+    }
+    if entries.is_empty() {
+        return;
+    }
+    entries.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+    entries.truncate(200);
+    let _ = tx.send(Event::ActivitySeeded(entries));
+}
+
 async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
     let mut ses = Session::new();
     let mut trouter_started = false;
@@ -399,6 +461,14 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
         ($ev:expr) => {{
             let _ = tx.send($ev);
         }};
+    }
+
+    // Persisted image sizes -> the UI reserves final boxes on open.
+    if let Some(archive) = ses.archive.as_ref()
+        && let Ok(sizes) = archive.load_image_sizes()
+        && !sizes.is_empty()
+    {
+        let _ = tx.send(Event::ImageSizes(sizes));
     }
 
     while let Some(cmd) = rx.recv().await {
@@ -428,6 +498,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                             send!(Event::SelfId(id));
                         }
                         send!(Event::Ready);
+                        seed_activity(&ses, &tx);
                     }
                     Err(e) => offline_or_login(&ses, &tx, e),
                 }
@@ -441,6 +512,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                         send!(Event::SelfId(id));
                     }
                     send!(Event::Ready);
+                    seed_activity(&ses, &tx);
                 }
                 Err(e) => offline_or_login(&ses, &tx, e),
             },
@@ -516,6 +588,13 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::FetchImage(url) => {
                 media::fetch_image(&ses, &tx, &url).await;
+            }
+            Command::SaveImageSize { url, w, h } => {
+                if let Some(archive) = ses.archive.as_ref()
+                    && let Err(e) = archive.save_image_size(&url, w, h)
+                {
+                    log::debug!("archive save image size: {e:#}");
+                }
             }
             Command::UploadFile { chat_id, path } => {
                 media::upload(&ses, &tx, &chat_id, &path).await;
@@ -609,6 +688,9 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             // ---- sections ----
             Command::LoadCalendar => {
                 sections::calendar(&ses, &tx).await;
+            }
+            Command::LoadCalendarRange { start_unix, days } => {
+                sections::calendar_range(&ses, &tx, start_unix, days).await;
             }
             Command::LoadFiles => {
                 sections::files(&ses, &tx).await;
