@@ -3433,7 +3433,7 @@ impl eframe::App for TeamsFastApp {
                 .resizable(true)
                 .show(ui, |ui| {
                     let mut actions: Vec<Action> = Vec::new();
-                    search_panel(
+                    let close = search_panel(
                         ui,
                         &self.search_hits,
                         self.search_more,
@@ -3444,6 +3444,9 @@ impl eframe::App for TeamsFastApp {
                         &self.palette,
                         &mut actions,
                     );
+                    if close {
+                        self.search_open = false;
+                    }
                     for a in actions {
                         self.apply(a);
                     }
