@@ -154,6 +154,14 @@ remaining Phase 2 item.
   anchor tooltip-style above the pointer. TEAMSFAST_HOVER is exclusive
   with pointer hover (Xvfb's phantom pointer otherwise paints a second
   bar mid-shot).
+- Hover-bar buttons DEAD for months (reply/forward/react/pin/edit/
+  delete): two stacked bugs — the actions collected into a RefCell sink
+  nothing drained, and egui's hit test is one frame behind a MOVING
+  Area (the test bar re-anchors after the measured-height kick-in, so
+  click tests need a settle frame first). `Order::Tooltip` ALLOWS
+  interaction (the click-through theory was wrong); the Area is
+  Foreground now for modal z-order sanity. Regression test:
+  `hover_bar_buttons_push_actions`.
 - `add_space` in a `ui.vertical` adds VERTICAL space — indenting needs a
   horizontal wrapper (OneNote section indent shipped as a no-op).
 - Call timers: one epoch only — `call_connected_at` (first frame the

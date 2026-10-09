@@ -1011,7 +1011,10 @@ fn bubble_parts(
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = actions_sink.clone();
         let bar = egui::Area::new(row_id.with("toolbar"))
-            .order(egui::Order::Tooltip)
+            // Foreground, not Tooltip: tooltip-order layers are
+            // click-through on this egui — every button in the bar was
+            // dead (menus/popups use Foreground for the same reason).
+            .order(egui::Order::Foreground)
             .fixed_pos(anchor)
             .show(ui.ctx(), |ui| {
                 ui.horizontal(|ui| {
@@ -1036,7 +1039,17 @@ fn bubble_parts(
                                     }
                                     .fill(Color32::TRANSPARENT)
                                     .min_size(egui::vec2(32.0, 28.0));
-                                    if ui.add(btn).on_hover_text("React").clicked() {
+                                    let r = ui.add(btn).on_hover_text("React");
+                                    if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
+                                        eprintln!(
+                                            "react btn rect={:?} hovered={} clicked={} contains_ptr={}",
+                                            r.rect,
+                                            r.hovered(),
+                                            r.clicked(),
+                                            r.contains_pointer()
+                                        );
+                                    }
+                                    if r.clicked() {
                                         sink.borrow_mut().push(Action::React {
                                             message_id: m.id.clone(),
                                             emoji: (*e).to_string(),
@@ -1137,9 +1150,16 @@ fn bubble_parts(
                 });
             })
             .response;
+        // The bar's buttons collect into `sink` because they live in a
+        // nested closure over `ui`; drain it here or the clicks vanish
+        // (reply/forward/react/pin/edit/delete were silently dead).
+        for a in actions_sink.borrow().iter() {
+            ctx.actions.push(a.clone());
+        }
+        actions_sink.borrow_mut().clear();
         if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
-            log::info!(
-                "hover bar msg={} rect={:?} bubble={:?} forced={in_bubble}/{in_bar}",
+            eprintln!(
+                "hover bar msg={} rect={:?} bubble={:?} clip={clip:?}",
                 &m.id[m.id.len().saturating_sub(6)..],
                 bar.rect,
                 bubble_rect
@@ -1299,3 +1319,138 @@ fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Palette;
+
+    fn test_message() -> MessageInfo {
+        MessageInfo {
+            id: "1111111111111111111".into(),
+            sender_mri: "8:orgid:aaaa-bbbb".into(),
+            sender: "Alice".into(),
+            timestamp: "2026-10-09T10:00:00.000Z".into(),
+            content: "hello there".into(),
+            raw: "<p>hello there</p>".into(),
+            reactions: vec![],
+            reply_to: None,
+            client_message_id: None,
+        }
+    }
+
+    /// Regression: the hover bar's buttons collected actions into a RefCell
+    /// sink that nothing drained — reply/forward/react/pin/edit/delete were
+    /// silently dead. Sweep-click the forced-open bar and require actions.
+    #[test]
+    fn hover_bar_buttons_push_actions() {
+        crate::emoji::setup();
+        // Safety: no other test draws conversation rows concurrently.
+        unsafe { std::env::set_var("TEAMSFAST_HOVER", "1") };
+        unsafe { std::env::set_var("TEAMSFAST_LAYOUT_DEBUG", "1") };
+
+        let messages = vec![test_message()];
+        let empty: std::collections::HashMap<String, String> = HashMap::new();
+        let textures: HashMap<String, (egui::TextureHandle, [usize; 2])> = HashMap::new();
+        let mut pending_images: HashSet<String> = HashSet::new();
+        let mut emoji_textures: HashMap<String, egui::TextureHandle> = HashMap::new();
+
+        let egui_ctx = egui::Context::default();
+        let draw = |egui_ctx: &egui::Context,
+                    input: egui::RawInput,
+                    emoji_textures: &mut HashMap<String, egui::TextureHandle>,
+                    pending_images: &mut HashSet<String>|
+         -> Vec<Action> {
+            let mut actions: Vec<Action> = Vec::new();
+            let mut out = egui_ctx.run_ui(input, |ui| {
+                let mut ctx = ConvCtx {
+                    chat_name: "Chat".into(),
+                    chat_id: "19:chat@thread.v2".into(),
+                    messages: &messages,
+                    members: &empty,
+                    self_name: "Me".into(),
+                    self_id: Some("other-id"),
+                    older_link: None,
+                    loading_older: false,
+                    typing_user: None,
+                    edit: None,
+                    reply: None,
+                    uploads: &[],
+                    pending: &[],
+                    receipts: &empty2(),
+                    pinned: &[],
+                    can_call: false,
+                    call_label: None,
+                    textures: &textures,
+                    pending_images,
+                    emoji_textures,
+                    pal: &Palette::dark(),
+                    actions: &mut actions,
+                };
+                conversation_messages(ui, &mut ctx);
+            });
+            out.textures_delta.clear();
+            actions
+        };
+
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let blank = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+        // Frame 1: lay out (hook forces the bar open on the last message).
+        let _ = draw(&egui_ctx, blank.clone(), &mut emoji_textures, &mut pending_images);
+        // Frame 2: the bar re-anchors with the measured height — settle so
+        // the persisted rect is the one every later frame will paint.
+        let _ = draw(&egui_ctx, blank, &mut emoji_textures, &mut pending_images);
+
+        let bar = egui_ctx.data(|d| {
+            d.get_temp::<egui::Rect>(egui::Id::new(("msg-hover", &messages[0].id)))
+        })
+        .expect("forced hover bar must persist its rect");
+
+        // Frame 2..n: hover a spot, then press+release the next frame;
+        // something must arrive.
+        let mut got: Vec<Action> = Vec::new();
+        for i in 1..20 {
+            let x = bar.left() + bar.width() * (i as f32 / 20.0);
+            let y = bar.center().y;
+            let pos = egui::pos2(x, y);
+            let hover = egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::PointerMoved(pos)],
+                ..Default::default()
+            };
+            let _ = draw(&egui_ctx, hover, &mut emoji_textures, &mut pending_images);
+            let press = egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                ..Default::default()
+            };
+            let _ = draw(&egui_ctx, press, &mut emoji_textures, &mut pending_images);
+            let release = egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+                ..Default::default()
+            };
+            got.extend(draw(&egui_ctx, release, &mut emoji_textures, &mut pending_images));
+        }
+        unsafe { std::env::remove_var("TEAMSFAST_HOVER") };
+        unsafe { std::env::remove_var("TEAMSFAST_LAYOUT_DEBUG") };
+        assert!(
+            !got.is_empty(),
+            "clicks across the hover bar must produce actions (sink drained)"
+        );
+    }
+
+    fn empty2() -> std::collections::HashMap<String, Vec<String>> {
+        HashMap::new()
+    }
+}

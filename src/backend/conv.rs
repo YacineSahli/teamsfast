@@ -20,6 +20,26 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
         return;
     };
 
+    // Cached history paints FIRST — before any network round-trip. The
+    // roster fetch below is an RTT, and making the user wait for it before
+    // a cached conversation appeared read as "clicking a chat is slow".
+    // Message rows carry their own sender names, so the cached paint is
+    // complete without the roster (which arrives with the network refresh).
+    if let Some(archive) = ses.archive.as_ref()
+        && let Ok(cached) = archive.load_messages(&chat_id, 50)
+        && !cached.is_empty()
+    {
+        log::debug!("open_chat: cached {} messages painted before network", cached.len());
+        let _ = tx.send(Event::Messages {
+            older_link: None,
+            prepend: false,
+            chat_id: chat_id.clone(),
+            messages: cached,
+            members: HashMap::new(),
+            resolved_name: None,
+        });
+    }
+
     let mut members: HashMap<String, String> = HashMap::new();
     let mut resolved_name: Option<String> = None;
     // Roster-name resolution is ONLY meaningful for 1:1 chats: in a
@@ -70,21 +90,6 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
                 name: name.clone(),
             });
         }
-    }
-
-    // Cached history paints instantly (also works offline).
-    if let Some(archive) = ses.archive.as_ref()
-        && let Ok(cached) = archive.load_messages(&chat_id, 50)
-        && !cached.is_empty()
-    {
-        let _ = tx.send(Event::Messages {
-            older_link: None,
-            prepend: false,
-            chat_id: chat_id.clone(),
-            messages: cached,
-            members: HashMap::new(),
-            resolved_name: None,
-        });
     }
 
     match read_messages_page(c, &chat_id, 50, None).await {
