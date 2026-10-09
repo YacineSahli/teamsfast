@@ -45,6 +45,7 @@ egui_extras = { version = "0.36", features = ["svg", "image"] }
 ost = { git = "https://github.com/YacineSahli/teams-core", package = "teams-cli", features = [
     "audio",
     "video-cam",
+    "screen",
 ] }
 
 # The fastframe UI stack: colour emoji, Inter + platform fonts, Lucide
@@ -85,3 +86,6 @@ rfd = "0.15"
 
 [profile.release]
 lto = "thin"
+
+[patch."https://github.com/YacineSahli/teams-core"]
+teams-cli = { path = "teams-core" }

@@ -86,46 +86,52 @@ pub fn settings_window(
         });
         ui.add_space(4.0);
         {
-            // Tab strip.
-            ui.horizontal(|ui| {
-                let mut tab = st.tab;
-                for t in [
-                    SettingsTab::General,
-                    SettingsTab::Appearance,
-                    SettingsTab::Notifications,
-                    SettingsTab::Account,
-                    SettingsTab::Storage,
-                    SettingsTab::About,
-                ] {
-                    let sel = tab == Some(t);
-                    let resp = ui.selectable_label(
-                        sel,
-                        // Selected = accent pill; accent-on-accent text is
-                        // invisible, so the selected tab uses on_accent.
-                        RichText::new(t.title()).strong().small().color(if sel {
-                            pal.on_accent
-                        } else {
-                            pal.text
-                        }),
-                    );
-                    if sel {
-                        // Underline the active tab — colour alone is subtle.
-                        let y = resp.rect.bottom() + 1.5;
-                        ui.painter().line_segment(
-                            [resp.rect.left_top() + egui::vec2(2.0, y - resp.rect.top()),
-                             resp.rect.right_top() + egui::vec2(-2.0, y - resp.rect.top())],
-                            egui::Stroke::new(2.0, pal.accent),
-                        );
-                    }
-                    if resp.clicked() {
-                        tab = Some(t);
-                        st.confirm_clear = false;
-                        st.confirm_signout = false;
-                    }
+            // Segmented tab control: recessed track, one accent chip for
+            // the active tab, even chip widths.
+            let tabs = [
+                SettingsTab::General,
+                SettingsTab::Appearance,
+                SettingsTab::Notifications,
+                SettingsTab::Account,
+                SettingsTab::Storage,
+                SettingsTab::About,
+            ];
+            ui.add_space(2.0);
+            let track_h = 30.0;
+            let (track, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), track_h),
+                egui::Sense::hover(),
+            );
+            ui.painter().rect_filled(track, 8, pal.window);
+            let chip_w = track.width() / tabs.len() as f32;
+            let mut tab = st.tab;
+            for (i, t) in tabs.iter().enumerate() {
+                let rect = egui::Rect::from_min_size(
+                    track.left_top() + egui::vec2(chip_w * i as f32 + 2.0, 2.0),
+                    egui::vec2(chip_w - 4.0, track_h - 4.0),
+                );
+                let sel = tab == Some(*t);
+                let resp = ui.allocate_rect(rect, egui::Sense::click());
+                let p = ui.painter();
+                if sel {
+                    p.rect_filled(rect.shrink(1.0), 7, pal.accent);
+                } else if resp.hovered() {
+                    p.rect_filled(rect.shrink(1.0), 7, pal.surface_hover);
                 }
-                st.tab = tab;
-            });
-            ui.separator();
+                p.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    t.title(),
+                    egui::FontId::proportional(11.5),
+                    if sel { pal.on_accent } else { pal.secondary },
+                );
+                if resp.clicked() {
+                    tab = Some(*t);
+                    st.confirm_clear = false;
+                    st.confirm_signout = false;
+                }
+            }
+            ui.add_space(6.0);
 
             let tab = st.tab;
             egui::ScrollArea::vertical()
@@ -133,10 +139,10 @@ pub fn settings_window(
                 .show(ui, |ui| match tab {
                     Some(SettingsTab::General) => general(ui, settings, info, pal, actions),
                     Some(SettingsTab::Appearance) => appearance(ui, settings, info, pal, actions),
-                    Some(SettingsTab::Notifications) => notifications(ui, settings),
-                    Some(SettingsTab::Account) => account(ui, st, info, actions),
-                    Some(SettingsTab::Storage) => storage(ui, st, info, actions),
-                    _ => about(ui),
+                    Some(SettingsTab::Notifications) => notifications(ui, settings, pal),
+                    Some(SettingsTab::Account) => account(ui, st, info, pal, actions),
+                    Some(SettingsTab::Storage) => storage(ui, st, info, pal, actions),
+                    _ => about(ui, pal),
                 });
         }
     });
@@ -151,6 +157,14 @@ fn toggle(ui: &mut Ui, label: &str, value: &mut bool) -> bool {
     ui.checkbox(value, label).changed()
 }
 
+/// Section header: small, letter-spaced-ish secondary label with breathing
+/// room above — the rhythm that made settings read as one long list.
+fn section(ui: &mut Ui, pal: &crate::theme::Palette, title: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(title.to_uppercase()).small().strong().color(pal.secondary));
+    ui.add_space(2.0);
+}
+
 fn general(
     ui: &mut Ui,
     settings: &mut Settings,
@@ -158,7 +172,7 @@ fn general(
     pal: &crate::theme::Palette,
     actions: &mut Vec<Action>,
 ) {
-    ui.strong("Startup");
+    section(ui, pal, "Startup");
     if toggle(
         ui,
         "Connect live (push updates) automatically",
@@ -174,13 +188,13 @@ fn general(
     }
     ui.add_space(8.0);
 
-    ui.strong("Privacy");
+    section(ui, pal, "Privacy");
     if toggle(ui, "Ghost mode — hold back read receipts", &mut settings.ghost_mode) {
         theme::save_settings(settings);
     }
     ui.add_space(8.0);
 
-    ui.strong("Window");
+    section(ui, pal, "Window");
     if toggle(
         ui,
         "Close button hides to the tray (quit from the tray menu)",
@@ -190,7 +204,7 @@ fn general(
     }
     ui.add_space(8.0);
 
-    ui.strong("Connection");
+    section(ui, pal, "Connection");
     ui.horizontal(|ui| {
         let dot = if info.offline {
             pal.warning
@@ -214,12 +228,12 @@ fn general(
             .small()
             .weak(),
     );
-    if ui.button("Refresh chats now").clicked() {
+    if crate::ui::widgets::btn::secondary(ui, pal, "Refresh chats now").clicked() {
         actions.push(Action::Refresh);
     }
     ui.add_space(8.0);
-    ui.strong("Audio");
-    if ui.button("Test call (echo bot)").clicked() {
+    section(ui, pal, "Audio");
+    if crate::ui::widgets::btn::secondary(ui, pal, "Test call (echo bot)").clicked() {
         actions.push(Action::TestCall);
     }
     ui.label(
@@ -236,7 +250,7 @@ fn appearance(
     pal: &crate::theme::Palette,
     actions: &mut Vec<Action>,
 ) {
-    ui.strong("Theme");
+    section(ui, pal, "Theme");
     ui.label(
         RichText::new("Built-in palettes, the shared fastframe presets, and any JSON files in ~/.config/teamsfast/themes/.")
             .small()
@@ -305,7 +319,7 @@ fn appearance(
     }
     ui.add_space(10.0);
 
-    ui.strong("Text size");
+    section(ui, pal, "Text size");
     ui.horizontal(|ui| {
         let mut z = settings.zoom;
         let slider = ui.add(
@@ -319,7 +333,7 @@ fn appearance(
             theme::save_settings(settings);
             ui.ctx().set_zoom_factor(z);
         }
-        if ui.small_button("Reset").clicked() {
+        if crate::ui::widgets::btn::ghost(ui, pal, "Reset").clicked() {
             settings.zoom = 1.0;
             theme::save_settings(settings);
             ui.ctx().set_zoom_factor(1.0);
@@ -335,8 +349,8 @@ fn appearance(
     }
 }
 
-fn notifications(ui: &mut Ui, settings: &mut Settings) {
-    ui.strong("Desktop notifications");
+fn notifications(ui: &mut Ui, settings: &mut Settings, pal: &crate::theme::Palette) {
+    section(ui, pal, "Desktop notifications");
     if toggle(ui, "Notify for incoming messages", &mut settings.notify) {
         theme::save_settings(settings);
     }
@@ -361,7 +375,7 @@ fn notifications(ui: &mut Ui, settings: &mut Settings) {
             .weak(),
     );
     ui.add_space(10.0);
-    ui.strong("Quiet hours");
+    section(ui, pal, "Quiet hours");
     let mut q = settings.quiet_hours.clone().unwrap_or_default();
     let mut enabled = settings.quiet_hours.is_some();
     if ui.checkbox(&mut enabled, "Suppress notifications between").changed() {
@@ -396,8 +410,14 @@ fn notifications(ui: &mut Ui, settings: &mut Settings) {
     }
 }
 
-fn account(ui: &mut Ui, st: &mut SettingsUi, info: &SettingsInfo<'_>, actions: &mut Vec<Action>) {
-    ui.strong("Signed in");
+fn account(
+    ui: &mut Ui,
+    st: &mut SettingsUi,
+    info: &SettingsInfo<'_>,
+    pal: &crate::theme::Palette,
+    actions: &mut Vec<Action>,
+) {
+    section(ui, pal, "Signed in");
     if info.signed_in {
         ui.label(if info.self_name.is_empty() {
             "Microsoft account"
@@ -411,31 +431,37 @@ fn account(ui: &mut Ui, st: &mut SettingsUi, info: &SettingsInfo<'_>, actions: &
         );
         ui.add_space(8.0);
         if !st.confirm_signout {
-            if ui.button("Sign out").clicked() {
+            if crate::ui::widgets::btn::danger(ui, pal, "Sign out").clicked() {
                 st.confirm_signout = true;
             }
         } else {
             ui.horizontal(|ui| {
                 ui.label("Remove tokens on this machine?");
-                if ui.button("Yes, sign out").clicked() {
+                if crate::ui::widgets::btn::danger(ui, pal, "Yes, sign out").clicked() {
                     st.confirm_signout = false;
                     actions.push(Action::SignOut);
                 }
-                if ui.button("Cancel").clicked() {
+                if crate::ui::widgets::btn::secondary(ui, pal, "Cancel").clicked() {
                     st.confirm_signout = false;
                 }
             });
         }
     } else {
         ui.label(RichText::new("Not signed in.").weak());
-        if ui.button("Sign in…").clicked() {
+        if crate::ui::widgets::btn::primary(ui, pal, "Sign in…").clicked() {
             actions.push(Action::SignIn);
         }
     }
 }
 
-fn storage(ui: &mut Ui, st: &mut SettingsUi, info: &SettingsInfo<'_>, actions: &mut Vec<Action>) {
-    ui.strong("Local archive");
+fn storage(
+    ui: &mut Ui,
+    st: &mut SettingsUi,
+    info: &SettingsInfo<'_>,
+    pal: &crate::theme::Palette,
+    actions: &mut Vec<Action>,
+) {
+    section(ui, pal, "Local archive");
     ui.label(format!(
         "{} chats and {} messages cached (SQLCipher-encrypted, ~/.local/state/teamsfast/archive.db).",
         info.chats_cached, info.messages_cached
@@ -447,29 +473,29 @@ fn storage(ui: &mut Ui, st: &mut SettingsUi, info: &SettingsInfo<'_>, actions: &
     );
     ui.add_space(6.0);
     if !st.confirm_clear {
-        if ui.button("Clear local archive…").clicked() {
+        if crate::ui::widgets::btn::danger(ui, pal, "Clear local archive…").clicked() {
             st.confirm_clear = true;
         }
     } else {
         ui.horizontal(|ui| {
             ui.label("Delete all cached chats and messages?");
-            if ui.button("Yes, clear").clicked() {
+            if crate::ui::widgets::btn::danger(ui, pal, "Yes, clear").clicked() {
                 st.confirm_clear = false;
                 actions.push(Action::ClearArchive);
             }
-            if ui.button("Cancel").clicked() {
+            if crate::ui::widgets::btn::secondary(ui, pal, "Cancel").clicked() {
                 st.confirm_clear = false;
             }
         });
     }
     ui.add_space(10.0);
-    ui.strong("Files");
+    section(ui, pal, "Files");
     if ui.button("Open data folder (logs, archive)").clicked() {
         actions.push(Action::OpenStateFolder);
     }
 }
 
-fn about(ui: &mut Ui) {
+fn about(ui: &mut Ui, pal: &crate::theme::Palette) {
     ui.strong(format!("TeamsFast {VERSION}"));
     ui.label("A native Microsoft Teams client for Linux.");
     ui.label(RichText::new("Rust + egui on the fastframe stack and the teams-core protocol library — no browser engine anywhere.").small().weak());

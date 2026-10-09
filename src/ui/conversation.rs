@@ -452,13 +452,20 @@ fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
                                 )
                                 .on_hover_text(err);
                                 if ui
-                                    .small_button(RichText::new("Retry").small())
+                                    .add(
+                                        egui::Button::new(RichText::new("Retry").small())
+                                            .fill(ctx.pal.accent)
+                                            .corner_radius(egui::CornerRadius::same(8)),
+                                    )
                                     .clicked()
                                 {
                                     ctx.actions.push(Action::RetrySend(p.cmid.clone()));
                                 }
                                 if ui
-                                    .small_button(RichText::new("Discard").small())
+                                    .add(
+                                        egui::Button::new(RichText::new("Discard").small())
+                                            .fill(Color32::TRANSPARENT),
+                                    )
                                     .clicked()
                                 {
                                     ctx.actions

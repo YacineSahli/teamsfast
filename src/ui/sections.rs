@@ -122,18 +122,16 @@ pub fn calendar_panel(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+            if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
                 actions.push(Action::ReloadSection);
             }
-            if ui
-                .small_button(RichText::new("Join with link…").small())
+            if crate::ui::widgets::btn::ghost(ui, pal, "Join link…")
                 .on_hover_text("Paste a Teams meeting link or ID")
                 .clicked()
             {
                 actions.push(Action::ShowJoinDialog);
             }
-            if ui
-                .small_button(RichText::new("Meet now").small())
+            if crate::ui::widgets::btn::secondary(ui, pal, "Meet now")
                 .on_hover_text("Create an instant meeting and join it")
                 .clicked()
             {
@@ -172,7 +170,7 @@ pub fn calendar_panel(
                         CalView::List => {}
                     }
                 }
-                if ui.small_button("Today").clicked() {
+                if crate::ui::widgets::btn::ghost(ui, pal, "Today").clicked() {
                     *week_offset = 0;
                     *month_offset = 0;
                 }
@@ -746,8 +744,7 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                                 }),
                             });
                         }
-                        if ui
-                            .small_button(RichText::new("Copy link").small())
+                        if crate::ui::widgets::btn::ghost(ui, pal, "Copy link")
                             .clicked()
                         {
                             actions.push(Action::CopyText(url.clone()));
@@ -775,7 +772,7 @@ pub fn files_panel(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+            if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
                 actions.push(Action::ReloadSection);
             }
         });
@@ -987,7 +984,7 @@ pub fn todo_panel(
             {
                 st.show_completed = !st.show_completed;
             }
-            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+            if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
                 actions.push(Action::ReloadSection);
             }
         });
@@ -1248,7 +1245,7 @@ pub fn planner_panel(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+            if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
                 actions.push(Action::ReloadSection);
             }
         });
@@ -1372,7 +1369,7 @@ pub fn shifts_panel(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+            if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
                 actions.push(Action::ReloadSection);
             }
         });
@@ -1480,7 +1477,7 @@ pub fn notes_panel(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+            if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
                 actions.push(Action::ReloadSection);
             }
         });
