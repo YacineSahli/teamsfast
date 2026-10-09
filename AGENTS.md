@@ -168,6 +168,21 @@ remaining Phase 2 item.
   phase watch reads connected). Banner and stage share it; counting from
   placement showed two different durations on screen at once.
 
+### Wayland window control (user's session is Wayland)
+- winit 0.30 Wayland: `set_visible` is a NO-OP, `set_minimized(false)`
+  warns "Unminimizing is ignored", `focus_window` is literally `{}` — an
+  app cannot hide-by-unmap, restore, or raise itself. Hide-to-tray
+  therefore MINIMIZES on Wayland (`App::hide_window`, `on_wayland` flag
+  from `WAYLAND_DISPLAY`); X11 keeps real unmapping. Tray "show" sends
+  Visible(true)+Minimized(false)+Focus: correct on X11, a no-op on
+  Wayland — restoring is on the compositor (taskbar/overview). A real
+  fix needs fastframe-tray waker retargeting + close/reopen-window
+  hand-off; not done.
+- `Action::LoadCalendarRange` + `Command::LoadCalendarRange` fetch
+  arbitrary calendarView windows for week/month navigation; default
+  calendar fetch is 35 days. Graph calendar dateTimes are NAIVE — parse
+  wall components (`meeting_span`) or they shift by the local offset.
+
 ### Build env (this machine)
 - The call stack needs `alsa-sys` → alsa.pc. System has runtime
   libasound only; headers come from the Flatpak GNOME SDK via a local

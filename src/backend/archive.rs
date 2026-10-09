@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use ost::api::{ChatInfo, MessageInfo};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct Archive {
@@ -85,6 +86,11 @@ impl Archive {
             CREATE TABLE IF NOT EXISTS read_state (
                 chat_id TEXT PRIMARY KEY,
                 last_read_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS image_sizes (
+                url TEXT PRIMARY KEY,
+                w INTEGER NOT NULL,
+                h INTEGER NOT NULL
             );",
         )?;
         Ok(Self { conn })
@@ -195,6 +201,35 @@ impl Archive {
     }
 
     /// Replace the cached chat list.
+    /// Remember a decoded image's size so the next open reserves the
+    /// final box in the bubble instead of reflowing when it arrives.
+    pub fn save_image_size(&self, url: &str, w: usize, h: usize) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO image_sizes (url, w, h) VALUES (?1, ?2, ?3)",
+            rusqlite::params![url, w as i64, h as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_image_sizes(&self) -> Result<HashMap<String, (usize, usize)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT url, w, h FROM image_sizes")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)? as usize,
+                r.get::<_, i64>(2)? as usize,
+            ))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (url, w, h) = row?;
+            map.insert(url, (w, h));
+        }
+        Ok(map)
+    }
+
     pub fn save_chats(&self, chats: &[ChatInfo]) -> Result<()> {
         let mut stmt = self
             .conn

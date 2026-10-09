@@ -31,30 +31,99 @@ pub fn body_note(ui: &mut Ui, spinner: bool, pal: &Palette, text: &str) {
     );
 }
 
+/// Calendar view mode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CalView {
+    List,
+    Week,
+    Month,
+}
+
+const DAY_HEADERS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const WEEK_HOURS: (i32, i32) = (7, 21); // 07:00 – 21:00 grid
+const HOUR_PX: f32 = 36.0;
+
+/// Wall-clock civil date + minute-of-day + duration of a meeting. Graph
+/// calendar dateTimes are NAIVE (the meeting's own zone) — parse the wall
+/// components directly so grid blocks sit where the printed times say, not
+/// shifted by the local offset.
+fn meeting_span(m: &MeetingInfo) -> Option<(jiff::civil::Date, i32, i32)> {
+    let num = |t: &str, a: usize, n: usize| t.get(a..a + n)?.parse::<i64>().ok();
+    let t = m.start.as_deref()?;
+    let date = jiff::civil::date(
+        i16::try_from(num(t, 0, 4)?).ok()?,
+        i8::try_from(num(t, 5, 2)?).ok()?,
+        i8::try_from(num(t, 8, 2)?).ok()?,
+    );
+    let start_min = (num(t, 11, 2)? * 60 + num(t, 14, 2)?) as i32;
+    let dur = m
+        .end
+        .as_deref()
+        .and_then(|e| {
+            let edate = jiff::civil::date(
+                i16::try_from(num(e, 0, 4)?).ok()?,
+                i8::try_from(num(e, 5, 2)?).ok()?,
+                i8::try_from(num(e, 8, 2)?).ok()?,
+            );
+            let emin = (num(e, 11, 2)? * 60 + num(e, 14, 2)?) as i32;
+            let days = (edate - date).get_days();
+            Some((emin + days * 1440 - start_min).clamp(15, 14 * 60))
+        })
+        .unwrap_or(30);
+    Some((date, start_min, dur))
+}
+
+fn today_date() -> jiff::civil::Date {
+    jiff::Zoned::now().date()
+}
+
 pub fn calendar_panel(
     ui: &mut Ui,
     meetings: &[MeetingInfo],
     loading: bool,
     pal: &Palette,
     actions: &mut Vec<Action>,
+    view: &mut CalView,
+    week_offset: &mut i32,
+    month_offset: &mut i32,
+    fetched: Option<(u64, u64)>,
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("Calendar").strong().size(17.0));
-        ui.label(
-            RichText::new("next 7 days")
-                .small()
-                .weak(),
-        );
+        // Range label per view.
+        let label = match view {
+            CalView::List => "next 7 days".to_string(),
+            CalView::Week => {
+                let monday = today_date()
+                    .checked_add(jiff::ToSpan::days(
+                        -i64::from(today_date().weekday().to_monday_zero_offset())
+                            + 7 * i64::from(*week_offset),
+                    ))
+                    .unwrap_or_else(|_| today_date());
+                let sunday = monday.checked_add(jiff::ToSpan::days(6)).unwrap_or(monday);
+                format!(
+                    "{} {} – {} {}",
+                    monday.day(),
+                    MONTH_ABBR(monday.month()),
+                    sunday.day(),
+                    MONTH_ABBR(sunday.month()),
+                )
+            }
+            CalView::Month => {
+                let first = today_date()
+                    .first_of_month()
+                    .checked_add(jiff::ToSpan::months(i64::from(*month_offset)))
+                    .unwrap_or_else(|_| today_date().first_of_month());
+                format!("{} {}", MONTH_ABBR(first.month()), first.year())
+            }
+        };
+        ui.label(RichText::new(label).small().weak());
         if loading {
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button(RichText::new("Meet now").small())
-                .on_hover_text("Create an instant meeting and join it")
-                .clicked()
-            {
-                actions.push(Action::MeetNow);
+            if ui.small_button(RichText::new("Refresh").small()).clicked() {
+                actions.push(Action::ReloadSection);
             }
             if ui
                 .small_button(RichText::new("Join with link…").small())
@@ -63,43 +132,563 @@ pub fn calendar_panel(
             {
                 actions.push(Action::ShowJoinDialog);
             }
-            if ui.small_button(RichText::new("Refresh").small()).clicked() {
-                actions.push(Action::ReloadSection);
+            if ui
+                .small_button(RichText::new("Meet now").small())
+                .on_hover_text("Create an instant meeting and join it")
+                .clicked()
+            {
+                actions.push(Action::MeetNow);
+            }
+            ui.separator();
+            // View toggle + period navigation.
+            let mut toggle = None;
+            for (v, name) in [
+                (CalView::List, "List"),
+                (CalView::Week, "Week"),
+                (CalView::Month, "Month"),
+            ] {
+                if ui
+                    .selectable_label(*view == v, RichText::new(name).small())
+                    .clicked()
+                {
+                    toggle = Some(v);
+                }
+            }
+            if let Some(v) = toggle {
+                *view = v;
+            }
+            if *view != CalView::List {
+                if ui.small_button("›").clicked() {
+                    match view {
+                        CalView::Week => *week_offset += 1,
+                        CalView::Month => *month_offset += 1,
+                        CalView::List => {}
+                    }
+                }
+                if ui.small_button("‹").clicked() {
+                    match view {
+                        CalView::Week => *week_offset -= 1,
+                        CalView::Month => *month_offset -= 1,
+                        CalView::List => {}
+                    }
+                }
+                if ui.small_button("Today").clicked() {
+                    *week_offset = 0;
+                    *month_offset = 0;
+                }
             }
         });
     });
     // Header rule always draws (empty sections kept it hidden, so the
     // header rhythm jumped between tabs).
     ui.separator();
-    if loading && meetings.is_empty() {
-        body_note(ui, true, pal, "Loading calendar…");
-        return;
-    }
-    if meetings.is_empty() {
-        body_note(ui, false, pal, "No meetings in the coming week.");
-        return;
-    }
 
-    ScrollArea::vertical().id_salt("cal_scroll").auto_shrink(false).show(ui, |ui| {
-
-        let mut last_day = String::new();
-        for m in meetings {
-            // Human day label ("Today", "9 Oct") — matches bubble day
-            // separators; the raw ISO slice read as a debug string.
-            let day = m
-                .start
-                .as_deref()
-                .map(format_day_label)
-                .unwrap_or_default();
-            if !day.is_empty() && day != last_day {
-                last_day = day.clone();
-                ui.add_space(6.0);
-                crate::ui::widgets::day_separator(ui, pal, &day);
-                ui.add_space(6.0);
+    match view {
+        CalView::List => {
+            // Upcoming only: the fetched window may reach further back once
+            // the month grid navigated.
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let week_end = now_ms + 7 * 86_400_000;
+            let upcoming: Vec<&MeetingInfo> = meetings
+                .iter()
+                .filter(|m| {
+                    m.start.as_deref().and_then(crate::model::to_epoch_ms)
+                        .map(|ms| ms + 86_400_000 >= now_ms && ms <= week_end)
+                        .unwrap_or(false)
+                })
+                .collect();
+            if loading && upcoming.is_empty() {
+                body_note(ui, true, pal, "Loading calendar…");
+                return;
             }
-            meeting_row(ui, m, pal, actions);
+            if upcoming.is_empty() {
+                body_note(ui, false, pal, "No meetings in the coming week.");
+                return;
+            }
+            ScrollArea::vertical()
+                .id_salt("calendar_scroll")
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    let mut last_day = String::new();
+                    for m in upcoming {
+                        let day = m
+                            .start
+                            .as_deref()
+                            .map(format_day_label)
+                            .unwrap_or_default();
+                        if !day.is_empty() && day != last_day {
+                            last_day = day.clone();
+                            ui.add_space(6.0);
+                            crate::ui::widgets::day_separator(ui, pal, &day);
+                            ui.add_space(6.0);
+                        }
+                        meeting_row(ui, m, pal, actions);
+                    }
+                });
         }
-    });
+        CalView::Week => {
+            week_grid(ui, meetings, *week_offset, pal, actions);
+            ensure_fetched(ui, actions, fetched, week_window(*week_offset));
+        }
+        CalView::Month => {
+            month_grid(ui, meetings, *month_offset, pal, actions);
+            ensure_fetched(ui, actions, fetched, month_window(*month_offset));
+        }
+    }
+}
+
+fn MONTH_ABBR(month: i8) -> &'static str {
+    const M: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    M[(i64::from(month).clamp(1, 12) - 1) as usize]
+}
+
+/// (monday_of_week, label) for a week offset from today.
+fn week_window(offset: i32) -> (u64, u64) {
+    let today = today_date();
+    let monday = today
+        .checked_add(jiff::ToSpan::days(
+            -i64::from(today.weekday().to_monday_zero_offset()) + 7 * i64::from(offset),
+        ))
+        .unwrap_or(today);
+    let to_unix = |d: jiff::civil::Date| {
+        d.at(0, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::system())
+            .ok()
+            .map(|z| z.timestamp().as_second() as u64)
+            .unwrap_or(0)
+    };
+    (to_unix(monday), to_unix(monday) + 7 * 86_400)
+}
+
+/// (first_of_month, label) for a month offset from today.
+fn month_window(offset: i32) -> (u64, u64) {
+    let first = today_date()
+        .first_of_month()
+        .checked_add(jiff::ToSpan::months(i64::from(offset)))
+        .unwrap_or_else(|_| today_date().first_of_month());
+    let next = first
+        .checked_add(jiff::ToSpan::months(1))
+        .unwrap_or(first);
+    let to_unix = |d: jiff::civil::Date| {
+        d.at(0, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::system())
+            .ok()
+            .map(|z| z.timestamp().as_second() as u64)
+            .unwrap_or(0)
+    };
+    (to_unix(first), to_unix(next))
+}
+
+/// Fire a range fetch when the visible window isn't covered. Edge-triggered
+/// by `fetched` being updated in Action::apply.
+fn ensure_fetched(
+    ui: &mut Ui,
+    actions: &mut Vec<Action>,
+    fetched: Option<(u64, u64)>,
+    window: (u64, u64),
+) {
+    let covered = fetched
+        .map(|(a, b)| window.0 >= a && window.1 <= b)
+        .unwrap_or(false);
+    if !covered {
+        actions.push(Action::LoadCalendarRange {
+            start_unix: window.0,
+            days: (window.1.saturating_sub(window.0)) / 86_400,
+        });
+    }
+}
+
+/// One meeting pill; returns true when clicked (join). Painter text is
+/// CLIPPED to the pill — titles otherwise bleed across day columns.
+fn meeting_pill(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    m: &MeetingInfo,
+    pal: &Palette,
+    compact: bool,
+) -> bool {
+    let online = m.join_url.is_some();
+    let fill = if online {
+        egui::Color32::from_rgba_unmultiplied(
+            pal.accent.r(),
+            pal.accent.g(),
+            pal.accent.b(),
+            0x38,
+        )
+    } else {
+        pal.surface
+    };
+    let p = ui.painter().with_clip_rect(rect.shrink(1.0));
+    p.rect_filled(rect, 4, fill);
+    p.rect_stroke(
+        rect,
+        4,
+        egui::Stroke::new(1.0, pal.outline),
+        egui::StrokeKind::Inside,
+    );
+    let time = m
+        .start
+        .as_deref()
+        .map(crate::model::format_message_time)
+        .unwrap_or_default();
+    if compact {
+        // One line: "HH:MM Subject", whatever fits.
+        p.text(
+            rect.left_center() + egui::vec2(5.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            format!("{time} {}", m.subject),
+            egui::FontId::proportional(10.0),
+            pal.text,
+        );
+    } else if rect.height() >= 30.0 {
+        p.text(
+            rect.left_top() + egui::vec2(5.0, 3.0),
+            egui::Align2::LEFT_TOP,
+            &m.subject,
+            egui::FontId::proportional(10.5),
+            pal.text,
+        );
+        p.text(
+            rect.left_bottom() + egui::vec2(5.0, -3.0),
+            egui::Align2::LEFT_BOTTOM,
+            &time,
+            egui::FontId::proportional(9.5),
+            pal.secondary,
+        );
+    } else {
+        p.text(
+            rect.left_center() + egui::vec2(5.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            format!("{time} {}", m.subject),
+            egui::FontId::proportional(10.0),
+            pal.text,
+        );
+    }
+    let r = ui.allocate_rect(rect, egui::Sense::click());
+    r.on_hover_text(if m.subject.is_empty() {
+        "Meeting".to_string()
+    } else {
+        format!(
+            "{} — {}{}",
+            m.subject,
+            time,
+            if online { " (click to join)" } else { "" }
+        )
+    })
+    .clicked()
+}
+
+fn week_grid(
+    ui: &mut Ui,
+    meetings: &[MeetingInfo],
+    offset: i32,
+    pal: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    let avail_w = ui.available_width() - 8.0;
+    let gutter = 42.0;
+    let col_w = ((avail_w - gutter) / 7.0).max(90.0);
+    let (h0, h1) = WEEK_HOURS;
+    let rows = (h1 - h0) as f32;
+    let header_h = 22.0;
+    let body_h = rows * HOUR_PX;
+    let total_w = gutter + col_w * 7.0;
+
+    let today = today_date();
+    let monday = today
+        .checked_add(jiff::ToSpan::days(
+            -i64::from(today.weekday().to_monday_zero_offset()) + 7 * i64::from(offset),
+        ))
+        .unwrap_or(today);
+
+    ScrollArea::both()
+        .id_salt("calendar_week")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            ui.set_min_width(total_w);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(total_w, header_h + body_h), egui::Sense::hover());
+            let top = rect.top();
+
+            // Header row + column separators.
+            for (i, name) in DAY_HEADERS.iter().enumerate() {
+                let day = monday.checked_add(jiff::ToSpan::days(i as i64)).unwrap_or(monday);
+                let x = rect.left() + gutter + col_w * i as f32;
+                let is_today = day == today;
+                ui.painter().text(
+                    egui::pos2(x + col_w / 2.0, top + 11.0),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{name} {}", day.day()),
+                    egui::FontId::proportional(11.0),
+                    if is_today { pal.accent } else { pal.secondary },
+                );
+                ui.painter().line_segment(
+                    [egui::pos2(x, top), egui::pos2(x, top + header_h + body_h)],
+                    egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.6)),
+                );
+                if is_today {
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(x + 1.0, top + header_h),
+                            egui::vec2(col_w - 2.0, body_h),
+                        ),
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(
+                            pal.accent.r(),
+                            pal.accent.g(),
+                            pal.accent.b(),
+                            14,
+                        ),
+                    );
+                }
+            }
+
+            // Hour gutter lines + labels.
+            for h in h0..=h1 {
+                let y = top + header_h + (h - h0) as f32 * HOUR_PX;
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.left() + gutter, y),
+                        egui::pos2(rect.left() + gutter + col_w * 7.0, y),
+                    ],
+                    egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.5)),
+                );
+                if h < h1 {
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 6.0, y + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{h:02}:00"),
+                        egui::FontId::monospace(9.5),
+                        pal.dim,
+                    );
+                }
+            }
+
+            // Now line.
+            let now = jiff::Zoned::now();
+            if today >= monday
+                && today
+                    < monday
+                        .checked_add(jiff::ToSpan::days(7))
+                        .unwrap_or(monday)
+            {
+                let day_idx = (today - monday).get_days() as f32;
+                let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
+                if mins >= h0 * 60 && mins <= h1 * 60 {
+                    let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * HOUR_PX;
+                    let x0 = rect.left() + gutter + col_w * day_idx;
+                    ui.painter().line_segment(
+                        [egui::pos2(x0, y), egui::pos2(x0 + col_w, y)],
+                        egui::Stroke::new(1.5, pal.danger),
+                    );
+                }
+            }
+
+            // Meeting blocks: concurrent events lane side-by-side within
+            // their day column instead of overlapping.
+            let mut by_day: std::collections::HashMap<i32, Vec<&MeetingInfo>> =
+                std::collections::HashMap::new();
+            for m in meetings {
+                if let Some((date, _, _)) = meeting_span(m) {
+                    let idx = (date - monday).get_days();
+                    if (0..7).contains(&idx) {
+                        by_day.entry(idx).or_default().push(m);
+                    }
+                }
+            }
+            for (idx, list) in by_day {
+                // Sort by start; greedy lanes: a block takes the first lane
+                // whose last block ends at or before its start.
+                let mut spans: Vec<(&&MeetingInfo, i32, i32)> = list
+                    .iter()
+                    .filter_map(|m| meeting_span(m).map(|(_, s, d)| (m, s, d)))
+                    .collect();
+                spans.sort_by_key(|(_, s, _)| *s);
+                let mut lanes: Vec<i32> = Vec::new(); // lane -> end minute
+                let mut lane_of: Vec<usize> = Vec::new();
+                for (_, s, d) in &spans {
+                    let mut lane = lanes.iter().position(|end| *end <= *s);
+                    match lane {
+                        Some(i) => lanes[i] = s + d,
+                        None => {
+                            lanes.push(s + d);
+                            lane = Some(lanes.len() - 1);
+                        }
+                    }
+                    lane_of.push(lane.unwrap());
+                }
+                let total_lanes = lanes.len().max(1);
+                for (i, (m, s, d)) in spans.iter().enumerate() {
+                    let lane = lane_of[i];
+                    let lane_w = col_w / total_lanes as f32;
+                    let x = rect.left() + gutter + col_w * idx as f32 + lane_w * lane as f32 + 1.0;
+                    // Blocks starting before the visible window clamp their
+                    // TOP; the height must run to the REAL end, not the full
+                    // duration (a 06:00-10:10 meeting drew until 11:10).
+                    let vis_start = (*s).max(h0 * 60);
+                    let y =
+                        top + header_h + (vis_start - h0 * 60) as f32 / 60.0 * HOUR_PX;
+                    let h = ((s + d - vis_start) as f32 / 60.0 * HOUR_PX)
+                        .clamp(16.0, (top + header_h + body_h - y).max(16.0));
+                    let block = egui::Rect::from_min_size(
+                        egui::pos2(x, y),
+                        egui::vec2(lane_w - 2.0, h),
+                    );
+                    if meeting_pill(ui, block, m, pal, false)
+                        && let Some(url) = m.join_url.clone()
+                    {
+                        actions.push(Action::JoinMeeting {
+                            source: url.clone(),
+                            label: Some(if m.subject.is_empty() {
+                                "Meeting".into()
+                            } else {
+                                m.subject.clone()
+                            }),
+                        });
+                    }
+                }
+            }
+        });
+}
+
+fn month_grid(
+    ui: &mut Ui,
+    meetings: &[MeetingInfo],
+    offset: i32,
+    pal: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    let first = today_date()
+        .first_of_month()
+        .checked_add(jiff::ToSpan::months(i64::from(offset)))
+        .unwrap_or_else(|_| today_date().first_of_month());
+    let days = first.days_in_month();
+    let lead = i64::from(first.weekday().to_monday_zero_offset());
+    let today = today_date();
+    let avail_w = ui.available_width() - 8.0;
+    let cell_w = (avail_w / 7.0).max(96.0);
+    let cell_h = 64.0;
+
+    // Meeting index by civil date.
+    let mut by_date: std::collections::HashMap<jiff::civil::Date, Vec<&MeetingInfo>> =
+        std::collections::HashMap::new();
+    for m in meetings {
+        if let Some((date, _, _)) = meeting_span(m) {
+            by_date.entry(date).or_default().push(m);
+        }
+    }
+
+    ScrollArea::vertical()
+        .id_salt("calendar_month")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            ui.set_min_width(cell_w * 7.0);
+            // Weekday header (painted at computed column centers — a
+            // per-cell painter centered on a zero-content cell stacked all
+            // seven labels at the far left).
+            {
+                let (row_rect, _) = ui
+                    .allocate_exact_size(egui::vec2(cell_w * 7.0, 18.0), egui::Sense::hover());
+                for (i, name) in DAY_HEADERS.iter().enumerate() {
+                    ui.painter().text(
+                        egui::pos2(
+                            row_rect.left() + cell_w * i as f32 + cell_w / 2.0,
+                            row_rect.center().y,
+                        ),
+                        egui::Align2::CENTER_CENTER,
+                        name,
+                        egui::FontId::proportional(11.0),
+                        pal.secondary,
+                    );
+                }
+            }
+            let cells = ((lead + days as i64 + 6) / 7) * 7;
+            for row in 0..(cells / 7) {
+                ui.horizontal(|ui| {
+                    for col in 0..7 {
+                        let idx = row * 7 + col;
+                        let day = first
+                            .checked_add(jiff::ToSpan::days(idx - lead))
+                            .unwrap_or(first);
+                        let in_month = day.month() == first.month();
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(cell_w, cell_h),
+                            egui::Sense::hover(),
+                        );
+                        if day == today {
+                            ui.painter().rect_filled(
+                                rect,
+                                4,
+                                egui::Color32::from_rgba_unmultiplied(
+                                    pal.accent.r(),
+                                    pal.accent.g(),
+                                    pal.accent.b(),
+                                    0x28,
+                                ),
+                            );
+                        }
+                        ui.painter().rect_stroke(
+                            rect,
+                            0,
+                            egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.55)),
+                            egui::StrokeKind::Inside,
+                        );
+                        let day_alpha = if in_month { 255 } else { 90 };
+                        ui.painter().text(
+                            rect.left_top() + egui::vec2(6.0, 5.0),
+                            egui::Align2::LEFT_TOP,
+                            day.day().to_string(),
+                            egui::FontId::proportional(11.0),
+                            if day == today {
+                                pal.accent
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(
+                                    pal.text.r(),
+                                    pal.text.g(),
+                                    pal.text.b(),
+                                    day_alpha,
+                                )
+                            },
+                        );
+                        if let Some(list) = by_date.get(&day) {
+                            for (i, m) in list.iter().take(2).enumerate() {
+                                let pill = egui::Rect::from_min_size(
+                                    rect.left_top()
+                                        + egui::vec2(4.0, 20.0 + i as f32 * 18.0),
+                                    egui::vec2(cell_w - 8.0, 16.0),
+                                );
+                                if meeting_pill(ui, pill, m, pal, true)
+                                    && let Some(url) = m.join_url.clone()
+                                {
+                                    actions.push(Action::JoinMeeting {
+                                        source: url,
+                                        label: Some(if m.subject.is_empty() {
+                                            "Meeting".into()
+                                        } else {
+                                            m.subject.clone()
+                                        }),
+                                    });
+                                }
+                            }
+                            if list.len() > 2 {
+                                ui.painter().text(
+                                    rect.left_bottom() + egui::vec2(6.0, -3.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    format!("+{}", list.len() - 2),
+                                    egui::FontId::proportional(9.5),
+                                    pal.secondary,
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        });
 }
 
 fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Action>) {
@@ -542,16 +1131,9 @@ pub fn todo_panel(
 // ----------------------------------------------------------------- activity
 
 /// One activity entry (mentions / reactions / replies) mined from live
-/// events or notifications.
-#[derive(Clone, Debug)]
-pub struct ActivityEntry {
-    pub kind: &'static str, // "mention" | "reaction" | "reply" | "message"
-    pub chat_id: String,
-    pub chat_name: String,
-    pub who: String,
-    pub preview: String,
-    pub at_ms: u64,
-}
+/// events or notifications. The type lives in `model` so the backend can
+/// seed the feed from cached history; re-exported here for the panel.
+pub use crate::model::ActivityEntry;
 
 pub fn activity_panel(
     ui: &mut Ui,

@@ -25,6 +25,68 @@ pub async fn calendar(ses: &Session, tx: &Sender<Event>) {
     }
 }
 
+/// `Command::LoadCalendarRange` — meetings for an arbitrary window
+/// (week/month views navigate beyond the default fetch).
+pub async fn calendar_range(
+    ses: &Session,
+    tx: &Sender<Event>,
+    start_unix: u64,
+    days: u64,
+) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    let iso = |secs: u64| {
+        jiff::Timestamp::from_second(secs as i64)
+            .map(|t| t.to_string())
+            .unwrap_or_default()
+    };
+    let enc = |s: &str| {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
+    };
+    let path = format!(
+        "/me/calendar/calendarView?startDateTime={}&endDateTime={}&$top=150\
+         &$orderby=start/dateTime\
+         &$select=id,subject,isOnlineMeeting,onlineMeeting,start,end,organizer,webLink,isOrganizer",
+        enc(&iso(start_unix)),
+        enc(&iso(start_unix + days.saturating_mul(86_400))),
+    );
+    match c.graph_get(&path).await {
+        Ok(resp) => match resp.text().await {
+            Ok(body) => match ost::api::parse_calendar_view(&body) {
+                Ok(meetings) => {
+                    log::debug!(
+                        "calendar_range [{start_unix}..+{days}d]: {} meetings, first start {:?} end {:?}",
+                        meetings.len(),
+                        meetings.first().map(|m| &m.start),
+                        meetings.first().map(|m| &m.end)
+                    );
+                    let _ = tx.send(Event::Calendar(meetings));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("calendar: {e:#}")));
+                }
+            },
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("calendar: {e:#}")));
+            }
+        },
+        Err(e) => {
+            log::warn!("calendar_range fetch failed: {e:#}");
+            let _ = tx.send(Event::Error(format!("calendar: {e:#}")));
+            let _ = tx.send(Event::Calendar(Vec::new()));
+        }
+    }
+}
+
 /// `Command::LoadFiles` — recent OneDrive files.
 pub async fn files(ses: &Session, tx: &Sender<Event>) {
     let Some(c) = client(ses) else {
