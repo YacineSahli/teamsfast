@@ -45,7 +45,6 @@ egui_extras = { version = "0.36", features = ["svg", "image"] }
 ost = { git = "https://github.com/YacineSahli/teams-core", package = "teams-cli", features = [
     "audio",
     "video-cam",
-    "screen",
 ] }
 
 # The fastframe UI stack: colour emoji, Inter + platform fonts, Lucide
@@ -84,8 +83,13 @@ open = "5"
 rfd = "0.15"
 
 
+[features]
+# Screenshare send path (xdg-desktop-portal ScreenCast + PipeWire). Off by
+# default: the pipewire/libspa sys-crates need headers this machine gets via
+# pkg-config shims and CI does not install — flip to default once the release
+# workflow grows them. Local dev against the nested teams-core checkout uses
+# the patch in ~/.cargo/config.toml (machine-local; see AGENTS.md).
+screenshare = ["ost/screen"]
+
 [profile.release]
 lto = "thin"
-
-[patch."https://github.com/YacineSahli/teams-core"]
-teams-cli = { path = "teams-core" }

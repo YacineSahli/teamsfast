@@ -55,11 +55,14 @@ remaining Phase 2 item.
 - `src/emoji.rs` — bundled Noto Color Emoji setup (MUST run before
   plugin/raster; see gotchas).
 - `src/tray.rs` — tray icon (procedural SVG-free icon) + menu.
-- `teams-core/` — the protocol crate (local git checkout for development;
-  the build pulls the published copy from
-  `https://github.com/YacineSahli/teams-core` — clone the sibling and add
-  `[patch."https://github.com/YacineSahli/teams-core"] teams-cli = { path = "teams-core" }`
-  to build against local changes). Upstream chain:
+- `teams-core/` — the protocol crate (nested gitignored checkout for
+  development; builds pull the published copy from
+  `https://github.com/YacineSahli/teams-core`). To build against local
+  changes, this machine carries the `[patch]` in **`~/.cargo/config.toml`**
+  (global, machine-local — NEVER put it in Cargo.toml or the committed
+  `.cargo/config.toml`; an accidentally committed path patch broke fresh
+  clones/CI once). Push teams-core main before relying on published builds.
+  Upstream chain:
   eisbaw/ost (dead) → better-teams vendored+patched (92 patches, MIT) →
   us. Sync via `git filter-repo --subdirectory-filter rust/ost` re-run +
   `git merge` (deterministic, shared history).
@@ -184,15 +187,18 @@ remaining Phase 2 item.
   wall components (`meeting_span`) or they shift by the local offset.
 
 ### Build env (this machine)
-- SCREENSHARE SPIKE (teams-core 80bd059, local only): `screen` feature =
+- SCREENSHARE (teams-core `screen` feature, PUBLISHED since 2a338ed):
   xdg-desktop-portal ScreenCast + PipeWire capture emitting I420
   VideoFrames; compiles, runtime unverified (interactive portal dialog).
-  Local build needs the pkg-config shims `~/.local/lib/teamfast-pc/`
+  The app gates it behind the non-default `screenshare` cargo feature
+  (`cargo build --features screenshare`) because the pipewire/libspa
+  sys-crates need headers the release runners don't install — flip it to
+  default only together with adding those to release.yml. Local build
+  needs the pkg-config shims `~/.local/lib/teamfast-pc/`
   (libpipewire-0.3.pc + libspa-0.2.pc point at the GNOME SDK 50 headers,
-  same pattern as the alsa shim) and the temp
-  `[patch."https://github.com/YacineSahli/teams-core"]` in Cargo.toml
-  (NOT committed). Next: wire screen frames into the video send loop +
-  a stage "Share screen" button; clean pw main-loop teardown.
+  same pattern as the alsa shim) and the machine-local `[patch]` in
+  ~/.cargo/config.toml. Clean pw main-loop teardown still TODO (the
+  capture thread parks; frames cease but the thread leaks per share).
 - The call stack needs `alsa-sys` → alsa.pc. System has runtime
   libasound only; headers come from the Flatpak GNOME SDK via a local
   shim (`~/.local/lib/teamfast-pc/alsa.pc` + lib/libasound.so symlink to
