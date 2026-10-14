@@ -4273,6 +4273,7 @@ impl eframe::App for TeamsFastApp {
                                     crate::theme::Icon::X.image(self.palette.secondary, 13.0),
                                 )
                                 .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE)
                                 .min_size(egui::vec2(22.0, 22.0)),
                             )
                             .clicked()
@@ -4323,6 +4324,7 @@ impl eframe::App for TeamsFastApp {
                                     crate::theme::Icon::X.image(self.palette.secondary, 13.0),
                                 )
                                 .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE)
                                 .min_size(egui::vec2(22.0, 22.0)),
                             )
                             .clicked()
