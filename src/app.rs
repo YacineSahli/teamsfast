@@ -65,6 +65,26 @@ pub struct IncomingRing {
 /// (caller-cancel pushes are not capture-verified yet — see NOTES).
 pub const RING_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Screen-share lifecycle for the live call.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum ScreenShare {
+    Off,
+    /// Portal dialog open (or synthetic source spinning up).
+    Starting,
+    /// Frames flowing into the call's video send path.
+    On,
+}
+
+/// Type-erased stop hook for a running share: halts the capture and frees
+/// its threads. `Arc` so it can live in the App and the starter thread.
+pub type ShareStop = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// Outcome of a share-start thread (drained on a later frame).
+pub enum ShareEvent {
+    Started(ShareStop),
+    Failed(String),
+}
+
 /// Drain a frame channel, keeping only the newest frame (live video is
 /// latest-wins; backlog is dropped).
 fn pal_ok_r(app: &TeamsFastApp) -> u8 {
@@ -123,12 +143,18 @@ fn apply_frame(
 /// QA (TEAMSFAST_FAKEVIDEO=1): animated color bars + scanline so the
 /// remote tile can be pixel-checked without a real peer.
 fn fake_frame(t_ms: u128) -> ost::calling::video::VideoFrame {
-    let (w, h) = (320u32, 240u32);
+    fake_frame_sized(320, 240, t_ms)
+}
+
+/// [`fake_frame`] at an arbitrary canvas — the synthetic screen-share
+/// source wants a screen-shaped frame (1280x720) to exercise the send
+/// loop's resolution-change encoder re-init.
+fn fake_frame_sized(w: u32, h: u32, t_ms: u128) -> ost::calling::video::VideoFrame {
     let (wu, hu) = (w as usize, h as usize);
     let ysz = wu * hu;
     let mut data = vec![128u8; ysz + ysz / 2];
     let shift = ((t_ms / 40) as u32 % w) as usize;
-    let bar_w = (w / 6) as usize;
+    let bar_w = (w / 6).max(1) as usize;
     for x in 0..wu {
         let bar = ((x + shift) / bar_w) % 6;
         let yv = (60 + bar * 30) as u8;
@@ -147,6 +173,54 @@ fn fake_frame(t_ms: u128) -> ost::calling::video::VideoFrame {
         data[line * wu + x] = 235;
     }
     ost::calling::video::VideoFrame { width: w, height: h, data }
+}
+
+/// Open the portal ScreenCast session (blocks on the compositor's source
+/// picker) and wrap it in a type-erased stop hook.
+#[cfg(feature = "screenshare")]
+fn portal_screen_source(
+    tx: std::sync::mpsc::SyncSender<ost::calling::video::VideoFrame>,
+) -> Result<ShareStop, String> {
+    match ost::calling::screen::start_screen_capture(tx, true) {
+        Ok(session) => {
+            // ScreenShareSession is Send-but-not-Sync and not nameable in
+            // builds without the feature — erase it behind the stop hook.
+            let sess = std::sync::Arc::new(std::sync::Mutex::new(Some(session)));
+            Ok(std::sync::Arc::new(move || {
+                if let Ok(mut guard) = sess.lock() {
+                    if let Some(mut s) = guard.take() {
+                        s.stop();
+                    }
+                }
+            }))
+        }
+        Err(e) => Err(format!("{e:#}")),
+    }
+}
+
+/// QA source (TEAMSFAST_SCREENSHARE=1): 1280x720 animated bars at ~10fps.
+/// Drives the exact share path (slot swap, encoder re-init, preview tee)
+/// without the interactive portal dialog.
+fn synthetic_screen_source(
+    tx: std::sync::mpsc::SyncSender<ost::calling::video::VideoFrame>,
+) -> ShareStop {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    std::thread::Builder::new()
+        .name("qa-screen-share".into())
+        .spawn(move || {
+            let t0 = Instant::now();
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                // Bounded channel + latest-wins drain in the send loop:
+                // a full channel just drops, no backlog.
+                let _ = tx.try_send(fake_frame_sized(1280, 720, t0.elapsed().as_millis()));
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .ok();
+    let hook: ShareStop =
+        std::sync::Arc::new(move || stop.store(true, std::sync::atomic::Ordering::SeqCst));
+    hook
 }
 
 /// Synthetic invitation for the TEAMSFAST_RING=1 QA hook (parseable, with
@@ -396,6 +470,19 @@ pub struct TeamsFastApp {
     local_video_tex: Option<egui::TextureHandle>,
     /// QA: TEAMSFAST_FAKEVIDEO=1 animates the remote tile without a peer.
     fake_video: bool,
+    /// Screen-share state for the live call (stage Share button).
+    screen_share: ScreenShare,
+    /// Stop hook for the running share (portal session or the synthetic
+    /// QA generator); type-erased so builds without the `screenshare`
+    /// feature still compile.
+    screen_share_stop: Option<ShareStop>,
+    /// Last share failure to show in the stage (cleared on retry).
+    share_note: Option<String>,
+    /// Completions from share threads — the portal dialog blocks on user
+    /// interaction, so the outcome arrives on a later frame.
+    share_events: (std::sync::mpsc::Sender<ShareEvent>, std::sync::mpsc::Receiver<ShareEvent>),
+    /// QA auto-share fired for this call (TEAMSFAST_SCREENSHARE=1).
+    share_auto_fired: bool,
 
     /// "Join with link" dialog state.
     join_open: bool,
@@ -709,6 +796,76 @@ fn teams_dialog(
 }
 
 impl TeamsFastApp {
+    /// Start screen sharing on the live call: portal ScreenCast (feature
+    /// build) or the synthetic source (TEAMSFAST_SCREENSHARE=1 QA). The
+    /// portal dialog blocks on user interaction, so the start runs on a
+    /// plain thread and the outcome lands via `share_events` on a later
+    /// frame. Requires a video call: the share rides the video leg (no
+    /// modality re-negotiation).
+    fn begin_screen_share(&mut self) {
+        if self.screen_share != ScreenShare::Off {
+            return;
+        }
+        let Some(media) = self.call_media.as_ref() else { return; };
+        if media.local_preview.is_none() {
+            self.share_note =
+                Some("Screen sharing needs a video call (the share rides the video leg).".into());
+            return;
+        }
+        let slot = media.screen_source.clone();
+        let (tx_frames, rx_frames) =
+            std::sync::mpsc::sync_channel::<ost::calling::video::VideoFrame>(4);
+        let tx_ev = self.share_events.0.clone();
+        self.screen_share = ScreenShare::Starting;
+        self.share_note = None;
+        let spawned = std::thread::Builder::new()
+            .name("screen-share-start".into())
+            .spawn(move || {
+                let synthetic =
+                    std::env::var("TEAMSFAST_SCREENSHARE").as_deref() == Ok("1");
+                let res: Result<ShareStop, String> = if synthetic {
+                    Ok(synthetic_screen_source(tx_frames))
+                } else {
+                    #[cfg(feature = "screenshare")]
+                    {
+                        portal_screen_source(tx_frames)
+                    }
+                    #[cfg(not(feature = "screenshare"))]
+                    {
+                        let _ = tx_frames;
+                        Err("This build lacks screen sharing — rebuild with --features screenshare.".into())
+                    }
+                };
+                match res {
+                    Ok(stop) => {
+                        if let Ok(mut guard) = slot.lock() {
+                            *guard = Some(rx_frames);
+                        }
+                        let _ = tx_ev.send(ShareEvent::Started(stop));
+                    }
+                    Err(e) => {
+                        let _ = tx_ev.send(ShareEvent::Failed(e));
+                    }
+                }
+            });
+        if spawned.is_err() {
+            self.screen_share = ScreenShare::Off;
+            self.share_note = Some("could not spawn the share thread".into());
+        }
+    }
+
+    /// Stop the running share (portal session or synthetic generator) and
+    /// clear the send-loop slot. Safe to call when not sharing.
+    fn stop_screen_share(&mut self) {
+        if let Some(stop) = self.screen_share_stop.take() {
+            stop();
+        }
+        if let Some(media) = self.call_media.as_ref() {
+            media.set_screen_source(None);
+        }
+        self.screen_share = ScreenShare::Off;
+    }
+
     /// Drain the call's video channels into the stage textures (latest
     /// wins). No-op without an active call.
     fn update_call_stage_frames(&mut self, ctx: &egui::Context) {
@@ -826,6 +983,11 @@ impl TeamsFastApp {
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
+            screen_share: ScreenShare::Off,
+            screen_share_stop: None,
+            share_note: None,
+            share_events: std::sync::mpsc::channel(),
+            share_auto_fired: false,
             join_open: false,
             join_source: String::new(),
             call_label_hint: None,
@@ -963,6 +1125,26 @@ impl TeamsFastApp {
     // ---------------------------------------------------------------- events
 
     fn drain_events(&mut self) {
+        // Share-thread completions first: a Started that races a call-end
+        // in the same frame must not leave a stop hook behind.
+        while let Ok(ev) = self.share_events.1.try_recv() {
+            match ev {
+                ShareEvent::Started(stop) => {
+                    // The call may have ended while the portal dialog was
+                    // open — stop immediately in that case.
+                    if self.call_media.is_some() {
+                        self.screen_share_stop = Some(stop);
+                        self.screen_share = ScreenShare::On;
+                    } else {
+                        stop();
+                    }
+                }
+                ShareEvent::Failed(e) => {
+                    self.screen_share = ScreenShare::Off;
+                    self.share_note = Some(e);
+                }
+            }
+        }
         while let Ok(ev) = self.events.try_recv() {
             match ev {
                 Event::Status(s) => self.status = s,
@@ -1081,6 +1263,17 @@ impl TeamsFastApp {
                     self.call_media = Some(handle);
                     self.remote_video_tex = None;
                     self.local_video_tex = None;
+                    // QA hook: TEAMSFAST_SCREENSHARE=1 auto-starts the
+                    // synthetic source on video calls so the sharing UI,
+                    // preview tee, and encoder re-init can be pixel-checked
+                    // headlessly (TEAMSFAST_VIDEOCALL=1 places the call).
+                    if std::env::var("TEAMSFAST_SCREENSHARE").as_deref() == Ok("1")
+                        && !self.share_auto_fired
+                        && self.call_media.as_ref().is_some_and(|m| m.local_preview.is_some())
+                    {
+                        self.share_auto_fired = true;
+                        self.begin_screen_share();
+                    }
                 }
                 Event::CallStarted { label } => {
                     if self.call_is_meeting {
@@ -1112,6 +1305,7 @@ impl TeamsFastApp {
                 }
                 Event::CallEnded(summary) => {
                     self.play_end_beep();
+                    self.stop_screen_share();
                     self.call = None;
                     self.call_connected_at = None;
                     self.call_is_meeting = false;
@@ -1125,6 +1319,7 @@ impl TeamsFastApp {
                 }
                 Event::CallFailed(e) => {
                     self.play_end_beep();
+                    self.stop_screen_share();
                     self.call = None;
                     self.call_connected_at = None;
                     self.call_is_meeting = false;
@@ -3178,6 +3373,9 @@ impl eframe::App for TeamsFastApp {
         {
             self.update_call_stage_frames(ui.ctx());
         }
+        // Share clicks are collected inside the stage panel (self is
+        // borrowed there) and applied once the borrow ends.
+        let mut share_clicked = false;
         if self.call_view_open {
             if let (Some((label, _at)), Some(media)) = (self.call.clone(), self.call_media.as_ref())
             {
@@ -3307,9 +3505,24 @@ impl eframe::App for TeamsFastApp {
                         }
                         } // end non-lobby stage
                         // Local camera preview (video calls only), in flow
-                        // right under the remote tile.
+                        // right under the remote tile. While a screen share
+                        // is live this tee carries the SHARED screen, so the
+                        // tile doubles as the "what everyone sees" monitor.
                         if media.local_preview.is_some() {
                             ui.add_space(4.0);
+                            if self.screen_share == ScreenShare::On {
+                                ui.label(
+                                    RichText::new("Sharing screen")
+                                        .small()
+                                        .color(self.palette.accent),
+                                );
+                            } else if let Some(note) = self.share_note.as_deref() {
+                                ui.label(
+                                    RichText::new(format!("Share failed: {note}"))
+                                        .small()
+                                        .color(self.palette.danger),
+                                );
+                            }
                             match self.local_video_tex.as_ref() {
                                 Some(tex) => {
                                     let size = tex.size_vec2();
@@ -3348,7 +3561,11 @@ impl eframe::App for TeamsFastApp {
                                     ui.painter().text(
                                         rect.center(),
                                         egui::Align2::CENTER_CENTER,
-                                        "camera…",
+                                        if self.screen_share != ScreenShare::Off {
+                                            "sharing…"
+                                        } else {
+                                            "camera…"
+                                        },
                                         egui::FontId::proportional(11.0),
                                         self.palette.secondary,
                                     );
@@ -3403,6 +3620,43 @@ impl eframe::App for TeamsFastApp {
                                         {
                                             let _ = media.camera_on.send(!cam_on);
                                         }
+                                        // Screen share (video calls — the share
+                                        // rides the video leg). Accent-filled
+                                        // while live, matching the native
+                                        // client's share-state affordance.
+                                        let sharing = self.screen_share == ScreenShare::On;
+                                        let starting = self.screen_share == ScreenShare::Starting;
+                                        let share = ui.add_enabled(
+                                            !starting,
+                                            egui::Button::new(
+                                                crate::theme::Icon::Monitor.image(
+                                                    if sharing {
+                                                        self.palette.on_accent
+                                                    } else {
+                                                        self.palette.secondary
+                                                    },
+                                                    15.0,
+                                                ),
+                                            )
+                                            .fill(if sharing {
+                                                self.palette.accent
+                                            } else {
+                                                self.palette.surface_hover
+                                            })
+                                            .min_size(egui::vec2(36.0, 30.0)),
+                                        );
+                                        if share
+                                            .on_hover_text(if starting {
+                                                "Opening picker…"
+                                            } else if sharing {
+                                                "Stop sharing"
+                                            } else {
+                                                "Share screen"
+                                            })
+                                            .clicked()
+                                        {
+                                            share_clicked = true;
+                                        }
                                     }
                                     let mic_on = *media.mic_on.borrow();
                                     let mic = ui.add(
@@ -3424,6 +3678,13 @@ impl eframe::App for TeamsFastApp {
                     });
                 // Live tiles + the timer need a steady repaint.
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(66));
+            }
+        }
+        if share_clicked {
+            if self.screen_share == ScreenShare::On {
+                self.stop_screen_share();
+            } else if self.screen_share == ScreenShare::Off {
+                self.begin_screen_share();
             }
         }
 
