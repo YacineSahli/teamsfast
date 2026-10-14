@@ -125,17 +125,30 @@ pub fn settings_window(
             ui.painter().rect_filled(track, 8, pal.window);
             let chip_w = track.width() / tabs.len() as f32;
             let mut tab = st.tab;
-            for (i, t) in tabs.iter().enumerate() {
-                let rect = egui::Rect::from_min_size(
-                    track.left_top() + egui::vec2(chip_w * i as f32 + 2.0, 2.0),
+            // The accent chip SLIDES between tabs (ease-out ~180ms) —
+            // iOS-segmented-control motion; a teleporting chip read as a
+            // state glitch.
+            let sel_idx = tabs
+                .iter()
+                .position(|t| Some(*t) == st.tab)
+                .unwrap_or(0) as f32;
+            let slide =
+                ui.ctx()
+                    .animate_value_with_time(egui::Id::new("settings_tab_chip"), sel_idx, 0.18);
+            let chip_at = |idx: f32| {
+                egui::Rect::from_min_size(
+                    track.left_top() + egui::vec2(chip_w * idx + 2.0, 2.0),
                     egui::vec2(chip_w - 4.0, track_h - 4.0),
-                );
+                )
+            };
+            ui.painter()
+                .rect_filled(chip_at(slide).shrink(1.0), 5, pal.accent);
+            for (i, t) in tabs.iter().enumerate() {
+                let rect = chip_at(i as f32);
                 let sel = tab == Some(*t);
                 let resp = ui.allocate_rect(rect, egui::Sense::click());
                 let p = ui.painter();
-                if sel {
-                    p.rect_filled(rect.shrink(1.0), 5, pal.accent);
-                } else if resp.hovered() {
+                if !sel && resp.hovered() {
                     p.rect_filled(rect.shrink(1.0), 7, pal.surface_hover);
                 }
                 p.text(

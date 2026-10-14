@@ -2715,6 +2715,8 @@ impl TeamsFastApp {
             let sel = self.main_view == view;
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::click());
+            // Hover tint fades in/out (the last snapping surface).
+            let t = crate::ui::widgets::hover_t(ui.ctx(), resp.id, resp.hovered() && !sel);
             if sel {
                 // Stronger wash on light themes: accent@31% over a light
                 // panel washed the glyph out (~2.8:1 — under the 3:1
@@ -2733,8 +2735,12 @@ impl TeamsFastApp {
                     2.0,
                     self.palette.accent,
                 );
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 8, self.palette.surface_hover);
+            } else if t > 0.01 {
+                ui.painter().rect_filled(
+                    rect,
+                    8,
+                    crate::theme::tint_over(self.palette.panel, self.palette.surface_hover, t),
+                );
             }
             let tint = if sel { self.palette.text } else { self.palette.secondary };
             let mut child =
@@ -2753,7 +2759,8 @@ impl TeamsFastApp {
             if resp.clicked() {
                 self.switch_view(view);
             }
-            // Unread indicator on the Chat icon.
+            // Unread indicator on the Chat icon: count pill (the bare
+            // accent dot read as a rendering bug — a badge says "how many").
             if view == MainView::Chat {
                 let total: u32 = self
                     .unread
@@ -2761,8 +2768,29 @@ impl TeamsFastApp {
                     .map(|(u, _)| u32::from(*u))
                     .sum();
                 if total > 0 {
-                    let c = rect.right_top() + egui::vec2(-4.0, 4.0);
-                    ui.painter().circle_filled(c, 6.0, self.palette.accent);
+                    let text = if total > 99 {
+                        "99+".to_string()
+                    } else {
+                        total.to_string()
+                    };
+                    let gal = ui.painter().layout_no_wrap(
+                        text.clone(),
+                        egui::FontId::proportional(9.0),
+                        self.palette.on_accent,
+                    );
+                    let w = (gal.size().x + 8.0).max(14.0);
+                    let c = rect.right_top() + egui::vec2(-2.0, 2.0);
+                    let pill = egui::Rect::from_center_size(c, egui::vec2(w, 13.0));
+                    ui.painter()
+                        .rect_filled(pill, 6.5, self.palette.accent);
+                    ui.painter().galley(
+                        egui::pos2(
+                            pill.center().x - gal.size().x / 2.0,
+                            pill.center().y - gal.size().y / 2.0,
+                        ),
+                        gal,
+                        self.palette.on_accent,
+                    );
                 }
             }
         }
@@ -2775,7 +2803,11 @@ impl TeamsFastApp {
                     crate::theme::Icon::Settings
                         .image(self.palette.secondary, 18.0),
                 )
-                .fill(Color32::TRANSPARENT),
+                .fill(Color32::TRANSPARENT)
+                // Ghost like its rail siblings: transparent fill alone
+                // still draws the inactive bg_stroke — the gear was the
+                // only rail icon inside a bordered box.
+                .stroke(egui::Stroke::NONE),
             )
             .on_hover_text("Settings (Ctrl+,)");
             if gear.clicked() {

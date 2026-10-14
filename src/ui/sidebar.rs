@@ -98,7 +98,7 @@ pub fn sidebar(
             // right-aligned action, then the separator.
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Teams").strong().size(17.0));
-                ui.label(RichText::new("your teams & channels").small().weak());
+                ui.label(RichText::new("Your teams & channels").small().weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if crate::ui::widgets::btn::ghost(
                         ui,

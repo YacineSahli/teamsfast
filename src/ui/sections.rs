@@ -104,7 +104,7 @@ pub fn calendar_panel(
         ui.heading(RichText::new("Calendar").strong().size(17.0));
         // Range label per view.
         let label = match view {
-            CalView::List => "next 7 days".to_string(),
+            CalView::List => "Next 7 days".to_string(),
             CalView::Week => {
                 let monday = today_date()
                     .checked_add(jiff::ToSpan::days(
@@ -406,14 +406,19 @@ fn meeting_pill(
     } else {
         pal.text
     };
-    let subject = if dead {
-        format!("Canceled: {}", m.subject)
-    } else {
-        m.subject.clone()
-    };
+    // No "Canceled:" prefix — the dim + strikethrough carry the state
+    // (native Teams shows the plain subject).
+    let subject = m.subject.clone();
     let text_w = rect.width() - 10.0;
     if compact || rect.height() < 30.0 {
-        let line = format!("{time} {}", ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0)));
+        let subj_e = ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0));
+        // Lane too narrow for "time title" — a title fragment still says
+        // more than a bare time; never render "14:00 …" (time + nothing).
+        let line = if subj_e.chars().count() <= 2 {
+            ellipsize(ui, &subject, 10.0, text_w.max(8.0))
+        } else {
+            format!("{time} {subj_e}")
+        };
         let r = p.text(
             rect.left_center() + egui::vec2(5.0, 0.0),
             egui::Align2::LEFT_CENTER,
@@ -466,37 +471,12 @@ fn week_grid(
 ) {
     let avail_w = ui.available_width() - 8.0;
     let gutter = 42.0;
-    // Lanes need room: with N concurrent meetings a column must be wide
-    // enough for "HH:MM ti…" per lane, else concurrent blocks collapse
-    // into one-letter slivers. Busy weeks grow the grid (horizontal
-    // scroll covers the rest).
-    let max_lanes = {
-        let mut by_day: std::collections::HashMap<i32, Vec<(i32, i32)>> =
-            std::collections::HashMap::new();
-        for m in meetings {
-            if let Some((date, s, d)) = meeting_span(m) {
-                let idx = (date - monday_of(offset)).get_days();
-                if (0..7).contains(&idx) {
-                    by_day.entry(idx).or_default().push((s, s + d));
-                }
-            }
-        }
-        let mut worst = 1usize;
-        for evs in by_day.values() {
-            let mut evs = evs.clone();
-            evs.sort_by_key(|(s, _)| *s);
-            let mut lanes: Vec<i32> = Vec::new();
-            for (s, e) in evs {
-                match lanes.iter().position(|end| *end <= s) {
-                    Some(i) => lanes[i] = e,
-                    None => lanes.push(e),
-                }
-            }
-            worst = worst.max(lanes.len());
-        }
-        worst
-    };
-    let col_w = ((avail_w - gutter) / 7.0).max(96.0).max(max_lanes as f32 * 50.0);
+    // Fit the 7 columns to the available width (a "just barely scrolls"
+    // grid clipped Sunday at common widths — worst of both worlds). The
+    // 96px floor is where horizontal scroll takes over on tiny panes;
+    // narrow overlap lanes degrade gracefully via compact pills instead
+    // of forcing the whole grid wider.
+    let col_w = ((avail_w - gutter) / 7.0).max(96.0);
     let (h0, h1) = WEEK_HOURS;
     let rows = (h1 - h0) as f32;
     let header_h = 22.0;
@@ -515,23 +495,35 @@ fn week_grid(
                 ui.allocate_exact_size(egui::vec2(total_w, header_h + body_h), egui::Sense::hover());
             let top = rect.top();
 
-            // Header row + column separators.
+            // Header row + column separators. Today = accent date disc
+            // (same treatment as the month grid, so "today" reads the same
+            // in both views); weekday name stays quiet above it.
             for (i, name) in DAY_HEADERS.iter().enumerate() {
                 let day = monday.checked_add(jiff::ToSpan::days(i as i64)).unwrap_or(monday);
                 let x = rect.left() + gutter + col_w * i as f32;
                 let is_today = day == today;
+                let cx = x + col_w / 2.0;
                 ui.painter().text(
-                    egui::pos2(x + col_w / 2.0, top + 11.0),
+                    egui::pos2(cx, top + 8.0),
                     egui::Align2::CENTER_CENTER,
-                    format!("{name} {}", day.day()),
-                    egui::FontId::proportional(11.0),
-                    if is_today { pal.accent } else { pal.secondary },
-                );
-                ui.painter().line_segment(
-                    [egui::pos2(x, top), egui::pos2(x, top + header_h + body_h)],
-                    egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.6)),
+                    name,
+                    egui::FontId::proportional(10.0),
+                    pal.secondary,
                 );
                 if is_today {
+                    let drect = egui::Rect::from_center_size(
+                        egui::pos2(cx, top + 22.0),
+                        egui::vec2(19.0, 19.0),
+                    );
+                    ui.painter()
+                        .circle_filled(drect.center(), 9.5, pal.accent);
+                    ui.painter().text(
+                        drect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        day.day().to_string(),
+                        egui::FontId::proportional(10.5),
+                        pal.on_accent,
+                    );
                     ui.painter().rect_filled(
                         egui::Rect::from_min_size(
                             egui::pos2(x + 1.0, top + header_h),
@@ -542,13 +534,28 @@ fn week_grid(
                             pal.accent.r(),
                             pal.accent.g(),
                             pal.accent.b(),
-                            14,
+                            16,
                         ),
                     );
+                } else {
+                    ui.painter().text(
+                        egui::pos2(cx, top + 22.0),
+                        egui::Align2::CENTER_CENTER,
+                        day.day().to_string(),
+                        egui::FontId::proportional(11.5),
+                        pal.text,
+                    );
                 }
+                ui.painter().line_segment(
+                    [egui::pos2(x, top), egui::pos2(x, top + header_h + body_h)],
+                    egui::Stroke::new(1.0, pal.outline),
+                );
             }
 
-            // Hour gutter lines + labels.
+            // Hour gutter lines + labels. Hour lines are the QUIETER rule
+            // (day columns carry the stronger one); labels sit centered ON
+            // their line with a background knockout so the line reads as
+            // interrupted, not as an underline.
             for h in h0..=h1 {
                 let y = top + header_h + (h - h0) as f32 * HOUR_PX;
                 ui.painter().line_segment(
@@ -556,18 +563,25 @@ fn week_grid(
                         egui::pos2(rect.left() + gutter, y),
                         egui::pos2(rect.left() + gutter + col_w * 7.0, y),
                     ],
-                    egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.5)),
+                    egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.4)),
                 );
                 if h < h1 {
-                    // Label sits ABOVE its gridline (Teams style) so
-                    // meeting blocks never collide with the gutter.
-                    ui.painter().text(
-                        egui::pos2(rect.left() + 6.0, y - 2.0),
-                        egui::Align2::LEFT_BOTTOM,
-                        format!("{h:02}:00"),
-                        egui::FontId::monospace(9.5),
+                    let label = format!("{h:02}:00");
+                    let gal = ui.painter().layout_no_wrap(
+                        label.clone(),
+                        egui::FontId::proportional(9.5),
                         pal.dim,
                     );
+                    let lx = rect.left() + 6.0;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(lx - 2.0, y - gal.size().y / 2.0 - 1.0),
+                            gal.size() + egui::vec2(4.0, 2.0),
+                        ),
+                        2.0,
+                        pal.panel,
+                    );
+                    ui.painter().galley(egui::pos2(lx, y - gal.size().y / 2.0), gal, pal.dim);
                 }
             }
 
@@ -646,7 +660,10 @@ fn week_grid(
                         egui::pos2(x, y),
                         egui::vec2(lane_w - 2.0, h),
                     );
-                    if meeting_pill(ui, block, m, pal, false, false)
+                    // Narrow overlap lanes drop to the compact single-line
+                    // pill (time + ellipsized title) instead of two crushed
+                    // rows of clipped text.
+                    if meeting_pill(ui, block, m, pal, lane_w < 52.0, false)
                         && let Some(url) = m.join_url.clone()
                     {
                         actions.push(Action::JoinMeeting {
@@ -856,7 +873,18 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                 .strong();
                 ui.label(if dead { title.weak().strikethrough() } else { title });
                 if dead {
-                    ui.label(RichText::new("canceled").small().weak());
+                    // Bordered chip — the plain small label read like body
+                    // text and cancelled rows still scanned as joinable.
+                    egui::Frame::default()
+                        .stroke(egui::Stroke::new(1.0, pal.outline))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(5, 1))
+                        .show(ui, |ui| {
+                            ui.set_min_height(15.0);
+                            ui.label(
+                                RichText::new("Cancelled").weak().small().color(pal.secondary),
+                            );
+                        });
                 }
             });
             ui.horizontal(|ui| {
@@ -913,7 +941,7 @@ pub fn files_panel(
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("Files").strong().size(17.0));
-        ui.label(RichText::new("recent in OneDrive").small().weak());
+        ui.label(RichText::new("Recent in OneDrive").small().weak());
         if loading {
             ui.spinner();
         }
@@ -997,52 +1025,67 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
             );
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width() - 150.0);
+                // A lone "—" placeholder line on rows without metadata read
+                // as broken — draw the name alone, nudged toward the row's
+                // optical center, and keep the row height (rhythm intact).
+                let has_meta = size != "—" || !modified.is_empty();
+                if !has_meta {
+                    ui.add_space(9.0);
+                }
                 ui.add(
                     egui::Label::new(RichText::new(&f.name).strong())
                         .truncate()
                         .selectable(false),
                 );
-                // Always a metadata line: alternating tall/short rows
-                // broke the list's vertical rhythm.
-                let meta = match (size == "—", modified.is_empty()) {
-                    (true, true) => "—".to_string(),
-                    (true, false) => modified.clone(),
-                    (false, true) => size.clone(),
-                    (false, false) => format!("{size} · {modified}"),
-                };
-                ui.label(RichText::new(meta).small().weak());
+                if has_meta {
+                    let meta = match (size == "—", modified.is_empty()) {
+                        (true, false) => modified.clone(),
+                        (false, true) => size.clone(),
+                        _ => format!("{size} · {modified}"),
+                    };
+                    ui.label(RichText::new(meta).small().weak());
+                }
             });
             // Row actions reveal on hover (Fluent): resting rows carry
             // icon + text only — two permanent outlined buttons on every
-            // row was the loudest chrome in the app.
+            // row was the loudest chrome in the app. Ghost icons: the
+            // default quiet stroke still drew two boxed buttons per row.
             if hovered {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ghost_icon = |ui: &mut egui::Ui,
+                                      icon: crate::theme::Icon,
+                                      tip: &str,
+                                      hit: &mut bool| {
+                        if crate::ui::widgets::icon_button(ui, icon, tip).clicked() {
+                            *hit = true;
+                        }
+                    };
                     if !is_folder {
+                        let mut do_dl = false;
+                        let mut do_open = false;
                         if let (Some(drive), Some(item)) = (&f.drive_id, Some(&f.id)) {
-                            let (drive, item, name) =
-                                (drive.clone(), item.clone(), f.name.clone());
-                            if ui
-                                .add(egui::Button::new(
-                                    crate::theme::Icon::Download.image(pal.secondary, 14.0),
-                                ))
-                                .on_hover_text("Download and open")
-                                .clicked()
-                            {
+                            ghost_icon(
+                                ui,
+                                crate::theme::Icon::Download,
+                                "Download and open",
+                                &mut do_dl,
+                            );
+                            if do_dl {
                                 actions.push(Action::DownloadDriveFile {
-                                    drive_id: drive,
-                                    item_id: item,
-                                    name,
+                                    drive_id: drive.clone(),
+                                    item_id: item.clone(),
+                                    name: f.name.clone(),
                                 });
                             }
                         }
                         if let Some(web) = &f.web_url {
-                            if ui
-                                .add(egui::Button::new(
-                                    crate::theme::Icon::ExternalLink.image(pal.secondary, 14.0),
-                                ))
-                                .on_hover_text("Open online")
-                                .clicked()
-                            {
+                            ghost_icon(
+                                ui,
+                                crate::theme::Icon::ExternalLink,
+                                "Open online",
+                                &mut do_open,
+                            );
+                            if do_open {
                                 actions.push(Action::OpenLink(web.clone()));
                             }
                         }
@@ -1135,7 +1178,7 @@ pub fn todo_panel(
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("To Do").strong().size(17.0));
-        ui.label(RichText::new("lists & tasks").small().weak());
+        ui.label(RichText::new("Lists & tasks").small().weak());
         if loading {
             ui.spinner();
         }
@@ -1316,7 +1359,7 @@ pub fn activity_panel(
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("Activity").strong().size(17.0));
-        ui.label(RichText::new("mentions, reactions, replies").small().weak());
+        ui.label(RichText::new("Mentions, reactions, replies").small().weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add_enabled(
@@ -1416,7 +1459,7 @@ pub fn planner_panel(
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("Planner").strong().size(17.0));
-        ui.label(RichText::new("boards from your teams").small().weak());
+        ui.label(RichText::new("Boards from your teams").small().weak());
         if loading {
             ui.spinner();
         }
@@ -1540,7 +1583,7 @@ pub fn shifts_panel(
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("Shifts").strong().size(17.0));
-        ui.label(RichText::new("this week").small().weak());
+        ui.label(RichText::new("This week").small().weak());
         if loading {
             ui.spinner();
         }
