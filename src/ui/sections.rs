@@ -329,15 +329,19 @@ fn ellipsize(ui: &Ui, s: &str, size: f32, max_px: f32) -> String {
     if fits(s) {
         return s.to_string();
     }
+    // Char-boundary-safe shrinking cut (floor to the previous boundary).
     let mut cut = s.len();
-    while cut > 1 {
-        cut = cut.saturating_sub(std::cmp::max(1, cut / 4));
-        let head = &s[..cut.min(s.len())];
-        // Keep char boundaries (subjects are mostly ASCII but be safe).
-        let head = head.char_indices().last().map(|(i, c)| &s[..i + c.len_utf8()]).unwrap_or(head);
-        if fits(&format!("{head}…")) {
-            return format!("{head}…");
+    while cut > 0 {
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
         }
+        if cut == 0 {
+            break;
+        }
+        if fits(&format!("{}…", &s[..cut])) {
+            return format!("{}…", &s[..cut]);
+        }
+        cut = cut.saturating_sub(std::cmp::max(1, cut / 4));
     }
     "…".to_string()
 }
