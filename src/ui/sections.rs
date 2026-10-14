@@ -438,7 +438,7 @@ fn meeting_pill(
         p.text(
             rect.left_bottom() + egui::vec2(5.0, -3.0),
             egui::Align2::LEFT_BOTTOM,
-            &range,
+            ellipsize(ui, &range, 9.5, text_w),
             egui::FontId::proportional(9.5),
             pal.secondary,
         );
@@ -818,8 +818,16 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
     let time = m
         .start
         .as_deref()
-        .map(|s| format_message_time(s))
+        .map(|s| hm_only(s))
         .unwrap_or_default();
+    // Duration on the card: "13:30 – 14:00" (start-only left durations
+    // unknowable).
+    let time = m
+        .end
+        .as_deref()
+        .map(hm_only)
+        .map(|e| format!("{time} – {e}"))
+        .unwrap_or(time);
     // Canceled events keep their slot (native Teams behavior) but dim,
     // strike the title, and lose the Join action.
     let dead = m.canceled;
