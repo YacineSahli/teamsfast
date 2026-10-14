@@ -64,7 +64,23 @@ pub fn settings_window(
     let mut open = st.open;
     let _ = &mut open;
 
-    let modal = egui::Modal::new(egui::Id::new("settings_modal"));
+    // Custom frame: the default modal popup fill sat within a few percent
+    // of the panels behind it and the content floor was cramped (the
+    // General tab's last button nearly touched the edge). Same look as the
+    // join dialog: surface fill, 12px radius, deep shadow, even 18px gutters.
+    let modal = egui::Modal::new(egui::Id::new("settings_modal")).frame(
+        egui::Frame::default()
+            .fill(pal.surface)
+            .stroke(egui::Stroke::new(1.0, pal.outline))
+            .shadow(egui::Shadow {
+                offset: [0, 14],
+                blur: 36,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(80),
+            })
+            .corner_radius(egui::CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(18)),
+    );
     let resp = modal.show(ui.ctx(), |ui| {
         ui.set_width(470.0);
         // Header row: title + close affordance (the modal itself also

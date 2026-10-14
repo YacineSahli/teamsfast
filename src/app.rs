@@ -3039,71 +3039,78 @@ impl eframe::App for TeamsFastApp {
                 // user is reading chats elsewhere.
                 let pulse = ((ui.input(|i| i.time) * 3.0).sin() * 0.5 + 0.5) as f32;
                 let ring_alpha = (110.0 + 130.0 * pulse) as u8;
-                egui::Panel::top("ringing")
-                    .frame(
-                        egui::Frame::default()
-                            .fill(crate::theme::tint_over(
-                                self.palette.panel,
-                                self.palette.danger,
-                                0.17,
-                            ))
-                            .stroke(egui::Stroke::new(
-                                1.6,
-                                crate::theme::tint_over(
+                // FLOATING CARD, not a band: the old top Panel pushed the
+                // rail, search and chat list down on every ring — an
+                // incoming call must never reflow the app. Slides in from
+                // above (ease-out cubic, anchored at the ring's start).
+                let screen = ui.input(|i| i.raw.screen_rect);
+                let card_w = 460.0;
+                let target_y = 40.0;
+                let t_in = (ring.at.elapsed().as_secs_f32() / 0.35).min(1.0);
+                let ease = 1.0 - (1.0 - t_in) * (1.0 - t_in) * (1.0 - t_in);
+                let y = -90.0 + (target_y + 90.0) * ease;
+                let x = screen.unwrap_or(egui::Rect::ZERO).center().x - card_w / 2.0;
+                egui::Area::new(egui::Id::new("ringing_card"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(x, y))
+                    .show(ui.ctx(), |ui| {
+                        ui.allocate_ui(egui::vec2(card_w, 70.0), |ui| {
+                            egui::Frame::default()
+                                .fill(crate::theme::tint_over(
                                     self.palette.panel,
                                     self.palette.danger,
-                                    f32::from(ring_alpha) / 255.0,
-                                ),
-                            ))
-                            // Vertical breathing room — without it the
-                            // buttons spanned the full band and collided
-                            // with the border.
-                            .inner_margin(egui::Margin::symmetric(0, 5)),
-                    )
-                    .show_inside(ui, |ui| {
+                                    0.14,
+                                ))
+                                .stroke(egui::Stroke::new(
+                                    1.2,
+                                    crate::theme::tint_over(
+                                        self.palette.panel,
+                                        self.palette.danger,
+                                        f32::from(ring_alpha) / 255.0,
+                                    ),
+                                ))
+                                .corner_radius(egui::CornerRadius::same(14))
+                                .shadow(egui::Shadow {
+                                    offset: [0, 10],
+                                    blur: 30,
+                                    spread: 0,
+                                    color: Color32::from_black_alpha(100),
+                                })
+                                .inner_margin(egui::Margin::symmetric(14, 10))
+                                .show(ui, |ui| {
                         let mut accept = false;
                         let mut decline = false;
-                        // Left danger stripe (premium cue over a plain
-                        // border).
-                        let band = ui.max_rect();
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                band.left_top(),
-                                egui::vec2(3.0, band.height()),
-                            ),
-                            0.0,
-                            self.palette.danger,
-                        );
                         ui.horizontal(|ui| {
-                            ui.add_space(11.0);
+                            ui.add_space(2.0);
                             // Caller avatar disc.
                             let (av, _) = ui.allocate_exact_size(
-                                egui::vec2(26.0, 26.0),
+                                egui::vec2(36.0, 36.0),
                                 egui::Sense::hover(),
                             );
                             ui.painter().circle_filled(
                                 av.center(),
-                                13.0,
+                                18.0,
                                 crate::model::avatar_color(&ring.name),
                             );
                             ui.painter().text(
                                 av.center(),
                                 egui::Align2::CENTER_CENTER,
                                 crate::model::initials(&ring.name),
-                                egui::FontId::proportional(10.5),
+                                egui::FontId::proportional(13.0),
                                 Color32::WHITE,
                             );
+                            ui.add_space(2.0);
                             let video = if ring.has_video { " · video" } else { "" };
                             let ring_secs = ring.at.elapsed().as_secs();
                             // Two-line identity: strong caller name, then a
                             // quiet status line (one flat line read as a
                             // status strip, not an interruption).
                             ui.vertical(|ui| {
-                                ui.label(
-                                    RichText::new(&ring.name)
-                                        .strong()
-                                        .size(13.0),
-                                );
+                                    ui.label(
+                                        RichText::new(&ring.name)
+                                            .strong()
+                                            .size(13.5),
+                                    );
                                 ui.label(
                                     RichText::new(format!(
                                         "incoming call{video} · {ring_secs}s"
@@ -3132,34 +3139,33 @@ impl eframe::App for TeamsFastApp {
                                     } else {
                                         (palette.ok, Color32::WHITE)
                                     };
+                                    let accept_btn = egui::Button::new(
+                                        RichText::new("Accept")
+                                            .small()
+                                            .strong()
+                                            .color(accept_fg),
+                                    )
+                                    .fill(accept_fill)
+                                    .min_size(egui::vec2(88.0, 30.0))
+                                    .corner_radius(egui::CornerRadius::same(15));
                                     if ui
-                                        .add_enabled(
-                                            !busy,
-                                            egui::Button::new(
-                                                RichText::new("Accept")
-                                                    .small()
-                                                    .strong()
-                                                    .color(accept_fg),
-                                            )
-                                            .fill(accept_fill)
-                                            .min_size(egui::vec2(96.0, 30.0))
-                                            .corner_radius(egui::CornerRadius::same(8)),
-                                        )
+                                        .add_enabled(!busy, accept_btn)
                                         .clicked()
                                     {
                                         accept = true;
                                     }
-                                    ui.add_space(12.0);
+                                    ui.add_space(8.0);
                                     if ui
                                         .add(
                                             egui::Button::new(
                                                 RichText::new("Decline")
                                                     .small()
+                                                    .strong()
                                                     .color(Color32::WHITE),
                                             )
                                             .fill(palette.danger)
-                                            .min_size(egui::vec2(96.0, 30.0))
-                                            .corner_radius(egui::CornerRadius::same(8)),
+                                            .min_size(egui::vec2(88.0, 30.0))
+                                            .corner_radius(egui::CornerRadius::same(15)),
                                         )
                                         .clicked()
                                     {
@@ -3181,6 +3187,8 @@ impl eframe::App for TeamsFastApp {
                         if decline {
                             actions.push(Action::DeclineIncoming);
                         }
+                                });
+                        });
                     });
                 for a in actions {
                     self.apply(a);
