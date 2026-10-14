@@ -366,21 +366,26 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             // Group consecutive messages from the same sender within a
             // 5-minute window (Teams behaviour; the old same-minute rule
             // split runs that pause for a moment).
-            let grouped = i > 0 && {
-                let prev = &ctx.messages[i - 1];
-                if prev.sender_mri != m.sender_mri {
-                    false
-                } else {
+            let groups_with =
+                |a: &MessageInfo, b: &MessageInfo| -> bool {
+                    if a.sender_mri != b.sender_mri {
+                        return false;
+                    }
                     match (
-                        crate::model::to_epoch_ms(m.timestamp.as_str()),
-                        crate::model::to_epoch_ms(prev.timestamp.as_str()),
+                        crate::model::to_epoch_ms(a.timestamp.as_str()),
+                        crate::model::to_epoch_ms(b.timestamp.as_str()),
                     ) {
                         (Some(t), Some(pt)) => t.saturating_sub(pt) <= 300_000,
-                        _ => m.timestamp.get(0..16) == prev.timestamp.get(0..16),
+                        _ => a.timestamp.get(0..16) == b.timestamp.get(0..16),
                     }
-                }
-            };
-            message_row(ui, ctx, m, own, grouped);
+                };
+            let grouped = i > 0 && groups_with(m, &ctx.messages[i - 1]);
+            // Teams attributes the timestamp (and seen-by) to the LAST
+            // bubble of a run, not the first.
+            let last_of_group = ctx.messages.get(i + 1).is_none_or(|n| {
+                !groups_with(n, m)
+            });
+            message_row(ui, ctx, m, own, grouped, last_of_group);
         }
         // Own sends in flight / failed: translucent bubble, Retry on error.
         for p in ctx.pending {
@@ -657,6 +662,7 @@ fn message_row(
     m: &MessageInfo,
     own: bool,
     grouped: bool,
+    last_of_group: bool,
 ) {
     if own {
         // Right-aligned row: RTL places the avatar at the far right; the
@@ -682,7 +688,7 @@ fn message_row(
             ui.add_space(6.0);
             ui.allocate_ui(egui::vec2(slot_w, 10.0), |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                    bubble_parts(ui, ctx, m, own, grouped);
+                    bubble_parts(ui, ctx, m, own, grouped, last_of_group);
                 });
             });
             if !grouped {
@@ -705,14 +711,15 @@ fn message_row(
                 ui.set_max_width((ui.available_width() * 0.8).min(620.0));
                 if !grouped {
                     let name = sender_label(m, ctx);
+                    // Native Teams: sender names are secondary gray —
+                    // accent blue is reserved for mentions and links.
                     if ui
                         .add(
                             egui::Label::new(
-                                RichText::new(&name).small().strong().color(ctx.pal.link),
+                                RichText::new(&name).small().strong().color(ctx.pal.secondary),
                             )
                             .selectable(false),
                         )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text("Contact card")
                         .clicked()
                     {
@@ -722,7 +729,7 @@ fn message_row(
                         });
                     }
                 }
-                bubble_parts(ui, ctx, m, own, grouped);
+                bubble_parts(ui, ctx, m, own, grouped, last_of_group);
             });
         });
     }
@@ -739,6 +746,7 @@ fn bubble_parts(
     m: &MessageInfo,
     own: bool,
     grouped: bool,
+    last_of_group: bool,
 ) {
 
     // Reactions chips (hover = who reacted; click = full list popup)
@@ -924,7 +932,7 @@ fn bubble_parts(
         .unwrap_or(false);
     let open = in_bubble || in_bar;
 
-    if !grouped {
+    if last_of_group {
         let pinned = ctx.pinned.contains(&m.id);
         let seen_by: Option<String> = ctx.receipts.get(&m.id).map(|users| {
             let names: Vec<String> = users
@@ -1000,8 +1008,16 @@ fn bubble_parts(
         let (bar_w, bar_h) = bar_rect_prev
             .map(|r| (r.width(), r.height()))
             .unwrap_or((BAR_W, 48.0));
+        // Right edge aligned to the bubble's; for INCOMING bubbles the bar
+        // must not extend left into the avatar gutter (it read as
+        // misaligned with the message).
+        let min_x = if own {
+            clip.left() + 8.0
+        } else {
+            (bubble_rect.left() - 8.0).max(clip.left() + 8.0)
+        };
         let anchor_x = (bubble_rect.right() - bar_w)
-            .max(clip.left() + 8.0)
+            .max(min_x)
             .min(clip.right() - bar_w - 8.0);
         // Prefer above the bubble with a 4px gap. The old hardcoded 44px
         // offset was smaller than the real bar height, so the bar dug into

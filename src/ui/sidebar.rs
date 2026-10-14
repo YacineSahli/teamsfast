@@ -99,9 +99,6 @@ pub fn sidebar(
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Teams").strong().size(17.0));
                 ui.label(RichText::new("your teams & channels").small().weak());
-                if *loading_teams && ctx.teams.is_empty() {
-                    ui.spinner();
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if crate::ui::widgets::btn::ghost(
                         ui,
@@ -119,6 +116,23 @@ pub fn sidebar(
             if ctx.teams.is_empty() && !*loading_teams {
                 *loading_teams = true;
                 ctx.cmd.send(Command::LoadTeams).ok();
+            }
+            // The channel tree loads serially (~1s per team) — a bare void
+            // here read as broken. Body-level state, not a header spinner
+            // (an inline spinner arc read as a stray ")" glyph).
+            if ctx.teams.is_empty() {
+                ui.add_space(10.0);
+                if *loading_teams {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Loading your teams…").weak());
+                    });
+                } else {
+                    ui.label(
+                        RichText::new("No teams yet — ask to be added to one, or create one from + Channel.")
+                            .weak(),
+                    );
+                }
             }
             ScrollArea::vertical()
                 .id_salt("teams_list_scroll")

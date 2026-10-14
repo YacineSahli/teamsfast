@@ -486,8 +486,16 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
     let mut out = String::new();
     for s in segs {
         match s {
-            Seg::Text(t) | Seg::Bold(t) | Seg::Italic(t) | Seg::Code(t) | Seg::Mention(t) => {
-                out.push_str(t)
+            Seg::Text(t) | Seg::Bold(t) | Seg::Italic(t) | Seg::Code(t) => out.push_str(t),
+            // Mentions render as padded chips in the UI; in PLAIN text
+            // (previews, snippets) a chip needs its own spaces — the
+            // source often omits them ("…comment<at>Name</at>").
+            Seg::Mention(t) => {
+                if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+                out.push_str(t);
+                out.push('\u{2009}');
             }
             Seg::Link { text, .. } => out.push_str(text),
             Seg::Quote(t) => out.push_str(t),
@@ -495,7 +503,7 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
             Seg::LineBreak => out.push('\n'),
         }
     }
-    out
+    out.trim_end_matches('\u{2009}').to_string()
 }
 
 /// Day separator: hairline rules flanking a centered date chip.
