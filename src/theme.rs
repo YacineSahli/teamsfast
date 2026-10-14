@@ -499,6 +499,7 @@ fastframe_icons::icons! {
         PinOff => lucide "pin-off",
         Plus => lucide "plus",
         Refresh => lucide "refresh-cw",
+        Monitor => lucide "monitor",
         Search => lucide "search",
         Settings => lucide "settings",
         Sun => lucide "sun",
