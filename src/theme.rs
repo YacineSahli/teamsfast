@@ -152,6 +152,16 @@ impl Palette {
             style.spacing.menu_spacing = 2.0;
             style.spacing.item_spacing = egui::vec2(8.0, 6.0);
             style.animation_time = 0.14;
+            // Floating scrollbars: the thumb inherits the bright text
+            // stroke — dim it to a quiet veil (was the loudest pixel in
+            // the Settings modal).
+            let sc = &mut style.spacing.scroll;
+            sc.bar_width = 8.0;
+            sc.dormant_handle_opacity = 0.0;
+            sc.active_handle_opacity = 0.30;
+            sc.interact_handle_opacity = 0.45;
+            sc.active_background_opacity = 0.0;
+            sc.interact_background_opacity = 0.0;
         });
     }
 }

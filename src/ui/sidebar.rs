@@ -332,7 +332,8 @@ fn chat_row(
                                         );
                                     }
                                 }
-                                if !time.is_empty() {
+                                let has_time = !time.is_empty();
+                                if has_time {
                                     ui.label(
                                         RichText::new(time)
                                             .small()
@@ -359,10 +360,12 @@ fn chat_row(
                                         .fit_to_exact_size(egui::Vec2::splat(11.0)),
                                     );
                                 }
-                                if chat.is_group {
+                                if chat.is_group && has_time {
                                     // Monochrome icon, not the 👥 emoji — the
                                     // Noto glyph's saturated blue was the only
                                     // strong blue in a purple-accent theme.
+                                    // Paired with the time: a lone glyph on a
+                                    // timestampless row read as unfinished.
                                     ui.add(
                                         egui::Image::from_bytes(
                                             crate::theme::Icon::Users.uri(),

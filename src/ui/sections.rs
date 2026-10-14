@@ -386,10 +386,10 @@ fn meeting_pill(
         pal.surface
     };
     let p = ui.painter().with_clip_rect(rect.shrink(1.0));
-    p.rect_filled(rect, 4, fill);
+    p.rect_filled(rect, 6, fill);
     p.rect_stroke(
         rect,
-        4,
+        6,
         egui::Stroke::new(1.0, if dead { pal.outline.gamma_multiply(0.6) } else { pal.outline }),
         egui::StrokeKind::Inside,
     );
@@ -1028,23 +1028,21 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
                 // A lone "—" placeholder line on rows without metadata read
                 // as broken — draw the name alone, nudged toward the row's
                 // optical center, and keep the row height (rhythm intact).
-                let has_meta = size != "—" || !modified.is_empty();
-                if !has_meta {
-                    ui.add_space(9.0);
-                }
                 ui.add(
                     egui::Label::new(RichText::new(&f.name).strong())
                         .truncate()
                         .selectable(false),
                 );
-                if has_meta {
-                    let meta = match (size == "—", modified.is_empty()) {
-                        (true, false) => modified.clone(),
-                        (false, true) => size.clone(),
-                        _ => format!("{size} · {modified}"),
-                    };
-                    ui.label(RichText::new(meta).small().weak());
-                }
+                // Known metadata, else a muted origin line — every row
+                // keeps the same two-line anatomy (an empty second line
+                // read as alternating row heights; a "—" read as broken).
+                let meta = match (size == "—", modified.is_empty()) {
+                    (true, false) => modified.clone(),
+                    (false, true) => size.clone(),
+                    (false, false) => format!("{size} · {modified}"),
+                    (true, true) => "In OneDrive".to_string(),
+                };
+                ui.label(RichText::new(meta).small().weak());
             });
             // Row actions reveal on hover (Fluent): resting rows carry
             // icon + text only — two permanent outlined buttons on every

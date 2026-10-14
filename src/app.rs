@@ -3088,11 +3088,10 @@ impl eframe::App for TeamsFastApp {
                     .show(ui.ctx(), |ui| {
                         ui.allocate_ui(egui::vec2(card_w, 70.0), |ui| {
                             egui::Frame::default()
-                                .fill(crate::theme::tint_over(
-                                    self.palette.panel,
-                                    self.palette.danger,
-                                    0.14,
-                                ))
+                                // Neutral elevated fill — the red pulse
+                                // hairline carries the urgency (a maroon
+                                // slab fought the app's restrained surfaces).
+                                .fill(self.palette.surface)
                                 .stroke(egui::Stroke::new(
                                     1.2,
                                     crate::theme::tint_over(
@@ -3925,11 +3924,44 @@ impl eframe::App for TeamsFastApp {
                                 let rect = ui.max_rect();
                                 let c = rect.center();
                                 let pal = &self.palette;
-                                // Ghost icon anchor above the title —
-                                // text-only empty states read as unfinished.
-                                // `put` places it at an explicit rect so the
-                                // painter-centering below stays intact.
-                                let ghost = crate::theme::Icon::MessageSquare;
+                                // Per-view copy: the chat hint ("Ctrl+N")
+                                // leaked into every other section's empty
+                                // right pane and read as a bug there.
+                                let (title, sub, ghost) = match self.main_view {
+                                    MainView::Teams => (
+                                        "Select a team",
+                                        "Pick a team on the left to browse its channels.",
+                                        crate::theme::Icon::Users,
+                                    ),
+                                    MainView::Calendar => (
+                                        "Nothing to preview",
+                                        "Pick a meeting to see its details.",
+                                        crate::theme::Icon::Calendar,
+                                    ),
+                                    MainView::Files => (
+                                        "Select a file",
+                                        "Files from your conversations and OneDrive appear here.",
+                                        crate::theme::Icon::FileText,
+                                    ),
+                                    MainView::ToDo => (
+                                        "Select a list",
+                                        "Pick a list on the left to see its tasks.",
+                                        crate::theme::Icon::SquareCheck,
+                                    ),
+                                    MainView::Activity => (
+                                        "You're all caught up",
+                                        "Mentions, reactions and replies will show up here.",
+                                        crate::theme::Icon::Activity,
+                                    ),
+                                    // Planner/Shifts/Notes are off the rail;
+                                    // if one ever returns, the chat copy is
+                                    // the safe fallback.
+                                    _ => (
+                                        "Select a conversation",
+                                        "Pick a chat on the left, or press Ctrl+N for a new one.",
+                                        crate::theme::Icon::MessageSquare,
+                                    ),
+                                };
                                 let icon_rect = egui::Rect::from_center_size(
                                     egui::pos2(c.x, c.y - 46.0),
                                     egui::Vec2::splat(40.0),
@@ -3941,7 +3973,7 @@ impl eframe::App for TeamsFastApp {
                                         .fit_to_exact_size(egui::Vec2::splat(40.0)),
                                 );
                                 let mut job = egui::text::LayoutJob::simple(
-                                    "Select a conversation".into(),
+                                    title.into(),
                                     egui::FontId::proportional(16.0),
                                     pal.text,
                                     f32::INFINITY,
@@ -3958,8 +3990,7 @@ impl eframe::App for TeamsFastApp {
                                     pal.text,
                                 );
                                 let sub = ui.painter().layout(
-                                    "Pick a chat on the left, or press Ctrl+N for a new one."
-                                        .to_string(),
+                                    sub.to_string(),
                                     egui::FontId::proportional(13.0),
                                     pal.secondary,
                                     f32::INFINITY,
@@ -4385,7 +4416,10 @@ impl eframe::App for TeamsFastApp {
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut self.join_source)
                         .hint_text("https://teams.microsoft.com/l/meetup-join/…")
-                        .desired_width(ui.available_width()),
+                        .desired_width(ui.available_width())
+                        // Match the app's standard field height (a 26px
+                        // input next to 30px buttons sat undersized).
+                        .min_size(egui::vec2(0.0, 30.0)),
                 );
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(10.0);
