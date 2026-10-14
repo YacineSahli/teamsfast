@@ -303,10 +303,17 @@ remaining Phase 2 item.
 - `TEAMSFAST_VIDEOCALL=1` + `TEAMSFAST_HANGUP_AFTER=<secs>` place a
   camera-on echo call that hangs up on a timer — bounded headless call
   QA; the run's stdout carries the call summary
-  (`video_packets_sent=…`, `echo_detected=…`).
+  (`video_packets_sent=…`, `echo_detected=…`). NOTE: HANGUP_AFTER counts
+  from LAUNCH, not call-connect — slow logins eat the window (bump it).
+- `TEAMSFAST_SCREENSHARE=1` swaps the Share button onto a synthetic
+  1280x720 animated-bar source AND auto-starts it on video calls — full
+  share path (slot swap, encoder re-init, preview tee) headlessly; pair
+  with VIDEOCALL. The real portal path needs `--features screenshare`
+  and an interactive session (portal picker dialog).
 - Screenshot gotchas: always `env -u WAYLAND_DISPLAY DISPLAY=:N`; kill
   Xvfb/app by PID (pkill -f patterns self-match the bash command line).
-  A phantom pointer in Xvfb can hold one hover bar open — ignore in QA.
+  A phantom pointer in Xvfb can hold one hover bar open — ignore in QA
+  (it also makes plain/HOVER conversation shots byte-identical).
 
 ## UI polish (2026-10-08 pass, vision-verified)
 
@@ -320,8 +327,46 @@ active-tab fix, centered painter-based loading/empty body notes
 (body_note — ScrollAreas collapse available rects, never center with
 layouts inside them), Teams channel indent, Meet-now primary button,
 Files metadata separators, Activity Clear guard, rail icon semantics.
-Deferred: own-avatar grid, timestamp anchoring, message grouping,
-hover-toolbar exclusivity, light-theme audit, Shifts header action.
+
+## UI polish (2026-10-14 audit round, 4-critic + pixel verify)
+
+15-surface battery → 4 parallel vision critics (native-Teams rubric) →
+pixel/code triage (scrim "missing" claim was the KNOWN false positive;
+the phantom pointer opens a hover bar in unhooked shots) → fixes:
+- Settings: custom SQUARE checkboxes (stock `ui.checkbox` inherits the
+  global widget radius 8 → its ~14px box renders as a CIRCLE = radio
+  semantics for independent booleans); segmented pill radius 5.
+- Calendar: 48px hours (36 crushed 30-min meetings), time RANGES not
+  "HH:MM, D Mon" in blocks/pills, char-boundary-safe ellipsize
+  (painter text has no truncation; byte-slicing PANICS on multi-byte
+  chars — en-dash took down week/month), lane-aware column min-width
+  (concurrent meetings were one-letter slivers), now-line spans the
+  grid + dot, month cells stretch + today = accent disc on the numeral
+  (full-cell outline read as selection), out-of-month pills dim,
+  canceled meetings dim/strike/no-Join (Graph `status:cancelled`
+  parsed; the tenant really returns them).
+- Files: per-type COLORED icons (palette-sourced tints), always
+  two-line rows, hover-revealed actions (24 always-on outlined buttons
+  was the loudest chrome in the app).
+- Ring banner: vertical inset (buttons spanned the band), two-line
+  identity, matched Accept/Decline (dark-theme pale green darkened
+  0.72 + white text).
+- Chat: unread dot never re-badges the OPEN chat from stale server
+  horizons; timestamp+seen-by under the LAST bubble of a group; sender
+  names secondary gray (accent is for mentions/links only); mention
+  chips get their own spaces in plain previews.
+- Teams view: body-level loading/empty state (serial ~1s/team fetch
+  showed a bare void; the inline spinner arc read as a stray ")").
+- Modal X buttons: stroke NONE (transparent fill alone still draws the
+  inactive bg_stroke — same ghost trap as the top bar).
+- Light theme: active rail tile wash strengthened (0x50 → 0x86 alpha;
+  glyph contrast was ~2.8:1).
+- Hover bar: never extends into the avatar gutter on incoming bubbles.
+- To Do: matched ghost header buttons, Add disabled until text.
+- Empty state: ghost icon above "Select a conversation".
+Deferred (P3, accepted): calendar List nav chevrons, group-chat glyph
+ragged column, search field recessed fill, dialog shadow depth,
+Teams per-channel unread dots (needs data), checkbox→toggle switch.
 
 ## Known gaps / deferred
 
@@ -336,22 +381,31 @@ hover-toolbar exclusivity, light-theme audit, Shifts header action.
   run the app with `RUST_LOG=ost=debug`, receive any call, grep the log
   for `NGCallManagerWin` frames (`teams-core/examples/self_ring.rs`
   documents the fan-out experiment).
-- **Video/screenshare** — increments 1+2 SHIPPED: camera send on call
-  start (chat-header video button) AND a call-stage panel (remote tile
-  with decode→egui texture, local preview, mute/camera toggles via
-  soft gates, hang up). teams-core's `video-cam` feature = v4l +
-  openh264, deliberately NO SDL2; `video-capture` keeps the CLI's SDL
-  window (needs libsdl2-dev to link). Verified live: camera → H.264 →
-  RTP (1558 pkts/40 s); tiles pixel-QA'd with TEAMSFAST_FAKEVIDEO=1.
-  Remaining: remote-decode verification against a REAL peer (the echo
-  bot sends no video), screenshare (Wayland: xdg-desktop-portal
-  ScreenCast → PipeWire — the biggest remaining lift), true modality
-  renegotiation (the current toggles are soft gates).
-- **Meeting lobby** — joining a lobby-gated meeting places the leg; an
-  explicit lobby/admit UI is future work (teams-core has LobbyState).
+- **Video/screenshare** — camera send (chat-header video button) +
+  call-stage panel (remote tile, local preview, mute/camera toggles,
+  hang up) + **SCREENSHARE SHIPPED (2026-10-14)**: stage Share button
+  (video calls — the share rides the existing video leg, no
+  renegotiation), portal ScreenCast via `--features screenshare`, and a
+  synthetic QA source. teams-core: `ScreenShareSlot` on the controls
+  pair, sticky source preference in the send loop (hold last frame
+  between capture ticks — else the encoder flaps 720p↔240p), encoder
+  re-init on resolution change (area-scaled bitrate, 256kbps camera →
+  3.5Mbps cap), screen frames capped to 1920x1080. Live-verified on an
+  echo call (single 1280x720@3072kbps encoder init, bars in the preview
+  tile, vision 5/5). Remaining: interactive portal test against a REAL
+  peer (user-gated), remote-decode verification (echo sends no video),
+  true modality renegotiation (toggles are soft gates), screenshare on
+  MEETING joins (join currently places audio-only legs), pw main-loop
+  teardown (the capture thread parks; one leaked thread per share).
 - **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,
-  Submit actions shown disabled); Input.Text and interactive submits are
-  future work.
+  Submit actions shown disabled). Interactive submits (Input.Text +
+  Action.Submit) are CAPTURE-GATED, not mere TODO: the submit wire
+  format was never captured, and better-teams ALSO punts (cards with
+  inputs get fallback rows there). Do not guess a payload — capture a
+  real submit from the web client first.
+- **Meeting lobby** — joining a lobby-gated meeting places the leg; the
+  lobby UI shipped (joining → lobby → admitted, 12s grace heuristic);
+  verify the admit signal against a real lobby-gated meeting.
 - **Topic-channel sends** still fail at MS's side — honest error surfaced.
 - **Fastframe shell** — single-instance/autostart/self-update
   (fastframe-instance/update/shell crates not yet wired).
