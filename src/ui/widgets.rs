@@ -11,12 +11,13 @@ use egui::{Color32, CornerRadius, FontId, Frame, RichText, Stroke, TextFormat, U
 pub mod btn {
     use super::*;
 
-    pub const H: f32 = 26.0; // standard control height
+    pub const H: f32 = 28.0; // standard control height
+    pub const R: u8 = 8; // control radius (bubbles/cards use 12, chips 6)
 
     fn base(text: &str, color: Color32) -> egui::Button<'_> {
         egui::Button::new(RichText::new(text).size(12.5).color(color))
             .min_size(egui::vec2(0.0, H))
-            .corner_radius(egui::CornerRadius::same(8))
+            .corner_radius(egui::CornerRadius::same(R))
     }
 
     /// Filled accent — the ONE primary action on a surface.
@@ -48,17 +49,30 @@ pub mod btn {
     }
 }
 
-/// A quiet icon button (Lucide icon, ghost style): 30x30 hit area,
-/// transparent at rest, surface tint on hover, with a tooltip.
-pub fn icon_button(ui: &mut Ui, icon: crate::theme::Icon, tip: &str) -> egui::Response {
-    let tint = ui.style().visuals.text_color();
-    let btn = egui::Button::new(icon.image(tint, 16.0))
-        .fill(Color32::TRANSPARENT)
-        .min_size(egui::vec2(30.0, 28.0));
-    ui.add(btn).on_hover_text(tip)
+/// Ease-in-out tint fade used by every hand-painted hover state: `t` is
+/// 0→1 eased over ~120 ms (egui's `animate_value_with_time`), so rows,
+/// tiles and icon buttons glide instead of snapping.
+pub fn hover_t(ctx: &egui::Context, id: egui::Id, hovered: bool) -> f32 {
+    ctx.animate_value_with_time(id, if hovered { 1.0 } else { 0.0 }, 0.12)
 }
 
-/// Accent-filled icon button (for the composer's send action).
+/// A quiet icon button (Lucide icon, ghost style): 30x28 hit area,
+/// transparent at rest, a soft rounded tint fades in on hover.
+pub fn icon_button(ui: &mut Ui, icon: crate::theme::Icon, tip: &str) -> egui::Response {
+    let tint = ui.style().visuals.text_color();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 28.0), egui::Sense::click());
+    let t = hover_t(ui.ctx(), resp.id, resp.hovered());
+    if t > 0.01 {
+        let pal_fill = ui.style().visuals.widgets.hovered.bg_fill;
+        ui.painter()
+            .rect_filled(rect, 8.0, tint_over_color(pal_fill, t));
+    }
+    paint_icon_centered(ui, rect, icon, tint, 16.0);
+    resp.on_hover_text(tip)
+}
+
+/// Accent-filled icon button (the composer's send action): accent disc at
+/// rest armed, recessed tile when disabled, animated hover.
 pub fn accent_icon_button(
     ui: &mut Ui,
     icon: crate::theme::Icon,
@@ -67,20 +81,52 @@ pub fn accent_icon_button(
     on_accent: Color32,
     enabled: bool,
 ) -> egui::Response {
-    let tint = if enabled {
-        on_accent
+    let size = egui::vec2(32.0, 32.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hot = resp.hovered() || resp.is_pointer_button_down_on();
+    let t = hover_t(ui.ctx(), resp.id, hot);
+    if enabled {
+        let fill = if resp.is_pointer_button_down_on() {
+            tint_over_color(accent, 0.82) // pressed: dip toward the surface
+        } else {
+            tint_over_color(accent, 1.0 + 0.08 * t) // hover: lighten a touch
+        };
+        ui.painter().rect_filled(rect, 10.0, fill);
+        paint_icon_centered(ui, rect, icon, on_accent, 16.0);
     } else {
-        ui.style().visuals.weak_text_color()
-    };
-    let fill = if enabled {
-        accent
-    } else {
-        ui.style().visuals.extreme_bg_color
-    };
-    let btn = egui::Button::new(icon.image(tint, 16.0))
-        .fill(fill)
-        .min_size(egui::vec2(36.0, 32.0));
-    ui.add_enabled(enabled, btn).on_hover_text(tip)
+        let fill = ui.style().visuals.extreme_bg_color;
+        ui.painter().rect_filled(rect, 10.0, fill);
+        paint_icon_centered(
+            ui,
+            rect,
+            icon,
+            ui.style().visuals.weak_text_color(),
+            16.0,
+        );
+    }
+    resp.on_hover_text(tip)
+}
+
+/// Blend a color toward white by `t` (0–1) — a cheap "lighten on hover".
+fn tint_over_color(c: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |v: u8| (v as f32 + (255.0 - v as f32) * t * 0.12).round() as u8;
+    Color32::from_rgb(mix(c.r()), mix(c.g()), mix(c.b()))
+}
+
+/// Paint a Lucide icon image centered in `rect` (bytes URI loader).
+fn paint_icon_centered(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    icon: crate::theme::Icon,
+    tint: Color32,
+    px: f32,
+) {
+    let img = egui::Image::from_bytes(icon.uri(), icon.bytes())
+        .tint(tint)
+        .fit_to_exact_size(egui::vec2(px, px));
+    let center = rect.center() - egui::vec2(px / 2.0, px / 2.0);
+    img.paint_at(ui, egui::Rect::from_min_size(center, egui::vec2(px, px)));
 }
 
 /// A quiet text button (ghost style).
@@ -373,6 +419,11 @@ pub fn render_segments(
                 }
                 Seg::Code(t) => {
                     row_has_content = true;
+                    // Chip/block colours derive from the palette — hardcoded
+                    // dark fills rendered light-theme code as a dark slab and
+                    // same-fill-on-bubble made the card invisible in dark.
+                    let chip_fill = crate::theme::tint_over(pal.bubble_in, pal.text, 0.09);
+                    let block_fill = crate::theme::tint_over(pal.bubble_in, pal.text, 0.12);
                     // Long chips can't extend past the bubble either —
                     // render them as wrapping blocks instead.
                     if t.contains('\n') || t.chars().count() > 48 {
@@ -385,7 +436,8 @@ pub fn render_segments(
                             ui.end_row();
                         }
                         Frame::default()
-                            .fill(Color32::from_rgb(0x17, 0x19, 0x1d))
+                            .fill(block_fill)
+                            .stroke(Stroke::new(1.0, pal.outline.gamma_multiply(0.5)))
                             .corner_radius(CornerRadius::same(6))
                             .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
@@ -394,7 +446,7 @@ pub fn render_segments(
                                     RichText::new(t.trim_end())
                                         .monospace()
                                         .size(12.5)
-                                        .color(Color32::from_rgb(0xd8, 0xde, 0xe4)),
+                                        .color(pal.text),
                                 );
                             });
                         ui.end_row();
@@ -404,13 +456,13 @@ pub fn render_segments(
                         // chip (extend mode) — horizontal_wrapped moves the
                         // whole chip to the next line instead.
                         Frame::default()
-                            .fill(Color32::from_rgb(0x2b, 0x2d, 0x31))
+                            .fill(chip_fill)
                             .corner_radius(CornerRadius::same(4))
                             .inner_margin(egui::Margin::symmetric(4, 1))
                             .show(ui, |ui| {
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(t).monospace().size(12.5),
+                                        RichText::new(t).monospace().size(12.5).color(pal.text),
                                     )
                                     .wrap_mode(egui::TextWrapMode::Extend),
                                 );
@@ -434,17 +486,32 @@ pub fn render_segments(
                 }
                 Seg::Mention(t) => {
                     row_has_content = true;
-                    ui.label(
-                        RichText::new(format!("@{t}"))
-                            .color(pal.accent)
-                            .strong(),
-                    );
+                    // Solid accent chip with on-accent text — reads on BOTH
+                    // bubble fills (bare accent text vanished on the own
+                    // indigo bubble; tinted chips matched one fill only).
+                    Frame::default()
+                        .fill(pal.accent)
+                        .corner_radius(CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(5, 1))
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("@{t}"))
+                                        .size(12.5)
+                                        .color(pal.on_accent),
+                                )
+                                .wrap_mode(egui::TextWrapMode::Extend)
+                                .selectable(false),
+                            );
+                        });
                 }
                 Seg::Quote(t) => {
                     row_has_content = true;
                     Frame::default()
-                        .stroke(Stroke::new(2.0, pal.link))
-                        .inner_margin(egui::Margin::symmetric(6, 2))
+                        .fill(crate::theme::tint_over(pal.bubble_in, pal.text, 0.05))
+                        .stroke(Stroke::new(2.0, pal.accent.gamma_multiply(0.7)))
+                        .corner_radius(CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
                             ui.label(RichText::new(t).weak().small());
                         });

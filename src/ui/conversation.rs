@@ -422,12 +422,12 @@ fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
                             })
                             .stroke(stroke)
                             .corner_radius(egui::CornerRadius {
-                                nw: 10,
-                                ne: 10,
-                                sw: 10,
-                                se: 2,
+                                nw: 12,
+                                ne: 12,
+                                sw: 12,
+                                se: 3,
                             })
-                            .inner_margin(egui::Margin::symmetric(10, 5))
+                            .inner_margin(egui::Margin::symmetric(12, 7))
                             .show(ui, |ui| {
                                 ui.with_layout(
                                     egui::Layout::left_to_right(egui::Align::TOP),
@@ -500,8 +500,8 @@ pub fn conversation_composer(
         Frame::default()
             .fill(ctx.pal.surface)
             .stroke(Stroke::new(1.0, ctx.pal.outline))
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::symmetric(8, 4))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Replying to {who}")).small().strong());
@@ -516,8 +516,8 @@ pub fn conversation_composer(
         Frame::default()
             .fill(ctx.pal.surface)
             .stroke(Stroke::new(1.0, ctx.pal.warning))
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::symmetric(8, 4))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Editing").small().strong());
@@ -549,70 +549,56 @@ pub fn conversation_composer(
 
     Frame::default()
         .fill(compose_fill)
-        .stroke(egui::Stroke::new(1.0, ctx.pal.outline))
+        // One quiet surface — the old hairline border made the composer
+        // read as a fourth box next to the input and send tiles.
+        .stroke(Stroke::NONE)
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::symmetric(8, 7))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
-                // Attach (Lucide paperclip, ghost style).
-                let attach = ui
-                    .add(
-                        egui::Button::new(
-                            crate::theme::Icon::Paperclip
-                                .image(ui.style().visuals.text_color(), 17.0),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .min_size(egui::vec2(32.0, 32.0)),
-                    )
-                    .on_hover_text("Attach a file");
+                // Attach (Lucide paperclip, ghost style, animated hover).
+                let attach = crate::ui::widgets::icon_button(
+                    ui,
+                    crate::theme::Icon::Paperclip,
+                    "Attach a file",
+                );
                 if attach.clicked() {
                     ctx.actions.push(Action::Attach);
                 }
                 ui.add_space(2.0);
 
-                // Input: framed, rounded, quiet border.
-                let field = egui::Frame::default()
-                    .fill(ctx.pal.bubble_in)
-                    .stroke(egui::Stroke::new(1.0, ctx.pal.outline))
-                    .corner_radius(egui::CornerRadius::same(9))
-                    .inner_margin(egui::Margin::symmetric(8, 5));
-                let response = field
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(draft)
-                                .hint_text(if ctx.edit.is_some() {
-                                    "Edit message…"
-                                } else {
-                                    "Type a message"
-                                })
-                                .desired_width(ui.available_width() - 52.0),
-                        );
-                    })
-                    .response;
+                // Input: the TextEdit's OWN frame does the styling —
+                // recessed fill (extreme bg), quiet idle stroke, and the
+                // accent focus ring comes from selection.stroke. No wrapper
+                // box: the old Frame-inside-TextEdit was three mismatched
+                // boxes in one row.
+                let field = ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .hint_text(if ctx.edit.is_some() {
+                            "Edit message…"
+                        } else {
+                            "Type a message"
+                        })
+                        .desired_width(ui.available_width() - 44.0)
+                        .min_size(egui::vec2(0.0, 32.0)),
+                );
+                let _ = field;
 
-                ui.add_space(4.0);
-                // Send: accent-filled icon button when armed.
+                ui.add_space(6.0);
+                // Send: accent tile when armed, recessed when empty —
+                // animated hover/press via the shared widget.
                 let ready = !draft.trim().is_empty();
-                let send_response = ui.add_enabled(
+                let send_response = crate::ui::widgets::accent_icon_button(
+                    ui,
+                    crate::theme::Icon::Send,
+                    "Send",
+                    ctx.pal.accent,
+                    ctx.pal.on_accent,
                     ready,
-                    egui::Button::new(
-                        crate::theme::Icon::Send.image(
-                            // `dim` vanished on the light composer; secondary
-                            // still reads as disabled next to the armed accent.
-                            if ready { ctx.pal.on_accent } else { ctx.pal.secondary },
-                            17.0,
-                        ),
-                    )
-                    .fill(if ready {
-                        ctx.pal.accent
-                    } else {
-                        ui.style().visuals.extreme_bg_color
-                    })
-                    .min_size(egui::vec2(36.0, 32.0)),
-                ).on_hover_text("Send");
+                );
                 let enter =
-                    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (send_response.clicked() || enter) && ready {
                     let text = draft.trim().to_string();
                     draft.clear();
@@ -753,11 +739,11 @@ fn bubble_parts(
     if !m.reactions.is_empty() {
         if own {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                reaction_chips(ui, ctx, m);
+                reaction_chips(ui, ctx, m, own);
             });
         } else {
             ui.horizontal(|ui| {
-                reaction_chips(ui, ctx, m);
+                reaction_chips(ui, ctx, m, own);
             });
         }
     }
@@ -787,13 +773,15 @@ fn bubble_parts(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             Frame::default()
                 .fill(fill)
+                // 12px body with a 3px corner toward the avatar — the
+                // iMessage "tail hint": direction without a drawn tail.
                 .corner_radius(egui::CornerRadius {
-                    nw: 10,
-                    ne: 10,
-                    sw: 10,
-                    se: 2,
+                    nw: 12,
+                    ne: 12,
+                    sw: 12,
+                    se: 3,
                 })
-                .inner_margin(egui::Margin::symmetric(10, 5))
+                .inner_margin(egui::Margin::symmetric(12, 7))
                 .show(ui, |ui| {
                     if let Some(card) = decoded_card.as_ref() {
                         crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions);
@@ -851,12 +839,12 @@ fn bubble_parts(
         Frame::default()
             .fill(fill)
             .corner_radius(egui::CornerRadius {
-                nw: 10,
-                ne: 10,
-                sw: 2,
-                se: 10,
+                nw: 12,
+                ne: 12,
+                sw: 3,
+                se: 12,
             })
-            .inner_margin(egui::Margin::symmetric(10, 5))
+            .inner_margin(egui::Margin::symmetric(12, 7))
             .show(ui, |ui| {
                 if let Some(card) = decoded_card.as_ref() {
                     crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions);
@@ -1045,137 +1033,161 @@ fn bubble_parts(
             .order(egui::Order::Foreground)
             .fixed_pos(anchor)
             .show(ui.ctx(), |ui| {
-                ui.horizontal(|ui| {
-                    Frame::default()
-                        .fill(ctx.pal.surface)
-                        .stroke(Stroke::new(1.0, ctx.pal.outline))
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(egui::Margin::symmetric(6, 4))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                for e in QUICK_REACTIONS {
-                                    // The emoji must live INSIDE the button:
-                                    // Button::image. (Button::new of a
-                                    // pre-added widget paints the emoji on
-                                    // the bar and leaves an empty chip.)
-                                    let btn = match emoji_image(ui, ctx, e, 20.0) {
-                                        Some(img) => egui::Button::image(img),
-                                        None => egui::Button::new(
-                                            RichText::new((*e).to_string()).size(20.0),
-                                        ),
-                                    }
-                                    .fill(Color32::TRANSPARENT)
-                                    .min_size(egui::vec2(32.0, 28.0));
-                                    let r = ui.add(btn).on_hover_text("React");
-                                    if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
-                                        eprintln!(
-                                            "react btn rect={:?} hovered={} clicked={} contains_ptr={}",
-                                            r.rect,
-                                            r.hovered(),
-                                            r.clicked(),
-                                            r.contains_pointer()
-                                        );
-                                    }
-                                    if r.clicked() {
-                                        sink.borrow_mut().push(Action::React {
-                                            message_id: m.id.clone(),
-                                            emoji: (*e).to_string(),
-                                            remove: false,
-                                        });
-                                    }
+                // ONE continuous pill: the old per-button bordered tiles
+                // read as a debug toolbar stamped over the message, with
+                // the text showing through the gaps. Stadium shape, soft
+                // shadow, one hairline edge.
+                Frame::default()
+                    .fill(ctx.pal.surface)
+                    // Full-strength outline hairline (gamma-multiplied it
+                    // vanished on the light pill's white fill) + the soft
+                    // shadow carry the separation in both themes.
+                    .stroke(Stroke::new(1.0, ctx.pal.outline))
+                    .corner_radius(CornerRadius::same(17))
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .shadow(egui::Shadow {
+                        offset: [0, 4],
+                        blur: 16,
+                        spread: 0,
+                        color: Color32::from_black_alpha(90),
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            for e in QUICK_REACTIONS {
+                                // The emoji must live INSIDE the button:
+                                // Button::image. (Button::new of a
+                                // pre-added widget paints the emoji on
+                                // the bar and leaves an empty chip.)
+                                let btn = match emoji_image(ui, ctx, e, 20.0) {
+                                    Some(img) => egui::Button::image(img),
+                                    None => egui::Button::new(
+                                        RichText::new((*e).to_string()).size(20.0),
+                                    ),
                                 }
-                                ui.separator();
-                                if ui
-                                    .button(RichText::new("Reply").small())
-                                    .on_hover_text("Quote and reply")
-                                    .clicked()
-                                {
-                                    sink.borrow_mut().push(Action::Reply {
+                                .fill(Color32::TRANSPARENT)
+                                // Transparent fill alone still draws the
+                                // inactive bg_stroke — six ghost tiles
+                                // inside the pill (same trap as the modal
+                                // ✕ buttons).
+                                .stroke(Stroke::NONE)
+                                .min_size(egui::vec2(30.0, 28.0));
+                                let r = ui.add(btn).on_hover_text("React");
+                                if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
+                                    eprintln!(
+                                        "react btn rect={:?} hovered={} clicked={} contains_ptr={}",
+                                        r.rect,
+                                        r.hovered(),
+                                        r.clicked(),
+                                        r.contains_pointer()
+                                    );
+                                }
+                                if r.clicked() {
+                                    sink.borrow_mut().push(Action::React {
                                         message_id: m.id.clone(),
-                                        sender: sender_label(m, ctx),
-                                        snippet: crate::ui::widgets::segs_to_plain(
-                                            &parse_html(&m.raw),
-                                        )
-                                        .lines()
-                                        .next()
-                                        .unwrap_or("")
-                                        .to_string(),
+                                        emoji: (*e).to_string(),
+                                        remove: false,
                                     });
                                 }
-                                // Forward to another chat.
-                                if ui
-                                    .add(egui::Button::new(
-                                        crate::theme::Icon::Forward
-                                            .image(Color32::WHITE, 15.0),
-                                    ))
-                                    .on_hover_text("Forward")
-                                    .clicked()
-                                {
-                                    sink.borrow_mut().push(Action::Forward(
-                                        crate::ui::widgets::segs_to_plain(&parse_html(&m.raw)),
-                                    ));
+                            }
+                            // Divider between reactions and message actions.
+                            let (div, _) = ui.allocate_exact_size(
+                                egui::vec2(1.0, 22.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().line_segment(
+                                [div.center_top(), div.center_bottom()],
+                                Stroke::new(
+                                    1.0,
+                                    crate::theme::tint_over(ctx.pal.surface, ctx.pal.secondary, 0.55),
+                                ),
+                            );
+                            ui.add_space(2.0);
+                            let icon_act = |ui: &mut egui::Ui,
+                                            icon: crate::theme::Icon,
+                                            tip: &str,
+                                            on: &mut bool| {
+                                let r = crate::ui::widgets::icon_button(ui, icon, tip);
+                                if r.clicked() {
+                                    *on = true;
                                 }
-                                // Local pin toggle.
-                                let pinned_here = ctx.pinned.contains(&m.id);
-                                let pin_icon = if pinned_here {
+                            };
+                            let mut do_reply = false;
+                            let mut do_forward = false;
+                            let mut do_pin = false;
+                            let mut do_edit = false;
+                            let mut do_delete = false;
+                            let mut do_copy = false;
+                            icon_act(
+                                ui,
+                                crate::theme::Icon::Reply,
+                                "Quote and reply",
+                                &mut do_reply,
+                            );
+                            icon_act(ui, crate::theme::Icon::Forward, "Forward", &mut do_forward);
+                            let pinned_here = ctx.pinned.contains(&m.id);
+                            icon_act(
+                                ui,
+                                if pinned_here {
                                     crate::theme::Icon::PinOff
                                 } else {
                                     crate::theme::Icon::Pin
-                                };
-                                if ui
-                                    .add(egui::Button::new(
-                                        pin_icon.image(Color32::WHITE, 15.0),
-                                    ))
-                                    .on_hover_text(if pinned_here {
-                                        "Unpin message"
-                                    } else {
-                                        "Pin message"
-                                    })
-                                    .clicked()
-                                {
-                                    sink.borrow_mut().push(Action::TogglePinMessage {
-                                        chat_id: ctx.chat_id.clone(),
-                                        message_id: m.id.clone(),
-                                    });
-                                }
-                                if own {
-                                    if ui
-                                        .button(RichText::new("Edit").small())
-                                        .clicked()
-                                    {
-                                        let current = crate::ui::widgets::segs_to_plain(
-                                            &parse_html(&m.raw),
-                                        );
-                                        sink.borrow_mut().push(Action::StartEdit {
-                                            message_id: m.id.clone(),
-                                            current,
-                                        });
-                                    }
-                                    if ui
-                                        .button(RichText::new("Delete").small())
-                                        .clicked()
-                                    {
-                                        sink.borrow_mut().push(Action::DeleteMessage(
-                                            m.id.clone(),
-                                        ));
-                                    }
-                                }
-                                if ui
-                                    .add(egui::Button::new(
-                                        crate::theme::Icon::Copy
-                                            .image(Color32::WHITE, 15.0),
-                                    ))
-                                    .on_hover_text("Copy text")
-                                    .clicked()
-                                {
-                                    ui.ctx().copy_text(crate::ui::widgets::segs_to_plain(
+                                },
+                                if pinned_here {
+                                    "Unpin message"
+                                } else {
+                                    "Pin message"
+                                },
+                                &mut do_pin,
+                            );
+                            if own {
+                                icon_act(ui, crate::theme::Icon::Pencil, "Edit", &mut do_edit);
+                                icon_act(ui, crate::theme::Icon::Trash, "Delete", &mut do_delete);
+                            }
+                            icon_act(ui, crate::theme::Icon::Copy, "Copy text", &mut do_copy);
+                            if do_reply {
+                                sink.borrow_mut().push(Action::Reply {
+                                    message_id: m.id.clone(),
+                                    sender: sender_label(m, ctx),
+                                    snippet: crate::ui::widgets::segs_to_plain(
                                         &parse_html(&m.raw),
-                                    ));
-                                }
-                            });
+                                    )
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_string(),
+                                });
+                            }
+                            if do_forward {
+                                sink.borrow_mut().push(Action::Forward(
+                                    crate::ui::widgets::segs_to_plain(&parse_html(&m.raw)),
+                                ));
+                            }
+                            if do_pin {
+                                sink.borrow_mut().push(Action::TogglePinMessage {
+                                    chat_id: ctx.chat_id.clone(),
+                                    message_id: m.id.clone(),
+                                });
+                            }
+                            if do_edit {
+                                let current = crate::ui::widgets::segs_to_plain(
+                                    &parse_html(&m.raw),
+                                );
+                                sink.borrow_mut().push(Action::StartEdit {
+                                    message_id: m.id.clone(),
+                                    current,
+                                });
+                            }
+                            if do_delete {
+                                sink.borrow_mut().push(Action::DeleteMessage(m.id.clone()));
+                            }
+                            if do_copy {
+                                ui.ctx().copy_text(crate::ui::widgets::segs_to_plain(
+                                    &parse_html(&m.raw),
+                                ));
+                            }
                         });
-                });
+                    });
             })
             .response;
         // The bar's buttons collect into `sink` because they live in a
@@ -1225,7 +1237,15 @@ fn connector_card(ui: &mut egui::Ui, pal: &Palette) {
 
 /// Reaction count chips: colour emoji + names on hover; click opens the
 /// full reactor list (and removes your own reaction when you were in it).
-fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
+fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool) {
+    // Chip tint derives from the HOST bubble — a fixed bubble_in fill sat
+    // invisible on the light incoming bubble (both white) and mismatched
+    // the own indigo bubble.
+    let base = if own {
+        ctx.pal.bubble_out
+    } else {
+        ctx.pal.bubble_in
+    };
     for r in &m.reactions {
         let names: Vec<String> = r.reactors.iter().map(|x| x.name.clone()).collect();
         let tip = if names.is_empty() {
@@ -1234,7 +1254,8 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
             format!("{} by {}", r.emoji, names.join(", "))
         };
         let chip = Frame::default()
-            .fill(ctx.pal.bubble_in)
+            .fill(crate::theme::tint_over(base, ctx.pal.text, 0.09))
+            .stroke(Stroke::new(1.0, ctx.pal.outline.gamma_multiply(0.5)))
             .corner_radius(CornerRadius::same(10))
             .inner_margin(egui::Margin::symmetric(6, 2))
             .show(ui, |ui| {

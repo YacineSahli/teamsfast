@@ -72,7 +72,7 @@ pub fn sidebar(
                     let field = ui.add_sized(
                         [ui.available_width(), 24.0],
                         egui::TextEdit::singleline(search)
-                            .hint_text("Search messages (Enter)")
+                            .hint_text("Search")
                             .font(egui::TextStyle::Small),
                     );
                     if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -222,16 +222,29 @@ fn chat_row(
         ui.allocate_exact_size(egui::vec2(avail, 44.0), egui::Sense::click());
     response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    // Row background: selection / hover.
+    // Row background: selection / hover. Both fade in (egui value
+    // animation) — the old snap was the last "instant" state in the app.
+    // Light theme takes a lighter selection wash: the dark alpha (0x50)
+    // over a bright panel read as a heavy slab.
+    let [wr, wg, wb, _] = ctx.pal.window.to_srgba_unmultiplied();
+    let light = u16::from(wr) + u16::from(wg) + u16::from(wb) > 384;
+    let sel_alpha: u8 = if light { 0x2c } else { 0x50 };
+    let sel_fill = egui::Color32::from_rgba_unmultiplied(
+        ctx.pal.accent.r(),
+        ctx.pal.accent.g(),
+        ctx.pal.accent.b(),
+        sel_alpha,
+    );
+    let hover_id = ui.id().with(("chat-row", &chat.id));
+    let t = crate::ui::widgets::hover_t(
+        ui.ctx(),
+        hover_id,
+        response.hovered() && !selected,
+    );
     let bg = if selected {
-        egui::Color32::from_rgba_unmultiplied(
-            ctx.pal.accent.r(),
-            ctx.pal.accent.g(),
-            ctx.pal.accent.b(),
-            0x50,
-        )
-    } else if response.hovered() {
-        ctx.pal.surface_hover
+        sel_fill
+    } else if t > 0.01 {
+        crate::theme::tint_over(ctx.pal.panel, ctx.pal.surface_hover, t)
     } else {
         egui::Color32::TRANSPARENT
     };

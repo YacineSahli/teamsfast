@@ -1,7 +1,7 @@
 //! Theme: fonts (Inter via fastframe-fonts), Lucide icons
 //! (fastframe-icons), colour emoji (fastframe-emoji) and the dark palette.
 
-use egui::{Color32, Visuals};
+use egui::{Color32, Stroke, Visuals};
 
 /// The app's colour palette. Every field is a themeable name — users edit
 /// JSON files in `~/.config/teamsfast/themes/` and the app repaints live.
@@ -60,7 +60,7 @@ impl Palette {
             surface_active: Color32::from_rgb(0x5b, 0x5f, 0xc7),
             text: Color32::from_rgb(0x1f, 0x22, 0x28),
             secondary: Color32::from_rgb(0x5a, 0x5f, 0x67),
-            dim: Color32::from_rgb(0x8a, 0x8f, 0x97),
+            dim: Color32::from_rgb(0x7d, 0x82, 0x8b),
             accent: Color32::from_rgb(0x5b, 0x5f, 0xc7),
             accent_hover: Color32::from_rgb(0x4a, 0x4e, 0xb5),
             on_accent: Color32::WHITE,
@@ -69,7 +69,10 @@ impl Palette {
             outline: Color32::from_rgb(0xc5, 0xca, 0xd3),
             link: Color32::from_rgb(0x2a, 0x6c, 0xd8),
             ok: Color32::from_rgb(0x1a, 0x7f, 0x4d),
-            bubble_in: Color32::from_rgb(0xe8, 0xea, 0xef),
+            // iMessage-style: near-white incoming bubbles so they read on
+            // the light panel (the old #e8eaef sat ~1.05:1 on #eef0f3 —
+            // the bubble edge dissolved).
+            bubble_in: Color32::from_rgb(0xff, 0xff, 0xff),
             bubble_out: Color32::from_rgb(0xd6, 0xd9, 0xf5),
         }
     }
@@ -86,7 +89,9 @@ impl Palette {
         v.window_fill = self.surface;
         v.extreme_bg_color = self.window;
         v.selection.bg_fill = self.accent;
-        v.selection.stroke = egui::Stroke::new(1.0, self.on_accent);
+        // selection.stroke doubles as the FOCUSED-INPUT ring (egui paints
+        // focused TextEdits with it) — the one loud stroke, accent.
+        v.selection.stroke = Stroke::new(1.5, self.accent);
         for w in [
             &mut v.widgets.inactive,
             &mut v.widgets.hovered,
@@ -125,11 +130,20 @@ impl Palette {
             w.bg_stroke = egui::Stroke::NONE;
             w.expansion = 2.0;
         }
-        v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, self.outline);
-        // Unchecked checkboxes draw their box with this stroke — without it
-        // they vanish (regression caught in the beauty pass).
-        v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.dim);
-        v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, self.text);
+        // Idle stroke: a quiet mid-tone, not full `dim` — dim was the
+        // brightest stroke in the UI and made every unfocused text field
+        // shout. Still dark enough that unchecked checkboxes keep a box
+        // on the surface-coloured modal (full `outline` vanished there).
+        v.widgets.inactive.bg_stroke = Stroke::new(
+            1.0,
+            tint_over(self.surface, self.dim, 0.55),
+        );
+        // Focus: the ONE loud stroke. Focused text edits (and pressed
+        // controls) draw an accent ring — reserve strong strokes for
+        // focus, Apple-style.
+        v.widgets.active.bg_stroke = Stroke::new(1.5, self.accent);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, self.outline);
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, self.text);
         ctx.set_visuals(v);
         // Spacing/style-level bits (button padding, menu margins, timing).
         ctx.all_styles_mut(|style| {
