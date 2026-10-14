@@ -41,7 +41,9 @@ pub enum CalView {
 
 const DAY_HEADERS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const WEEK_HOURS: (i32, i32) = (7, 21); // 07:00 – 21:00 grid
-const HOUR_PX: f32 = 36.0;
+/// Teams-default hour height: 36px crushed 30-min meetings into 17px
+/// strips; 48px keeps them readable and fills the viewport.
+const HOUR_PX: f32 = 48.0;
 
 /// Wall-clock civil date + minute-of-day + duration of a meeting. Graph
 /// calendar dateTimes are NAIVE (the meeting's own zone) — parse the wall
@@ -75,6 +77,16 @@ fn meeting_span(m: &MeetingInfo) -> Option<(jiff::civil::Date, i32, i32)> {
 
 fn today_date() -> jiff::civil::Date {
     jiff::Zoned::now().date()
+}
+
+/// Monday of the current week shifted by `offset` weeks.
+fn monday_of(offset: i32) -> jiff::civil::Date {
+    let today = today_date();
+    today
+        .checked_add(jiff::ToSpan::days(
+            -i64::from(today.weekday().to_monday_zero_offset()) + 7 * i64::from(offset),
+        ))
+        .unwrap_or(today)
 }
 
 pub fn calendar_panel(
@@ -301,17 +313,65 @@ fn ensure_fetched(
     }
 }
 
+/// Cut `s` to fit `max_px` at `size` px, appending "…" — painter text has
+/// no built-in truncation, and clipping alone shears glyphs mid-stroke.
+fn ellipsize(ui: &Ui, s: &str, size: f32, max_px: f32) -> String {
+    if s.is_empty() {
+        return s.to_string();
+    }
+    let fits = |t: &str| -> bool {
+        ui.painter()
+            .layout_no_wrap(t.to_string(), egui::FontId::proportional(size), egui::Color32::WHITE)
+            .size()
+            .x
+            <= max_px
+    };
+    if fits(s) {
+        return s.to_string();
+    }
+    let mut cut = s.len();
+    while cut > 1 {
+        cut = cut.saturating_sub(std::cmp::max(1, cut / 4));
+        let head = &s[..cut.min(s.len())];
+        // Keep char boundaries (subjects are mostly ASCII but be safe).
+        let head = head.char_indices().last().map(|(i, c)| &s[..i + c.len_utf8()]).unwrap_or(head);
+        if fits(&format!("{head}…")) {
+            return format!("{head}…");
+        }
+    }
+    "…".to_string()
+}
+
+/// Pure wall-clock "HH:MM" for a naive-or-zoned Graph stamp (no date —
+/// the calendar column/cell already carries it).
+fn hm_only(ts: &str) -> String {
+    if let Ok(zdt) = ts
+        .trim()
+        .parse::<jiff::Timestamp>()
+        .map(|t| t.to_zoned(jiff::tz::TimeZone::system()))
+    {
+        format!("{:02}:{:02}", zdt.hour(), zdt.minute())
+    } else {
+        // Naive wall-clock fallback (Graph dateTimes are naive).
+        ts.get(11..16).unwrap_or_default().to_string()
+    }
+}
+
 /// One meeting pill; returns true when clicked (join). Painter text is
-/// CLIPPED to the pill — titles otherwise bleed across day columns.
+/// truncated with an ellipsis — clipping alone shears glyphs mid-stroke.
 fn meeting_pill(
     ui: &mut Ui,
     rect: egui::Rect,
     m: &MeetingInfo,
     pal: &Palette,
     compact: bool,
+    dim: bool,
 ) -> bool {
     let online = m.join_url.is_some();
-    let fill = if online {
+    let dead = m.canceled;
+    let fill = if dead {
+        pal.surface
+    } else if online {
         egui::Color32::from_rgba_unmultiplied(
             pal.accent.r(),
             pal.accent.g(),
@@ -326,45 +386,57 @@ fn meeting_pill(
     p.rect_stroke(
         rect,
         4,
-        egui::Stroke::new(1.0, pal.outline),
+        egui::Stroke::new(1.0, if dead { pal.outline.gamma_multiply(0.6) } else { pal.outline }),
         egui::StrokeKind::Inside,
     );
-    let time = m
-        .start
+    let time = m.start.as_deref().map(hm_only).unwrap_or_default();
+    // Teams blocks show the TIME RANGE — the date is the column/cell.
+    let range = m
+        .end
         .as_deref()
-        .map(crate::model::format_message_time)
-        .unwrap_or_default();
-    if compact {
-        // One line: "HH:MM Subject", whatever fits.
-        p.text(
+        .map(hm_only)
+        .map(|e| format!("{time} – {e}"))
+        .unwrap_or_else(|| time.clone());
+    let title_col = if dead || dim {
+        pal.secondary
+    } else {
+        pal.text
+    };
+    let subject = if dead {
+        format!("Canceled: {}", m.subject)
+    } else {
+        m.subject.clone()
+    };
+    let text_w = rect.width() - 10.0;
+    if compact || rect.height() < 30.0 {
+        let line = format!("{time} {}", ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0)));
+        let r = p.text(
             rect.left_center() + egui::vec2(5.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            format!("{time} {}", m.subject),
+            line,
             egui::FontId::proportional(10.0),
-            pal.text,
+            title_col,
         );
-    } else if rect.height() >= 30.0 {
-        p.text(
+        if dead {
+            p.line_segment([r.left_center(), r.right_center()], egui::Stroke::new(1.0, pal.secondary));
+        }
+    } else {
+        let r = p.text(
             rect.left_top() + egui::vec2(5.0, 3.0),
             egui::Align2::LEFT_TOP,
-            &m.subject,
+            ellipsize(ui, &subject, 10.5, text_w),
             egui::FontId::proportional(10.5),
-            pal.text,
+            title_col,
         );
+        if dead {
+            p.line_segment([r.left_center(), r.right_center()], egui::Stroke::new(1.0, pal.secondary));
+        }
         p.text(
             rect.left_bottom() + egui::vec2(5.0, -3.0),
             egui::Align2::LEFT_BOTTOM,
-            &time,
+            &range,
             egui::FontId::proportional(9.5),
             pal.secondary,
-        );
-    } else {
-        p.text(
-            rect.left_center() + egui::vec2(5.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            format!("{time} {}", m.subject),
-            egui::FontId::proportional(10.0),
-            pal.text,
         );
     }
     let r = ui.allocate_rect(rect, egui::Sense::click());
@@ -374,8 +446,8 @@ fn meeting_pill(
         format!(
             "{} — {}{}",
             m.subject,
-            time,
-            if online { " (click to join)" } else { "" }
+            range,
+            if online && !dead { " (click to join)" } else { "" }
         )
     })
     .clicked()
@@ -390,7 +462,37 @@ fn week_grid(
 ) {
     let avail_w = ui.available_width() - 8.0;
     let gutter = 42.0;
-    let col_w = ((avail_w - gutter) / 7.0).max(90.0);
+    // Lanes need room: with N concurrent meetings a column must be wide
+    // enough for "HH:MM ti…" per lane, else concurrent blocks collapse
+    // into one-letter slivers. Busy weeks grow the grid (horizontal
+    // scroll covers the rest).
+    let max_lanes = {
+        let mut by_day: std::collections::HashMap<i32, Vec<(i32, i32)>> =
+            std::collections::HashMap::new();
+        for m in meetings {
+            if let Some((date, s, d)) = meeting_span(m) {
+                let idx = (date - monday_of(offset)).get_days();
+                if (0..7).contains(&idx) {
+                    by_day.entry(idx).or_default().push((s, s + d));
+                }
+            }
+        }
+        let mut worst = 1usize;
+        for evs in by_day.values() {
+            let mut evs = evs.clone();
+            evs.sort_by_key(|(s, _)| *s);
+            let mut lanes: Vec<i32> = Vec::new();
+            for (s, e) in evs {
+                match lanes.iter().position(|end| *end <= s) {
+                    Some(i) => lanes[i] = e,
+                    None => lanes.push(e),
+                }
+            }
+            worst = worst.max(lanes.len());
+        }
+        worst
+    };
+    let col_w = ((avail_w - gutter) / 7.0).max(96.0).max(max_lanes as f32 * 50.0);
     let (h0, h1) = WEEK_HOURS;
     let rows = (h1 - h0) as f32;
     let header_h = 22.0;
@@ -398,11 +500,7 @@ fn week_grid(
     let total_w = gutter + col_w * 7.0;
 
     let today = today_date();
-    let monday = today
-        .checked_add(jiff::ToSpan::days(
-            -i64::from(today.weekday().to_monday_zero_offset()) + 7 * i64::from(offset),
-        ))
-        .unwrap_or(today);
+    let monday = monday_of(offset);
 
     ScrollArea::both()
         .id_salt("calendar_week")
@@ -457,9 +555,11 @@ fn week_grid(
                     egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.5)),
                 );
                 if h < h1 {
+                    // Label sits ABOVE its gridline (Teams style) so
+                    // meeting blocks never collide with the gutter.
                     ui.painter().text(
-                        egui::pos2(rect.left() + 6.0, y + 2.0),
-                        egui::Align2::LEFT_TOP,
+                        egui::pos2(rect.left() + 6.0, y - 2.0),
+                        egui::Align2::LEFT_BOTTOM,
                         format!("{h:02}:00"),
                         egui::FontId::monospace(9.5),
                         pal.dim,
@@ -480,10 +580,15 @@ fn week_grid(
                 if mins >= h0 * 60 && mins <= h1 * 60 {
                     let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * HOUR_PX;
                     let x0 = rect.left() + gutter + col_w * day_idx;
+                    // The now-line spans the WHOLE grid (shared time
+                    // reference, not a per-day decoration) with a leading
+                    // dot at the current column.
+                    let x_end = rect.left() + gutter + col_w * 7.0;
                     ui.painter().line_segment(
-                        [egui::pos2(x0, y), egui::pos2(x0 + col_w, y)],
+                        [egui::pos2(x0, y), egui::pos2(x_end, y)],
                         egui::Stroke::new(1.5, pal.danger),
                     );
+                    ui.painter().circle_filled(egui::pos2(x0, y), 3.0, pal.danger);
                 }
             }
 
@@ -537,7 +642,7 @@ fn week_grid(
                         egui::pos2(x, y),
                         egui::vec2(lane_w - 2.0, h),
                     );
-                    if meeting_pill(ui, block, m, pal, false)
+                    if meeting_pill(ui, block, m, pal, false, false)
                         && let Some(url) = m.join_url.clone()
                     {
                         actions.push(Action::JoinMeeting {
@@ -570,7 +675,10 @@ fn month_grid(
     let today = today_date();
     let avail_w = ui.available_width() - 8.0;
     let cell_w = (avail_w / 7.0).max(96.0);
-    let cell_h = 64.0;
+    // Stretch rows to the viewport (Teams behavior): ~90px rows fit four
+    // pills + "+N"; the old fixed 64px left a third of the window empty.
+    let rows = (((lead + days as i64 + 6) / 7) as f32).max(1.0);
+    let cell_h = ((ui.available_height() - 26.0) / rows).clamp(64.0, 130.0);
 
     // Meeting index by civil date.
     let mut by_date: std::collections::HashMap<jiff::civil::Date, Vec<&MeetingInfo>> =
@@ -619,14 +727,17 @@ fn month_grid(
                             egui::Sense::hover(),
                         );
                         if day == today {
+                            // Faint cell wash only — the marker is the
+                            // accent DISC behind the numeral (a full-cell
+                            // accent outline read as a selection).
                             ui.painter().rect_filled(
                                 rect,
-                                4,
+                                0,
                                 egui::Color32::from_rgba_unmultiplied(
                                     pal.accent.r(),
                                     pal.accent.g(),
                                     pal.accent.b(),
-                                    0x28,
+                                    0x14,
                                 ),
                             );
                         }
@@ -637,13 +748,17 @@ fn month_grid(
                             egui::StrokeKind::Inside,
                         );
                         let day_alpha = if in_month { 255 } else { 90 };
+                        let num_pos = rect.left_top() + egui::vec2(13.0, 12.0);
+                        if day == today {
+                            ui.painter().circle_filled(num_pos, 9.0, pal.accent);
+                        }
                         ui.painter().text(
-                            rect.left_top() + egui::vec2(6.0, 5.0),
-                            egui::Align2::LEFT_TOP,
+                            num_pos,
+                            egui::Align2::CENTER_CENTER,
                             day.day().to_string(),
                             egui::FontId::proportional(11.0),
                             if day == today {
-                                pal.accent
+                                pal.on_accent
                             } else {
                                 egui::Color32::from_rgba_unmultiplied(
                                     pal.text.r(),
@@ -654,13 +769,19 @@ fn month_grid(
                             },
                         );
                         if let Some(list) = by_date.get(&day) {
-                            for (i, m) in list.iter().take(2).enumerate() {
+                            // Out-of-month pills dim like their numerals.
+                            let dim = !in_month;
+                            for (i, m) in list.iter().take(
+                                ((cell_h as usize - 24) / 18).clamp(1, 4),
+                            )
+                            .enumerate()
+                            {
                                 let pill = egui::Rect::from_min_size(
                                     rect.left_top()
                                         + egui::vec2(4.0, 20.0 + i as f32 * 18.0),
                                     egui::vec2(cell_w - 8.0, 16.0),
                                 );
-                                if meeting_pill(ui, pill, m, pal, true)
+                                if meeting_pill(ui, pill, m, pal, true, dim)
                                     && let Some(url) = m.join_url.clone()
                                 {
                                     actions.push(Action::JoinMeeting {
@@ -695,22 +816,36 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
         .as_deref()
         .map(|s| format_message_time(s))
         .unwrap_or_default();
+    // Canceled events keep their slot (native Teams behavior) but dim,
+    // strike the title, and lose the Join action.
+    let dead = m.canceled;
     egui::Frame::default()
-        .fill(pal.surface)
+        .fill(if dead {
+            crate::theme::tint_over(pal.surface, pal.panel, 0.5)
+        } else {
+            pal.surface
+        })
         .stroke(egui::Stroke::new(1.0, pal.outline))
         .corner_radius(egui::CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(time).small().color(pal.secondary).strong());
-                ui.label(
-                    RichText::new(if m.subject.is_empty() {
-                        "(no title)"
-                    } else {
-                        &m.subject
-                    })
-                    .strong(),
-                );
+                let time_txt = RichText::new(time).small().strong();
+                ui.label(if dead {
+                    time_txt.weak()
+                } else {
+                    time_txt.color(pal.secondary)
+                });
+                let title = RichText::new(if m.subject.is_empty() {
+                    "(no title)"
+                } else {
+                    &m.subject
+                })
+                .strong();
+                ui.label(if dead { title.weak().strikethrough() } else { title });
+                if dead {
+                    ui.label(RichText::new("canceled").small().weak());
+                }
             });
             ui.horizontal(|ui| {
                 // Reserve the action-button height so cards without a join
@@ -724,7 +859,7 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(url) = &m.join_url {
-                        if ui
+                        if !dead && ui
                             .add(
                                 egui::Button::new(
                                     RichText::new("Join").small().color(pal.on_accent),
@@ -734,8 +869,7 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                             )
                             .on_hover_text("Join this meeting in TeamsFast")
                             .clicked()
-                        {
-                            actions.push(Action::JoinMeeting {
+                        {                            actions.push(Action::JoinMeeting {
                                 source: url.clone(),
                                 label: Some(if m.subject.is_empty() {
                                     "Meeting".to_string()
@@ -795,6 +929,22 @@ pub fn files_panel(
     });
 }
 
+/// Type tint for the file glyph — palette-sourced (adapts per theme):
+/// color-coding by type is a native-Teams scanning cue without needing
+/// per-type icon assets.
+fn file_type_tint(pal: &Palette, name: &str) -> egui::Color32 {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => pal.danger,
+        "doc" | "docx" | "rtf" | "odt" | "txt" | "md" => pal.link,
+        "xls" | "xlsx" | "csv" | "ods" => pal.ok,
+        "ppt" | "pptx" | "odp" => pal.accent,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" => pal.accent_hover,
+        "zip" | "tar" | "gz" | "7z" | "rar" => pal.secondary,
+        _ => pal.secondary,
+    }
+}
+
 fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action>) {
     let size = if f.size >= 1_048_576 {
         format!("{:.1} MB", f.size as f64 / 1_048_576.0)
@@ -823,14 +973,14 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
     {
         let ui = &mut child;
         ui.horizontal(|ui| {
-            let icon = if is_folder {
-                crate::theme::Icon::Archive
+            let (icon, tint) = if is_folder {
+                (crate::theme::Icon::Archive, pal.secondary)
             } else {
-                crate::theme::Icon::FileText
+                (crate::theme::Icon::FileText, file_type_tint(pal, &f.name))
             };
             ui.add(
                 egui::Image::from_bytes(icon.uri(), icon.bytes())
-                    .tint(pal.secondary)
+                    .tint(tint)
                     .fit_to_exact_size(egui::Vec2::splat(16.0)),
             );
             ui.vertical(|ui| {
@@ -840,52 +990,53 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
                         .truncate()
                         .selectable(false),
                 );
-                // No metadata at all (drive never reported size or date):
-                // no line rather than a bare "—" placeholder; the fixed
-                // 40px row keeps the list rhythm.
-                let unknown_size = size == "—";
-                let meta = match (unknown_size, modified.is_empty()) {
-                    (true, true) => String::new(),
+                // Always a metadata line: alternating tall/short rows
+                // broke the list's vertical rhythm.
+                let meta = match (size == "—", modified.is_empty()) {
+                    (true, true) => "—".to_string(),
                     (true, false) => modified.clone(),
                     (false, true) => size.clone(),
                     (false, false) => format!("{size} · {modified}"),
                 };
-                if !meta.is_empty() {
-                    ui.label(RichText::new(meta).small().weak());
-                }
+                ui.label(RichText::new(meta).small().weak());
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !is_folder {
-                    if let (Some(drive), Some(item)) = (&f.drive_id, Some(&f.id)) {
-                        let (drive, item, name) =
-                            (drive.clone(), item.clone(), f.name.clone());
-                        if ui
-                            .add(egui::Button::new(
-                                crate::theme::Icon::Download.image(pal.secondary, 14.0),
-                            ))
-                            .on_hover_text("Download and open")
-                            .clicked()
-                        {
-                            actions.push(Action::DownloadDriveFile {
-                                drive_id: drive,
-                                item_id: item,
-                                name,
-                            });
+            // Row actions reveal on hover (Fluent): resting rows carry
+            // icon + text only — two permanent outlined buttons on every
+            // row was the loudest chrome in the app.
+            if hovered {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !is_folder {
+                        if let (Some(drive), Some(item)) = (&f.drive_id, Some(&f.id)) {
+                            let (drive, item, name) =
+                                (drive.clone(), item.clone(), f.name.clone());
+                            if ui
+                                .add(egui::Button::new(
+                                    crate::theme::Icon::Download.image(pal.secondary, 14.0),
+                                ))
+                                .on_hover_text("Download and open")
+                                .clicked()
+                            {
+                                actions.push(Action::DownloadDriveFile {
+                                    drive_id: drive,
+                                    item_id: item,
+                                    name,
+                                });
+                            }
+                        }
+                        if let Some(web) = &f.web_url {
+                            if ui
+                                .add(egui::Button::new(
+                                    crate::theme::Icon::ExternalLink.image(pal.secondary, 14.0),
+                                ))
+                                .on_hover_text("Open online")
+                                .clicked()
+                            {
+                                actions.push(Action::OpenLink(web.clone()));
+                            }
                         }
                     }
-                    if let Some(web) = &f.web_url {
-                        if ui
-                            .add(egui::Button::new(
-                                crate::theme::Icon::ExternalLink.image(pal.secondary, 14.0),
-                            ))
-                            .on_hover_text("Open online")
-                            .clicked()
-                        {
-                            actions.push(Action::OpenLink(web.clone()));
-                        }
-                    }
-                }
-            });
+                });
+            }
         });
     }
     response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -895,7 +1046,11 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
             actions.push(Action::OpenLink(web.clone()));
         }
     }
-    ui.separator();
+    // Separators yield to the hover surface (a rule drawn through the
+    // highlighted row slices it).
+    if !hovered {
+        ui.separator();
+    }
 }
 
 /// Files shared within one conversation (shown above the drive recents).
@@ -973,14 +1128,18 @@ pub fn todo_panel(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button(RichText::new(if st.show_completed {
+            // Matched ghost buttons — a small_button chip next to a
+            // standard ghost sat visibly misaligned on the header line.
+            if crate::ui::widgets::btn::ghost(
+                ui,
+                pal,
+                if st.show_completed {
                     "Hide completed"
                 } else {
                     "Show completed"
-                })
-                .small())
-                .clicked()
+                },
+            )
+            .clicked()
             {
                 st.show_completed = !st.show_completed;
             }
@@ -1047,8 +1206,13 @@ pub fn todo_panel(
                         .hint_text("Add a task…")
                         .desired_width(ui.available_width() - 64.0),
                 );
-                let add = ui.button("Add").clicked()
-                    || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                // Add rests disabled until there's text (a clickable no-op
+                // invites a dead click).
+                let armed = !st.quick_add.trim().is_empty();
+                let add = ui.add_enabled(armed, egui::Button::new("Add")).clicked()
+                    || (armed
+                        && field.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if add {
                     let title = st.quick_add.trim().to_string();
                     if !title.is_empty() {

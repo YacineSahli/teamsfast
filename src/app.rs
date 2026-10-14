@@ -1648,8 +1648,16 @@ impl TeamsFastApp {
                 }
                 Event::Unread(map) => {
                     // Server-side refresh: merge, keeping locally-bumped
-                    // entries only when the map lacks the chat.
+                    // entries only when the map lacks the chat. The chat
+                    // currently open was just read — its server horizon is
+                    // stale until the mark-read round-trip lands, so never
+                    // re-badge it from the refresh (that drew an unread
+                    // dot on the conversation the user was LOOKING at).
+                    let open = self.selected.clone();
                     for (id, v) in map {
+                        if Some(&id) == open.as_ref() {
+                            continue;
+                        }
                         self.unread.insert(id, v);
                     }
                 }
@@ -2708,9 +2716,14 @@ impl TeamsFastApp {
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::click());
             if sel {
+                // Stronger wash on light themes: accent@31% over a light
+                // panel washed the glyph out (~2.8:1 — under the 3:1
+                // icon-guideline floor); dark themes keep the softer tint.
+                let [wr, wg, wb, _] = self.palette.window.to_srgba_unmultiplied();
+                let light = u16::from(wr) + u16::from(wg) + u16::from(wb) > 384;
                 ui.painter().rect_filled(rect, 8, {
                     let [r, g, b, _] = self.palette.accent.to_srgba_unmultiplied();
-                    Color32::from_rgba_unmultiplied(r, g, b, 0x50)
+                    Color32::from_rgba_unmultiplied(r, g, b, if light { 0x86 } else { 0x50 })
                 });
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(
@@ -3041,7 +3054,11 @@ impl eframe::App for TeamsFastApp {
                                     self.palette.danger,
                                     f32::from(ring_alpha) / 255.0,
                                 ),
-                            )),
+                            ))
+                            // Vertical breathing room — without it the
+                            // buttons spanned the full band and collided
+                            // with the border.
+                            .inner_margin(egui::Margin::symmetric(0, 5)),
                     )
                     .show_inside(ui, |ui| {
                         let mut accept = false;
@@ -3078,13 +3095,23 @@ impl eframe::App for TeamsFastApp {
                             );
                             let video = if ring.has_video { " · video" } else { "" };
                             let ring_secs = ring.at.elapsed().as_secs();
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} — incoming call{} · {}s",
-                                    ring.name, video, ring_secs
-                                ))
-                                .strong(),
-                            );
+                            // Two-line identity: strong caller name, then a
+                            // quiet status line (one flat line read as a
+                            // status strip, not an interruption).
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(&ring.name)
+                                        .strong()
+                                        .size(13.0),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "incoming call{video} · {ring_secs}s"
+                                    ))
+                                    .small()
+                                    .color(self.palette.secondary),
+                                );
+                            });
                             // Actions pinned right, comfortable targets.
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -3093,6 +3120,18 @@ impl eframe::App for TeamsFastApp {
                                     // (standard call order); 16px from the
                                     // window edge, 12px between buttons.
                                     ui.add_space(16.0);
+                                    // Matched pair: the dark-theme green is
+                                    // pale (dark text) — darken the fill so
+                                    // BOTH call actions sit at saturated
+                                    // depth with white text like Decline.
+                                    let ok_luma = 0.2126 * palette.ok.r() as f32
+                                        + 0.7152 * palette.ok.g() as f32
+                                        + 0.0722 * palette.ok.b() as f32;
+                                    let (accept_fill, accept_fg) = if ok_luma > 128.0 {
+                                        (palette.ok.gamma_multiply(0.72), Color32::WHITE)
+                                    } else {
+                                        (palette.ok, Color32::WHITE)
+                                    };
                                     if ui
                                         .add_enabled(
                                             !busy,
@@ -3100,24 +3139,9 @@ impl eframe::App for TeamsFastApp {
                                                 RichText::new("Accept")
                                                     .small()
                                                     .strong()
-                                                    .color({
-                                                        // Dark-theme green is pale
-                                                        // (dark text), light-theme
-                                                        // green is deep (white text).
-                                                        let luma = 0.2126
-                                                            * palette.ok.r() as f32
-                                                            + 0.7152
-                                                                * palette.ok.g() as f32
-                                                            + 0.0722
-                                                                * palette.ok.b() as f32;
-                                                        if luma > 128.0 {
-                                                            Color32::from_rgb(0x0a, 0x24, 0x16)
-                                                        } else {
-                                                            Color32::WHITE
-                                                        }
-                                                    }),
+                                                    .color(accept_fg),
                                             )
-                                            .fill(palette.ok)
+                                            .fill(accept_fill)
                                             .min_size(egui::vec2(96.0, 30.0))
                                             .corner_radius(egui::CornerRadius::same(8)),
                                         )
@@ -3861,6 +3885,21 @@ impl eframe::App for TeamsFastApp {
                                 let rect = ui.max_rect();
                                 let c = rect.center();
                                 let pal = &self.palette;
+                                // Ghost icon anchor above the title —
+                                // text-only empty states read as unfinished.
+                                // `put` places it at an explicit rect so the
+                                // painter-centering below stays intact.
+                                let ghost = crate::theme::Icon::MessageSquare;
+                                let icon_rect = egui::Rect::from_center_size(
+                                    egui::pos2(c.x, c.y - 46.0),
+                                    egui::Vec2::splat(40.0),
+                                );
+                                ui.put(
+                                    icon_rect,
+                                    egui::Image::from_bytes(ghost.uri(), ghost.bytes())
+                                        .tint(pal.dim)
+                                        .fit_to_exact_size(egui::Vec2::splat(40.0)),
+                                );
                                 let mut job = egui::text::LayoutJob::simple(
                                     "Select a conversation".into(),
                                     egui::FontId::proportional(16.0),

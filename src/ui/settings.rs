@@ -76,6 +76,10 @@ pub fn settings_window(
                     .add(
                         egui::Button::new(crate::theme::Icon::X.image(pal.secondary, 13.0))
                             .fill(egui::Color32::TRANSPARENT)
+                            // Transparent fill alone still draws the
+                            // inactive bg_stroke — an outlined box. Ghost
+                            // needs stroke NONE too.
+                            .stroke(egui::Stroke::NONE)
                             .min_size(egui::vec2(22.0, 22.0)),
                     )
                     .clicked()
@@ -114,7 +118,7 @@ pub fn settings_window(
                 let resp = ui.allocate_rect(rect, egui::Sense::click());
                 let p = ui.painter();
                 if sel {
-                    p.rect_filled(rect.shrink(1.0), 7, pal.accent);
+                    p.rect_filled(rect.shrink(1.0), 5, pal.accent);
                 } else if resp.hovered() {
                     p.rect_filled(rect.shrink(1.0), 7, pal.surface_hover);
                 }
@@ -153,8 +157,61 @@ pub fn settings_window(
 }
 
 /// Checkbox that reports whether it changed (caller persists settings).
-fn toggle(ui: &mut Ui, label: &str, value: &mut bool) -> bool {
-    ui.checkbox(value, label).changed()
+///
+/// Custom-drawn Fluent-style square: the stock `ui.checkbox` inherits the
+/// global widget corner radius (8), which on its ~14px box renders as a
+/// CIRCLE — reading as a radio (mutually exclusive) for what are
+/// independent booleans.
+fn toggle(ui: &mut Ui, pal: &crate::theme::Palette, label: &str, value: &mut bool) -> bool {
+    let (rect, mut resp) = ui.allocate_exact_size(
+        egui::vec2(16.0 + 8.0 + ui.painter().layout(
+            label.into(),
+            egui::FontId::proportional(13.0),
+            pal.text,
+            f32::INFINITY,
+        ).rect.width() + 2.0, ui.available_height().min(20.0)),
+        egui::Sense::click(),
+    );
+    if resp.clicked() {
+        *value = !*value;
+    }
+    resp.mark_changed();
+    let box_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 8.0, rect.center().y),
+        egui::vec2(16.0, 16.0),
+    );
+    let p = ui.painter();
+    p.rect(
+        box_rect,
+        egui::CornerRadius::same(4),
+        if *value { pal.accent } else { egui::Color32::TRANSPARENT },
+        egui::Stroke::new(
+            1.0,
+            if resp.hovered() { pal.text } else { pal.dim },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    if *value {
+        // Check mark: two strokes, Fluent weight.
+        let c = box_rect.center();
+        let s = 3.2;
+        p.line_segment(
+            [c - egui::vec2(s, 0.0), c - egui::vec2(0.4, s - 0.8)],
+            egui::Stroke::new(1.8, pal.on_accent),
+        );
+        p.line_segment(
+            [c - egui::vec2(0.4, s - 0.8), c + egui::vec2(s + 0.4, -(s - 0.8))],
+            egui::Stroke::new(1.8, pal.on_accent),
+        );
+    }
+    p.text(
+        egui::pos2(rect.left() + 28.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        pal.text,
+    );
+    resp.changed()
 }
 
 /// Section header: small, letter-spaced-ish secondary label with breathing
@@ -174,29 +231,29 @@ fn general(
 ) {
     section(ui, pal, "Startup");
     if toggle(
-        ui,
+        ui, pal,
         "Connect live (push updates) automatically",
         &mut settings.auto_live,
     ) {
         theme::save_settings(settings);
     }
-    if toggle(ui, "Start hidden in the system tray", &mut settings.start_in_tray) {
+    if toggle(ui, pal, "Start hidden in the system tray", &mut settings.start_in_tray) {
         theme::save_settings(settings);
     }
-    if toggle(ui, "Check for updates automatically", &mut settings.update_checks) {
+    if toggle(ui, pal, "Check for updates automatically", &mut settings.update_checks) {
         theme::save_settings(settings);
     }
     ui.add_space(8.0);
 
     section(ui, pal, "Privacy");
-    if toggle(ui, "Ghost mode — hold back read receipts", &mut settings.ghost_mode) {
+    if toggle(ui, pal, "Ghost mode — hold back read receipts", &mut settings.ghost_mode) {
         theme::save_settings(settings);
     }
     ui.add_space(8.0);
 
     section(ui, pal, "Window");
     if toggle(
-        ui,
+        ui, pal,
         "Close button hides to the tray (quit from the tray menu)",
         &mut settings.close_to_tray,
     ) {
@@ -341,7 +398,7 @@ fn appearance(
     });
     ui.add_space(10.0);
     if toggle(
-        ui,
+        ui, pal,
         "Show unread count badges on chats",
         &mut settings.unread_badges,
     ) {
@@ -351,18 +408,18 @@ fn appearance(
 
 fn notifications(ui: &mut Ui, settings: &mut Settings, pal: &crate::theme::Palette) {
     section(ui, pal, "Desktop notifications");
-    if toggle(ui, "Notify for incoming messages", &mut settings.notify) {
+    if toggle(ui, pal, "Notify for incoming messages", &mut settings.notify) {
         theme::save_settings(settings);
     }
     if toggle(
-        ui,
+        ui, pal,
         "Show the message text in the notification",
         &mut settings.notify_preview,
     ) {
         theme::save_settings(settings);
     }
     if toggle(
-        ui,
+        ui, pal,
         "Skip notifications while the window is focused",
         &mut settings.skip_focused,
     ) {
@@ -378,7 +435,7 @@ fn notifications(ui: &mut Ui, settings: &mut Settings, pal: &crate::theme::Palet
     section(ui, pal, "Quiet hours");
     let mut q = settings.quiet_hours.clone().unwrap_or_default();
     let mut enabled = settings.quiet_hours.is_some();
-    if ui.checkbox(&mut enabled, "Suppress notifications between").changed() {
+    if toggle(ui, pal, "Suppress notifications between", &mut enabled) {
         settings.quiet_hours = enabled.then(|| {
             if q.0.is_empty() { "22:00".into() } else { q.0.clone() }
         }).map(|f| (f, q.1.clone().is_empty().then(|| "07:00".to_string()).unwrap_or(q.1.clone())));
