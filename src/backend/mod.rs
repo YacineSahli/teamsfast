@@ -338,7 +338,7 @@ pub fn spawn(tx: Sender<Event>) -> tokio::sync::mpsc::UnboundedSender<Command> {
 pub fn chat_recency(chat: &ChatInfo) -> u64 {
     chat.last_message_time
         .as_deref()
-        .and_then(|t| t.trim().parse::<u64>().ok())
+        .and_then(crate::model::to_epoch_ms)
         .unwrap_or(0)
 }
 
@@ -1018,4 +1018,39 @@ fn cached_jwt_oid() -> Option<String> {
         })?;
     let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     v.get("oid").and_then(|x| x.as_str()).map(String::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chat(time: Option<&str>) -> ChatInfo {
+        ChatInfo {
+            id: "19:c@thread.v2".into(),
+            name: "C".into(),
+            is_group: false,
+            last_message_time: time.map(String::from),
+            last_message_sender: None,
+            last_message_preview: None,
+            last_read_ms: None,
+        }
+    }
+
+    /// Sort key must understand BOTH timestamp shapes the conversations
+    /// list produces. A bare u64 parse sent every ISO-stamped chat to 0 —
+    /// they sank below the numeric ones (group chats floated above older
+    /// chats on screen).
+    #[test]
+    fn chat_recency_parses_iso_and_numeric() {
+        // 2026-10-14T20:00:00Z ≈ 1792699200_000 ms.
+        let iso = chat(Some("2026-10-14T20:00:00.000Z"));
+        let numeric = chat(Some("1760000000000")); // 2025-10-09, OLDER
+        assert!(chat_recency(&iso) > 0, "ISO timestamp must parse");
+        assert!(
+            chat_recency(&iso) > chat_recency(&numeric),
+            "newer ISO chat must outrank older numeric chat"
+        );
+        assert_eq!(chat_recency(&chat(None)), 0);
+        assert_eq!(chat_recency(&chat(Some("garbage"))), 0);
+    }
 }

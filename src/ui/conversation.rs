@@ -170,6 +170,9 @@ pub enum Action {
     /// Start/open the 1:1 with this member's mri.
     ChatWith { mri: String, name: String },
     HangUp,
+    /// Surface a transient note in the top bar (e.g. why a calendar click
+    /// had no join action).
+    Status(String),
 }
 
 /// An own message on its way out (or failed, awaiting Retry) — the view

@@ -241,11 +241,11 @@ pub fn calendar_panel(
         }
         CalView::Week => {
             week_grid(ui, meetings, *week_offset, pal, actions);
-            ensure_fetched(ui, actions, fetched, week_window(*week_offset));
+            ensure_fetched(ui, actions, fetched, week_window(*week_offset), loading);
         }
         CalView::Month => {
             month_grid(ui, meetings, *month_offset, pal, actions);
-            ensure_fetched(ui, actions, fetched, month_window(*month_offset));
+            ensure_fetched(ui, actions, fetched, month_window(*month_offset), loading);
         }
     }
 }
@@ -296,19 +296,28 @@ fn month_window(offset: i32) -> (u64, u64) {
 
 /// Fire a range fetch when the visible window isn't covered. Edge-triggered
 /// by `fetched` being updated in Action::apply.
+///
+/// `loading` gates re-fires while a fetch is already in flight: without it,
+/// every frame until the reply lands queues another identical command (a
+/// Graph round-trip is ~1s ≈ 60 frames of duplicates).
 fn ensure_fetched(
     ui: &mut Ui,
     actions: &mut Vec<Action>,
     fetched: Option<(u64, u64)>,
     window: (u64, u64),
+    loading: bool,
 ) {
     let covered = fetched
         .map(|(a, b)| window.0 >= a && window.1 <= b)
         .unwrap_or(false);
-    if !covered {
+    // Ceil the span: a month crossing the EU DST switch is 31.04 days, and
+    // a floored 31-day fetch falls an hour short — the coverage check then
+    // fails forever and the same window re-fetches every round-trip.
+    let days = (window.1.saturating_sub(window.0) + 86_399) / 86_400;
+    if !covered && !loading {
         actions.push(Action::LoadCalendarRange {
             start_unix: window.0,
-            days: (window.1.saturating_sub(window.0)) / 86_400,
+            days,
         });
     }
 }
@@ -363,6 +372,30 @@ fn hm_only(ts: &str) -> String {
 
 /// One meeting pill; returns true when clicked (join). Painter text is
 /// truncated with an ellipsis — clipping alone shears glyphs mid-stroke.
+/// Click routing shared by every meeting surface (list rows, week blocks,
+/// month pills): join when there's a link, otherwise say WHY nothing joined
+/// — a silent click read as a dead UI.
+fn meeting_click(m: &MeetingInfo, actions: &mut Vec<Action>) {
+    if let Some(url) = m.join_url.clone() {
+        actions.push(Action::JoinMeeting {
+            source: url,
+            label: Some(if m.subject.is_empty() {
+                "Meeting".into()
+            } else {
+                m.subject.clone()
+            }),
+        });
+    } else if m.canceled {
+        actions.push(Action::Status(
+            "Cancelled meeting — nothing to join.".into(),
+        ));
+    } else {
+        actions.push(Action::Status(
+            "In-person meeting — no Teams join link.".into(),
+        ));
+    }
+}
+
 fn meeting_pill(
     ui: &mut Ui,
     rect: egui::Rect,
@@ -663,17 +696,8 @@ fn week_grid(
                     // Narrow overlap lanes drop to the compact single-line
                     // pill (time + ellipsized title) instead of two crushed
                     // rows of clipped text.
-                    if meeting_pill(ui, block, m, pal, lane_w < 52.0, false)
-                        && let Some(url) = m.join_url.clone()
-                    {
-                        actions.push(Action::JoinMeeting {
-                            source: url.clone(),
-                            label: Some(if m.subject.is_empty() {
-                                "Meeting".into()
-                            } else {
-                                m.subject.clone()
-                            }),
-                        });
+                    if meeting_pill(ui, block, m, pal, lane_w < 52.0, false) {
+                        meeting_click(m, actions);
                     }
                 }
             }
@@ -802,17 +826,8 @@ fn month_grid(
                                         + egui::vec2(4.0, 20.0 + i as f32 * 18.0),
                                     egui::vec2(cell_w - 8.0, 16.0),
                                 );
-                                if meeting_pill(ui, pill, m, pal, true, dim)
-                                    && let Some(url) = m.join_url.clone()
-                                {
-                                    actions.push(Action::JoinMeeting {
-                                        source: url,
-                                        label: Some(if m.subject.is_empty() {
-                                            "Meeting".into()
-                                        } else {
-                                            m.subject.clone()
-                                        }),
-                                    });
+                                if meeting_pill(ui, pill, m, pal, true, dim) {
+                                    meeting_click(m, actions);
                                 }
                             }
                             if list.len() > 2 {
@@ -1805,4 +1820,210 @@ pub fn notes_panel(
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meeting(date: jiff::civil::Date, join_url: Option<String>) -> MeetingInfo {
+        let online = join_url.is_some();
+        MeetingInfo {
+            id: "evt".into(),
+            subject: "Sync".into(),
+            start: Some(format!("{date}T08:00:00.0000000")),
+            end: Some(format!("{date}T09:00:00.0000000")),
+            join_url,
+            organizer: None,
+            organizer_email: None,
+            is_organizer: false,
+            is_online: online,
+            canceled: false,
+        }
+    }
+
+    type Actions = std::rc::Rc<std::cell::RefCell<Vec<Action>>>;
+
+    fn run(actions: &Actions, events: Vec<egui::Event>, mut body: impl FnMut(&mut Ui)) {
+        let egui_ctx = egui::Context::default();
+        let out = egui_ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 700.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            body,
+        );
+        let mut out = out;
+        out.textures_delta.clear();
+    }
+
+    /// Click routing: an online meeting joins, an in-person one says why
+    /// not, a cancelled one doesn't offer a join at all.
+    #[test]
+    fn meeting_click_routes_by_joinability() {
+        let mut a = Vec::new();
+        meeting_click(&meeting(today_date(), Some("https://join".into())), &mut a);
+        assert!(matches!(a[0], Action::JoinMeeting { .. }), "online → join, got {a:?}");
+
+        a.clear();
+        meeting_click(&meeting(today_date(), None), &mut a);
+        assert!(matches!(a[0], Action::Status(_)), "in-person → status note, got {a:?}");
+
+        a.clear();
+        let mut dead = meeting(today_date(), None);
+        dead.canceled = true;
+        meeting_click(&dead, &mut a);
+        assert!(matches!(a[0], Action::Status(_)), "cancelled → status note, got {a:?}");
+    }
+
+    /// A month window spanning the EU DST switch (Oct 2026: +02:00 →
+    /// +01:00) is 31.04 days. The pushed fetch rounds its day count UP, so
+    /// the stored range covers the window — a floored 31 days fell an hour
+    /// short and the same window re-fetched forever.
+    #[test]
+    fn ensure_fetched_accepts_dst_short_month() {
+        // Oct 1 00:00 +02:00 → Nov 1 00:00 +01:00 = 31.04 days.
+        let start: u64 = 1_790_805_600;
+        let end: u64 = 1_793_487_600;
+        // The ceil'd fetch Action::apply stores after the push (see
+        // ensure_fetched_pushes_ceil_days).
+        let days = (end - start + 86_399) / 86_400; // 32
+        let fetched = Some((start, start + days * 86_400));
+
+        let actions: Actions = Default::default();
+        let sink = actions.clone();
+        run(&actions, vec![], move |ui| {
+            ensure_fetched(ui, &mut sink.borrow_mut(), fetched, (start, end), false);
+        });
+        assert!(
+            actions.borrow().is_empty(),
+            "covered DST month must not re-fetch, got {:?}",
+            actions.borrow()
+        );
+    }
+
+    /// An uncovered window pushes a fetch whose day count rounds UP, so the
+    /// stored range (start + days·86400) covers the whole window.
+    #[test]
+    fn ensure_fetched_pushes_ceil_days() {
+        let start: u64 = 1_790_805_600;
+        let end: u64 = 1_793_487_600; // 31.04 days later
+        let actions: Actions = Default::default();
+        let sink = actions.clone();
+        run(&actions, vec![], move |ui| {
+            ensure_fetched(ui, &mut sink.borrow_mut(), None, (start, end), false);
+        });
+        let a = actions.borrow();
+        assert_eq!(a.len(), 1, "uncovered window must fetch once");
+        match &a[0] {
+            Action::LoadCalendarRange { start_unix, days } => {
+                assert_eq!(*start_unix, start);
+                assert!(
+                    start_unix + days * 86_400 >= end,
+                    "ceil days must cover the window end ({days} days)"
+                );
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    /// While a fetch is in flight, ensure_fetched must stay silent — every
+    /// frame until the reply used to queue another identical command.
+    #[test]
+    fn ensure_fetched_quiet_while_loading() {
+        let actions: Actions = Default::default();
+        let sink = actions.clone();
+        run(&actions, vec![], move |ui| {
+            ensure_fetched(ui, &mut sink.borrow_mut(), None, (0, 86_400), true);
+        });
+        assert!(
+            actions.borrow().is_empty(),
+            "loading gate must suppress re-fires"
+        );
+    }
+
+    /// Clicking a month-grid pill registers (the cell below is hover-only;
+    /// the pill's later-allocated click sense must win) and joins when the
+    /// meeting is online.
+    ///
+    /// egui's hit test reads the PREVIOUS frame's widget rects — both
+    /// frames must share one Context, or the click lands in a cold registry
+    /// (a fresh Context per frame silently eats every click).
+    #[test]
+    fn clicking_a_month_pill_joins() {
+        // Same math as month_grid: first rendered cell = first_of_month -
+        // lead days; pill 0 sits at cell.left_top() + (4, 20) below the
+        // 18px weekday header.
+        let first = today_date().first_of_month();
+        let lead = i64::from(first.weekday().to_monday_zero_offset());
+        let first_cell = first
+            .checked_add(jiff::ToSpan::days(-lead))
+            .unwrap_or(first);
+        let m = meeting(first_cell, Some("https://teams.microsoft.com/join".into()));
+
+        let cell_w = ((900.0_f32 - 8.0) / 7.0).max(96.0);
+        let center = egui::pos2(4.0 + (cell_w - 8.0) / 2.0, 18.0 + 20.0 + 8.0);
+
+        let egui_ctx = egui::Context::default();
+        let screen = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+
+        // Frame 1: warm layout — egui hit-tests against these rects.
+        let warm: Actions = Default::default();
+        let sink = warm.clone();
+        let mm = m.clone();
+        let mut out = egui_ctx.run_ui(screen.clone(), |ui| {
+            month_grid(ui, std::slice::from_ref(&mm), 0, &Palette::dark(), &mut sink.borrow_mut());
+        });
+        out.textures_delta.clear();
+        assert!(warm.borrow().is_empty(), "layout frame must not act");
+
+        // Frame 2: press + release on the pill.
+        let click_input = egui::RawInput {
+            screen_rect: screen.screen_rect,
+            events: vec![
+                egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let clicked: Actions = Default::default();
+        let sink = clicked.clone();
+        let mm = m.clone();
+        let mut out = egui_ctx.run_ui(click_input, |ui| {
+            month_grid(ui, std::slice::from_ref(&mm), 0, &Palette::dark(), &mut sink.borrow_mut());
+        });
+        out.textures_delta.clear();
+        let a = clicked.borrow();
+        assert_eq!(
+            a.len(),
+            1,
+            "pill click must route to meeting_click, got {a:?}"
+        );
+        match &a[0] {
+            Action::JoinMeeting { source, .. } => {
+                assert_eq!(source, "https://teams.microsoft.com/join")
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
 }

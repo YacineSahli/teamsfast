@@ -1345,6 +1345,10 @@ impl TeamsFastApp {
                     if std::env::var("TEAMSFAST_SETTINGS").as_deref() == Ok("1") {
                         self.settings_ui.open = true;
                     }
+                    // QA hook: TEAMSFAST_NEWCHAT=1 opens the new-conversation modal.
+                    if std::env::var("TEAMSFAST_NEWCHAT").as_deref() == Ok("1") {
+                        self.new_chat.open = true;
+                    }
                     // QA hook: TEAMSFAST_TESTCALL=1 places an echo test call;
                     // TEAMSFAST_VIDEOCALL=1 does the same with the camera on.
                     // QA hook: TEAMSFAST_MOCKLOBBY=1 pins the meeting-join
@@ -1441,7 +1445,6 @@ impl TeamsFastApp {
                     self.sort_chats();
                 }
                 Event::Chats(mut chats) => {
-                    let n = chats.len();
                     // Keep roster-resolved names from this session.
                     let known: Vec<(String, String)> = self
                         .chats
@@ -1458,7 +1461,8 @@ impl TeamsFastApp {
                     }
                     self.chats = chats;
                     self.sort_chats();
-                    self.status = format!("{n} chats");
+                    // No "N chats" status — the count is visible in the list;
+                    // the top bar carries transient state only.
                     // A conversation opened before the list loaded (launch
                     // hook, notification click): give it its real title.
                     if let Some(sel) = self.selected.clone() {
@@ -1634,7 +1638,8 @@ impl TeamsFastApp {
                 }
                 Event::TrouterConnected => {
                     self.trouter_on = true;
-                    self.status = "Connected (live)".into();
+                    // Connectivity is the status dot's job — no top-bar text.
+                    self.status = String::new();
                 }
                 Event::IncomingMessage {
                     chat_id,
@@ -1946,12 +1951,12 @@ impl TeamsFastApp {
             let pa = self.settings.pinned_chats.iter().any(|p| p == &a.id);
             let pb = self.settings.pinned_chats.iter().any(|p| p == &b.id);
             pb.cmp(&pa).then_with(|| {
-                let k = |c: &ChatInfo| {
-                    c.last_message_time
-                        .as_deref()
-                        .and_then(|t| t.trim().parse::<u64>().ok())
-                        .unwrap_or(0)
-                };
+                // Same key as the backend list: to_epoch_ms, not a bare u64
+                // parse — the conversations list carries ISO timestamps,
+                // which a u64 parse sends to 0 (every ISO chat sank below
+                // the few numeric ones; group chats floated above older
+                // chats).
+                let k = |c: &ChatInfo| crate::backend::chat_recency(c);
                 k(b).cmp(&k(a))
             })
         });
@@ -2297,6 +2302,8 @@ impl TeamsFastApp {
             Action::ReloadSection => self.reload_section(),
             Action::LoadCalendarRange { start_unix, days } => {
                 self.calendar_fetched = Some((start_unix, start_unix + days * 86_400));
+                // Gates ensure_fetched re-fires until the reply lands.
+                self.calendar_loading = true;
                 self.cmd
                     .send(Command::LoadCalendarRange { start_unix, days })
                     .ok();
@@ -2379,6 +2386,7 @@ impl TeamsFastApp {
                 self.cmd.send(Command::JoinMeeting(source)).ok();
             }
             Action::ShowJoinDialog => self.join_open = true,
+            Action::Status(text) => self.status = text,
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
             }
@@ -2864,11 +2872,9 @@ impl TeamsFastApp {
                     if search.clicked() {
                         self.apply(Action::OpenSearch);
                     }
-                    let gear = ghost_btn(ui, crate::theme::Icon::Settings, tint)
-                        .on_hover_text("Settings (Ctrl+,)");
-                    if gear.clicked() {
-                        self.settings_ui.open = true;
-                    }
+                    // Settings lives on the rail (pinned gear at the bottom,
+                    // where VSCode/Discord put it) — the second gear here was
+                    // a duplicate entry point.
                 }
             }
             ui.separator();
@@ -2879,9 +2885,6 @@ impl TeamsFastApp {
                     .clicked()
             {
                 self.cmd.send(Command::StartTrouter).ok();
-            }
-            if self.trouter_on {
-                ui.label(RichText::new("live").small().color(self.palette.ok));
             }
             if !self.self_name.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4082,16 +4085,34 @@ impl eframe::App for TeamsFastApp {
         }
 
         if self.new_chat.open {
-            egui::Window::new("New conversation")
-                .collapsible(false)
-                .resizable(false)
-                .show(ui.ctx(), |ui| {
-                    let mut actions = Vec::new();
-                    new_chat_dialog(ui, &mut self.new_chat, &mut actions);
-                    for a in actions {
-                        self.apply(a);
-                    }
-                });
+            // Modal, not a floating window: the default window chrome
+            // (draggable bar, plain fields, mismatched buttons) read as
+            // unfinished next to the join dialog. Same modal frame.
+            let pal = self.palette.clone();
+            let modal = egui::Modal::new(egui::Id::new("new_chat_modal")).frame(
+                egui::Frame::default()
+                    .fill(pal.surface)
+                    .stroke(egui::Stroke::new(1.0, pal.outline))
+                    .shadow(egui::Shadow {
+                        offset: [0, 10],
+                        blur: 28,
+                        spread: 0,
+                        color: Color32::from_black_alpha(70),
+                    })
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(16)),
+            );
+            let resp = modal.show(ui.ctx(), |ui| {
+                ui.set_width(440.0);
+                let mut actions = Vec::new();
+                new_chat_dialog(ui, &mut self.new_chat, &pal, &mut actions);
+                for a in actions {
+                    self.apply(a);
+                }
+            });
+            if resp.should_close() {
+                self.new_chat.open = false;
+            }
         }
 
         // Settings window (own pass so it can borrow settings + catalog).

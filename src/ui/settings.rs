@@ -165,8 +165,10 @@ pub fn settings_window(
                 }
             }
             ui.add_space(6.0);
-
-            let tab = st.tab;
+            // Persist the click the loop picked up. Without this write-back
+            // the content pane (and the accent chip) never move — every tab
+            // but the current one reads as dead.
+            st.tab = tab;
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| match tab {
@@ -203,8 +205,11 @@ fn toggle(ui: &mut Ui, pal: &crate::theme::Palette, label: &str, value: &mut boo
     );
     if resp.clicked() {
         *value = !*value;
+        // Only on an actual flip: an unconditional mark_changed() made
+        // `toggle` report "changed" every frame (constant settings writes,
+        // and the quiet-hours row re-writing its value each repaint).
+        resp.mark_changed();
     }
-    resp.mark_changed();
     let box_rect = egui::Rect::from_center_size(
         egui::pos2(rect.left() + 8.0, rect.center().y),
         egui::vec2(16.0, 16.0),

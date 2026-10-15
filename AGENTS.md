@@ -167,6 +167,17 @@ remaining Phase 2 item.
   `hover_bar_buttons_push_actions`.
 - `add_space` in a `ui.vertical` adds VERTICAL space — indenting needs a
   horizontal wrapper (OneNote section indent shipped as a no-op).
+- `ui.with_layout(right_to_left(…))` DIRECTLY in a vertical ui corrupts the
+  vertical cursor for everything after it: the measured content grows by
+  ~its own height EVERY frame (the new-chat modal climbed +152px/frame
+  until it was a full-height empty slab). Wrap the r2l row in
+  `ui.horizontal(…)` — or make it the last element (the join dialog only
+  ever survived because its r2l row is last). Probe-verified 2026-10-15.
+- Hit-testing detail: a click-sense widget allocated AFTER a hover-sense
+  one at overlapping rects wins (month pills over hover cells work), but
+  egui hit-tests against the PREVIOUS frame's rects — a test that renders
+  each frame in a FRESH `egui::Context` eats every click (the warm-up
+  frame must share the Context with the click frame).
 - Call timers: one epoch only — `call_connected_at` (first frame the
   phase watch reads connected). Banner and stage share it; counting from
   placement showed two different durations on screen at once.
