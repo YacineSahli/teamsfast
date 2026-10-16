@@ -106,17 +106,30 @@ pub async fn download(ses: &Session, tx: &Sender<Event>, url: &str, name: &str) 
         Ok(mb) => {
             let dir = dirs_home().join("Downloads");
             let _ = std::fs::create_dir_all(&dir);
-            let path = numbered_variant(&dir, name);
-            match std::fs::write(&path, &mb.data) {
-                Ok(()) => {
+            // Pick the target name + write OFF the worker runtime — sync
+            // file I/O here stalled the whole backend (trouter included).
+            let name_owned = name.to_string();
+            let write = tokio::task::spawn_blocking(move || {
+                let path = numbered_variant(&dir, &name_owned);
+                std::fs::write(&path, &mb.data).map(|()| path)
+            })
+            .await;
+            match write {
+                Ok(Ok(path)) => {
                     let _ = tx.send(Event::DownloadDone {
-                        name: name.to_string(),
+                        name: path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default(),
                         path: path.clone(),
                     });
                     let p = path.clone();
                     std::thread::spawn(move || {
                         let _ = open::that(&p);
                     });
+                }
+                Ok(Err(e)) => {
+                    let _ = tx.send(Event::Error(format!("save: {e}")));
                 }
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("save: {e}")));

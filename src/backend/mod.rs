@@ -385,6 +385,13 @@ pub(crate) struct Session {
     pub older_links: HashMap<String, String>,
     /// Local archive (opens even without network, for cached content).
     pub archive: Option<archive::Archive>,
+    /// Roster (members, resolved 1:1 name) per chat with fetch time —
+    /// skips the Graph name-fill fan-out on re-opens within its TTL.
+    pub roster_cache:
+        HashMap<String, (std::time::Instant, HashMap<String, String>, Option<String>)>,
+    /// Activity seeding runs once per process (it re-runs on every
+    /// offline-retry recovery otherwise).
+    activity_seeded: bool,
     /// Hang-up switch for the active call (None when idle).
     pub call_stop: Option<tokio::sync::watch::Sender<bool>>,
 }
@@ -403,6 +410,8 @@ impl Session {
             self_id: None,
             older_links: HashMap::new(),
             archive,
+            roster_cache: HashMap::new(),
+            activity_seeded: false,
             call_stop: None,
         }
     }
@@ -429,8 +438,13 @@ fn offline_or_login(ses: &Session, tx: &Sender<Event>, error: String) {
 /// Seed the Activity feed from cached history: mentions of us (@items
 /// referencing our Entra id) and replies. Live events keep appending on
 /// top. Quiet at startup is what made the Activity tab read as broken.
-fn seed_activity(ses: &Session, tx: &Sender<Event>) {
+/// Once per process — offline-retry recoveries re-fire `Ready`, and the
+/// seed never changes within a session.
+fn seed_activity(ses: &mut Session, tx: &Sender<Event>) {
     use crate::model::ActivityEntry;
+    if ses.activity_seeded {
+        return;
+    }
     let Some(archive) = ses.archive.as_ref() else {
         return;
     };
@@ -440,7 +454,9 @@ fn seed_activity(ses: &Session, tx: &Sender<Event>) {
     let self_id = ses.self_id.clone().unwrap_or_default();
     let mut entries: Vec<ActivityEntry> = Vec::new();
     for chat in chats.iter().take(15) {
-        let Ok(msgs) = archive.load_messages(&chat.id, 50) else {
+        // Mentions/replies only, prefiltered in SQLite — deserializing
+        // 15×50 multi-KB rows to scan them in Rust was the old shape.
+        let Ok(msgs) = archive.activity_candidates(&chat.id, 50) else {
             continue;
         };
         for m in msgs {
@@ -471,6 +487,7 @@ fn seed_activity(ses: &Session, tx: &Sender<Event>) {
             });
         }
     }
+    ses.activity_seeded = true;
     if entries.is_empty() {
         return;
     }
@@ -524,7 +541,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                             send!(Event::SelfId(id));
                         }
                         send!(Event::Ready);
-                        seed_activity(&ses, &tx);
+                        seed_activity(&mut ses, &tx);
                     }
                     Err(e) => offline_or_login(&ses, &tx, e),
                 }
@@ -538,7 +555,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                         send!(Event::SelfId(id));
                     }
                     send!(Event::Ready);
-                    seed_activity(&ses, &tx);
+                    seed_activity(&mut ses, &tx);
                 }
                 Err(e) => offline_or_login(&ses, &tx, e),
             },

@@ -269,6 +269,42 @@ impl Archive {
         Ok(())
     }
 
+    /// One chat's cached name — the name-heal compares against this instead
+    /// of loading the whole chat list.
+    pub fn chat_name(&self, chat_id: &str) -> Result<Option<String>> {
+        let name: Option<String> = self.conn.query_row(
+            "SELECT name FROM chats WHERE id = ?1",
+            rusqlite::params![chat_id],
+            |r| r.get(0),
+        )?;
+        Ok(name)
+    }
+
+    /// Messages worth surfacing in the Activity feed (mentions + replies)
+    /// for one chat, newest first — the LIKE prefilter runs in SQLite, not
+    /// over deserialized multi-KB rows in Rust.
+    pub fn activity_candidates(
+        &self,
+        chat_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MessageInfo>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, sender, sender_mri, content, raw, reply_to, client_message_id
+             FROM messages
+             WHERE chat_id = ?1 AND (reply_to IS NOT NULL OR raw LIKE '%<at%')
+             ORDER BY ts DESC, id DESC LIMIT ?2",
+        )?;
+        let mut rows = stmt.query_map(
+            rusqlite::params![chat_id, limit as i64],
+            row_to_message,
+        )?;
+        let mut out = Vec::new();
+        while let Some(m) = rows.next() {
+            out.push(m?);
+        }
+        Ok(out)
+    }
+
     pub fn load_chats(&self) -> Result<Vec<ChatInfo>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, is_group, last_message_time, last_message_sender,

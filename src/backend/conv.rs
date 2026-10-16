@@ -41,15 +41,28 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
         });
     }
 
-    // Roster and history are independent — run them concurrently instead of
-    // serializing two network phases (the roster's Graph name-fill can take
-    // several round-trips; the history page must not queue behind it).
+    // Roster names rarely change, but fetching them fans out to up to 60
+    // Graph user lookups — cache per chat for a few minutes and skip the
+    // whole fetch on re-opens within the window. History still runs
+    // concurrently with the roster on a cold open.
+    const ROSTER_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+    let now = std::time::Instant::now();
+    let cached_roster = ses
+        .roster_cache
+        .get(&chat_id)
+        .filter(|(at, _, _)| now.duration_since(*at) < ROSTER_TTL)
+        .cloned();
+    let needs_roster = cached_roster.is_none();
+    let roster_fut = async {
+        if !needs_roster {
+            return None;
+        }
+        Some(list_chat_members_data(c, &chat_id).await)
+    };
     let is_onetoone = chat_id.starts_with("19:")
         && !chat_id.contains("@thread")
         && !chat_id.contains("meeting");
-    let roster_fut = list_chat_members_data(c, &chat_id);
-    let history_fut = read_messages_page(c, &chat_id, 50, None);
-    let (roster, page) = tokio::join!(roster_fut, history_fut);
+    let (roster, page) = tokio::join!(roster_fut, read_messages_page(c, &chat_id, 50, None));
 
     let mut members: HashMap<String, String> = HashMap::new();
     let mut resolved_name: Option<String> = None;
@@ -57,23 +70,37 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
     // group/meeting the roster is full of members and picking one would
     // name the chat after a random participant (e.g. "Standup" showing
     // "Souhail Khalfallah"). Groups take their topic from the chat list.
-    if let Ok((_, roster)) = roster {
-        for m in roster {
-            if !m.display_name.is_empty() {
-                members.insert(m.mri.clone(), m.display_name.clone());
-            }
-            if is_onetoone {
-                let is_me = match ses.self_id.as_deref() {
-                    Some(me) => {
-                        m.user_id.as_deref() == Some(me) || m.mri == format!("8:orgid:{me}")
+    if let Some(roster) = roster {
+        if let Ok((_, roster)) = roster {
+            for m in roster {
+                if !m.display_name.is_empty() {
+                    members.insert(m.mri.clone(), m.display_name.clone());
+                }
+                if is_onetoone {
+                    let is_me = match ses.self_id.as_deref() {
+                        Some(me) => {
+                            m.user_id.as_deref() == Some(me)
+                                || m.mri == format!("8:orgid:{me}")
+                        }
+                        None => false,
+                    };
+                    if !is_me
+                        && m.mri.starts_with("8:orgid:")
+                        && !m.display_name.is_empty()
+                    {
+                        resolved_name = Some(m.display_name.clone());
                     }
-                    None => false,
-                };
-                if !is_me && m.mri.starts_with("8:orgid:") && !m.display_name.is_empty() {
-                    resolved_name = Some(m.display_name.clone());
                 }
             }
         }
+        // Members drive sender labels in every chat type — cache both.
+        ses.roster_cache.insert(
+            chat_id.clone(),
+            (now, members.clone(), resolved_name.clone()),
+        );
+    } else if let Some((_, m, r)) = cached_roster {
+        members = m;
+        resolved_name = r;
     }
 
     // The roster's 1:1 name beats the chat-list heuristic (which falls
@@ -82,9 +109,9 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
     if let Some(name) = resolved_name.as_ref().filter(|n| !n.trim().is_empty()) {
         if let Some(archive) = ses.archive.as_ref() {
             let needs_heal = archive
-                .load_chats()
+                .chat_name(&chat_id)
                 .ok()
-                .and_then(|chats| chats.iter().find(|c| c.id == chat_id).map(|c| c.name.clone()))
+                .flatten()
                 .map(|current| current != *name)
                 .unwrap_or(false);
             if needs_heal {
@@ -137,6 +164,13 @@ pub async fn load_older(ses: &mut Session, tx: &Sender<Event>, chat_id: &str) {
         Ok(page) => {
             let cursor = page.backward_link.clone().unwrap_or_default();
             ses.older_links.insert(chat_id.to_string(), cursor.clone());
+            // Persist the page: scrolled history stops re-fetching every
+            // session and stays readable offline (load_older from cache).
+            if let Some(archive) = ses.archive.as_ref()
+                && let Err(e) = archive.save_messages(chat_id, &page.messages)
+            {
+                log::warn!("archive save older page: {e:#}");
+            }
             let _ = tx.send(Event::Messages {
                 older_link: Some(cursor),
                 prepend: true,

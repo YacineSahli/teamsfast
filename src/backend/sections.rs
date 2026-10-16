@@ -345,17 +345,20 @@ pub async fn load_notes(ses: &Session, tx: &Sender<Event>) {
     };
     match ost::api::list_notebooks_data(c, None).await {
         Ok(books) => {
-            let mut tree = Vec::new();
-            for b in &books {
+            // Sections of every notebook are independent GETs — fetch them
+            // concurrently (serially this was N round-trips before ANY
+            // notebook rendered).
+            let fetched = futures::future::join_all(books.iter().map(|b| async move {
                 let sections = ost::api::list_notebook_sections_data(c, &b.id, None)
                     .await
                     .unwrap_or_default();
-                tree.push(crate::ui::sections::NotebookTree {
+                crate::ui::sections::NotebookTree {
                     name: b.name.clone(),
                     sections,
-                });
-            }
-            let _ = tx.send(Event::Notes(tree));
+                }
+            }))
+            .await;
+            let _ = tx.send(Event::Notes(fetched));
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("notebooks: {e:#}")));
@@ -447,29 +450,38 @@ pub async fn load_planner(ses: &Session, tx: &Sender<Event>) {
             return;
         }
     };
+    // Plans of all teams are independent — one concurrent round instead of
+    // N serial round-trips (the Teams view's "~1s/team" shape).
+    let plans_by_team = futures::future::join_all(teams.iter().map(|team| async move {
+        let plans = ost::api::list_plans_data(c, &team.id)
+            .await
+            .unwrap_or_default();
+        (team, plans)
+    }))
+    .await;
     let mut boards = Vec::new();
-    'teams: for team in &teams {
-        let plans = match ost::api::list_plans_data(c, &team.id).await {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
+    'teams: for (team, plans) in plans_by_team {
         for plan in plans {
             if boards.len() >= 4 {
                 break 'teams;
             }
-            let buckets = ost::api::list_buckets_data(c, &plan.id)
-                .await
-                .unwrap_or_default();
-            let tasks = ost::api::list_tasks_data(c, &plan.id, 40)
-                .await
-                .unwrap_or_default();
+            // Buckets and tasks of one plan are independent too.
+            let (buckets, tasks) = tokio::join!(
+                ost::api::list_buckets_data(c, &plan.id),
+                ost::api::list_tasks_data(c, &plan.id, 40),
+            );
+            let tasks = tasks.unwrap_or_default();
             if tasks.is_empty() {
                 continue;
             }
             boards.push(crate::ui::sections::PlannerBoard {
                 team: team.name.clone(),
                 plan: plan.title,
-                buckets: buckets.into_iter().map(|b| (b.id, b.name)).collect(),
+                buckets: buckets
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|b| (b.id, b.name))
+                    .collect(),
                 tasks,
             });
         }
@@ -514,13 +526,21 @@ pub async fn load_shifts(ses: &Session, tx: &Sender<Event>) {
             return;
         }
     };
-    for team in &teams {
-        let Ok(schedule) = ost::api::list_schedule_data(c, &team.id).await else {
-            continue;
-        };
-        if !schedule.enabled {
-            continue;
-        }
+    // Schedule probes are independent — one concurrent round; the first
+    // enabled team in list order wins (same pick as the old serial scan).
+    let schedules = futures::future::join_all(teams.iter().map(|team| async move {
+        let schedule = ost::api::list_schedule_data(c, &team.id)
+            .await
+            .ok()
+            .filter(|s| s.enabled);
+        (team, schedule)
+    }))
+    .await;
+    let Some((team, _)) = schedules.into_iter().find(|(_, s)| s.is_some()) else {
+        let _ = tx.send(Event::Shifts(Vec::new()));
+        return;
+    };
+    {
         // This week, local time: Monday 00:00 → +7 days.
         let now = jiff::Zoned::now();
         let days_from_monday = now.date().weekday().to_monday_zero_offset() as i64;

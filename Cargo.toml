@@ -29,6 +29,9 @@ rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"]
 getrandom = "0.3"
 # Timezone-aware timestamp formatting (server stamps are UTC).
 jiff = "0.2"
+# Concurrent section fetches (planner plans, notebook sections, shifts
+# probes) — same version the ost core already pulls in.
+futures = "0.3"
 
 # UI framework. Same choices as spotifast/zapfast: glow keeps the tree small.
 eframe = { version = "0.36", default-features = false, features = [
