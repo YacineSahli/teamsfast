@@ -19,9 +19,11 @@ pub async fn fetch_image(ses: &Session, tx: &Sender<Event>, url: &str) {
     let tx2 = tx.clone();
     let url_for_decode = url_owned.clone();
 
-    // Fetch on the runtime; decode off it.
+    // Fetch on the runtime; decode off it. The handle is JOINED (a panic
+    // inside decode must still surface ImageFailed — a detached handle
+    // would leave the placeholder spinner forever).
     let fetched = ost::api::fetch_media_data(&client, &url_owned).await;
-    tokio::task::spawn_blocking(move || match fetched {
+    let decode = tokio::task::spawn_blocking(move || match fetched {
         Ok(mb) => match decode_rgba(&mb.data) {
             Ok((rgba, size)) => {
                 let _ = tx2.send(Event::ImageReady {
@@ -40,6 +42,10 @@ pub async fn fetch_image(ses: &Session, tx: &Sender<Event>, url: &str) {
             let _ = tx2.send(Event::ImageFailed(url_for_decode));
         }
     });
+    if decode.await.is_err() {
+        log::warn!("image decode task panicked");
+        let _ = tx.send(Event::ImageFailed(url.to_string()));
+    }
 }
 
 /// Decode to RGBA8, downscaling to `MAX_EDGE` on the long edge.
@@ -60,6 +66,8 @@ fn decode_rgba(bytes: &[u8]) -> anyhow::Result<(Vec<u8>, [usize; 2])> {
 /// `Command::UploadFile` — send a local file into a chat.
 pub async fn upload(ses: &Session, tx: &Sender<Event>, chat_id: &str, path: &PathBuf) {
     let Some(c) = ses.client.as_ref() else {
+        // A silent return reads as "the button did nothing" while offline.
+        let _ = tx.send(Event::Error("upload: offline".into()));
         return;
     };
     let name = path

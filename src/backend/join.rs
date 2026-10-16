@@ -25,7 +25,12 @@ pub async fn resolve_join_target(
     let target = ost::api::parse_join_url(source);
     match target.kind.as_str() {
         "thread" => {
-            let tid = target.thread_id.clone()?;
+            let Some(tid) = target.thread_id.clone() else {
+                let _ = tx.send(Event::CallFailed(
+                    "That link parsed as a meeting thread but carries no thread id.".into(),
+                ));
+                return None;
+            };
             Some((tid, "Meeting".to_string()))
         }
         "meeting" | "meet" => {

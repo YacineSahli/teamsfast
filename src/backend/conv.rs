@@ -391,21 +391,30 @@ pub(crate) async fn refetch_tail(ses: &Session, tx: &Sender<Event>, chat_id: &st
     let Some(c) = client(ses) else {
         return;
     };
-    if let Ok(page) = read_messages_page(c, chat_id, 10, None).await {
-        if let Some(archive) = ses.archive.as_ref()
-            && let Err(e) = archive.save_messages(chat_id, &page.messages)
-        {
-            log::warn!("archive save messages: {e:#}");
+    // The action itself already succeeded (ActionOk is out); a failed
+    // confirmation slice only means the view heals on the next full
+    // refresh — say so instead of failing silently.
+    match read_messages_page(c, chat_id, 10, None).await {
+        Ok(page) => {
+            if let Some(archive) = ses.archive.as_ref()
+                && let Err(e) = archive.save_messages(chat_id, &page.messages)
+            {
+                log::warn!("archive save messages: {e:#}");
+            }
+            let _ = tx.send(Event::Messages {
+                older_link: None,
+                prepend: false,
+                merge: true,
+                chat_id: chat_id.to_string(),
+                messages: page.messages,
+                members: HashMap::new(),
+                resolved_name: None,
+            });
         }
-        let _ = tx.send(Event::Messages {
-            older_link: None,
-            prepend: false,
-            merge: true,
-            chat_id: chat_id.to_string(),
-            messages: page.messages,
-            members: HashMap::new(),
-            resolved_name: None,
-        });
+        Err(e) => {
+            log::warn!("action confirmation fetch failed: {e:#}");
+            let _ = tx.send(Event::Status("action confirmed; view refresh deferred".into()));
+        }
     }
 }
 
@@ -419,21 +428,29 @@ pub(crate) async fn refetch(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
     let t0 = std::time::Instant::now();
     // Full replace: the live-activity refresh (RefreshChat) must also heal
     // deletions made by other clients, which a merged slice cannot see.
-    if let Ok(page) = read_messages_page(c, chat_id, 50, None).await {
-        log::debug!("refresh page fetch: {}ms", t0.elapsed().as_millis());
-        if let Some(archive) = ses.archive.as_ref()
-            && let Err(e) = archive.save_messages(chat_id, &page.messages)
-        {
-            log::warn!("archive save messages: {e:#}");
+    // The Err branch is load-bearing: the UI's refresh_in_flight guard is
+    // cleared by Messages OR Error — a silent failure wedges refreshes
+    // until the 5s self-heal (this exact shape caused the original stall).
+    match read_messages_page(c, chat_id, 50, None).await {
+        Ok(page) => {
+            log::debug!("refresh page fetch: {}ms", t0.elapsed().as_millis());
+            if let Some(archive) = ses.archive.as_ref()
+                && let Err(e) = archive.save_messages(chat_id, &page.messages)
+            {
+                log::warn!("archive save messages: {e:#}");
+            }
+            let _ = tx.send(Event::Messages {
+                older_link: page.backward_link,
+                prepend: false,
+                merge: false,
+                chat_id: chat_id.to_string(),
+                messages: page.messages,
+                members: HashMap::new(),
+                resolved_name: None,
+            });
         }
-        let _ = tx.send(Event::Messages {
-            older_link: page.backward_link,
-            prepend: false,
-            merge: false,
-            chat_id: chat_id.to_string(),
-            messages: page.messages,
-            members: HashMap::new(),
-            resolved_name: None,
-        });
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("chat refresh: {e:#}")));
+        }
     }
 }

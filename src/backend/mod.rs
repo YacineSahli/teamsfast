@@ -423,8 +423,38 @@ pub(crate) struct Session {
     /// instead of burning an RTT every minute for a permanent error.
     presence_failures: u32,
     presence_last_try: Option<std::time::Instant>,
-    /// Hang-up switch for the active call (None when idle).
-    pub call_stop: Option<tokio::sync::watch::Sender<bool>>,
+    /// Hang-up switch + liveness for the active call (None when idle).
+    /// `done` is set by the call task's RAII guard — on normal exit AND
+    /// on panic unwind — so a call that ended without an explicit HangUp
+    /// (remote hang-up, safety-cap timer, crashed task) can be reaped
+    /// instead of wedging "a call is already in progress" forever.
+    pub call_stop: Option<CallSlot>,
+}
+
+/// The worker-side handle to one running call task.
+pub struct CallSlot {
+    pub stop: tokio::sync::watch::Sender<bool>,
+    pub done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Held by the spawned call task; Drop marks the slot done (unwind-safe).
+struct CallDoneGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for CallDoneGuard {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Reap a finished call slot, if any. Returns true when the caller may
+/// place a new call; false means one is genuinely still running.
+fn call_slot_free(ses: &mut Session) -> bool {
+    match &ses.call_stop {
+        Some(slot) if !slot.done.load(std::sync::atomic::Ordering::Relaxed) => false,
+        _ => {
+            ses.call_stop = None;
+            true
+        }
+    }
 }
 
 impl Session {
@@ -892,8 +922,8 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 decline_incoming(raw).await;
             }
             Command::HangUp => {
-                if let Some(stop) = ses.call_stop.take() {
-                    let _ = stop.send(true);
+                if let Some(slot) = ses.call_stop.take() {
+                    let _ = slot.stop.send(true);
                     send!(Event::CallStatus("hanging up…".into()));
                 }
             }
@@ -926,15 +956,22 @@ async fn start_call_labelled(
     label: String,
     video: bool,
 ) {
-    if ses.call_stop.is_some() {
+    if !call_slot_free(ses) {
         let _ = tx.send(Event::CallFailed("a call is already in progress".into()));
         return;
     }
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-    ses.call_stop = Some(stop_tx);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    ses.call_stop = Some(CallSlot {
+        stop: stop_tx,
+        done: done.clone(),
+    });
     let tx_evt = tx.clone();
     let thread = if echo { None } else { Some(chat_id) };
     tokio::spawn(async move {
+        // First statement: Drop marks the slot done when THIS task ends
+        // (normal return or panic unwind).
+        let _done_guard = CallDoneGuard(done);
         let _ = tx_evt.send(Event::CallStarted { label });
         // No static status text: the CallMedia handle's live phase
         // (calling…/ringing…/connected) drives the banner.
@@ -965,7 +1002,7 @@ async fn start_call_labelled(
 /// [`start_call_labelled`] (watch channel + detached task), but the call
 /// leg comes from the invitation instead of epconv placement.
 async fn accept_incoming(ses: &mut Session, tx: &Sender<Event>, raw: String) {
-    if ses.call_stop.is_some() {
+    if !call_slot_free(ses) {
         // Ringing on top of an active call: decline politely rather than
         // half-answer; the caller hears the decline immediately.
         decline_incoming(raw).await;
@@ -987,9 +1024,16 @@ async fn accept_incoming(ses: &mut Session, tx: &Sender<Event>, raw: String) {
         .unwrap_or_else(|| "Incoming call".into());
 
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-    ses.call_stop = Some(stop_tx);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    ses.call_stop = Some(CallSlot {
+        stop: stop_tx,
+        done: done.clone(),
+    });
     let tx_evt = tx.clone();
     tokio::spawn(async move {
+        // First statement: Drop marks the slot done when THIS task ends
+        // (normal return or panic unwind).
+        let _done_guard = CallDoneGuard(done);
         let _ = tx_evt.send(Event::CallStarted { label });
         let _ = tx_evt.send(Event::CallStatus("accepting…".into()));
         // Safety cap via hang-up only — an incoming call has no duration
