@@ -251,16 +251,32 @@ remaining Phase 2 item.
   old unconditional 500ms repaint is GONE. Time-based logic must declare
   itself in the tick gate at the end of `App::ui` (call/ring/typing/
   offline/refresh/uploads) or it silently stops updating when idle.
+  Exception: env-gated QA loops (TEAMSFAST_SCROLLBENCH) request their
+  own repaints.
 - Message-list row culling (offscreen rows → placeholder allocations
   sized by previous-frame height) is load-bearing: new per-row work must
   tolerate being SKIPPED for offscreen rows, and the day-label advance
-  must stay OUTSIDE the cull (else separators repeat). Sidebar rows use
+  must stay OUTSIDE the cull (else separators repeat). CULL_MARGIN is
+  600 (SCROLLBENCH: p95 frame build 1.84ms vs 2.82ms at 240 — fewer
+  in-view height corrections for ~0.4ms median). Sidebar rows use
   `show_rows` (uniform 44px) — don't add variable-height content there.
+- Message hover bars must not render while a modal overlay is open —
+  they share egui's Foreground order with Modal and z-fight above it
+  (`ConvCtx.overlays_open`; reachable via hover-message + Ctrl+N).
+- The open-chat refresh debounce is 400ms (was 900) with a
+  `refresh_in_flight` guard: bursts re-arm instead of queueing one page
+  fetch per message on the serial worker. Cleared by the chat's
+  Messages reply, worker errors, and a 5s self-heal (silent worker
+  failure paths send no event).
 - Serial network loops on the worker are the other classic stall:
   planner/notes/shifts/teams-channels fan-outs are concurrent
   (`join_all`, chunks of 8), the chat-list endpoint winner is sticky
-  per process, roster names cache 5 min per chat. New multi-item
-  fetches must not be `for { x().await }`.
+  per process AND persisted on disk (teams-core 254e9c6,
+  `~/.config/teams-cli/chats_endpoint` — cold starts no longer pay the
+  two 401 probe round-trips, ~160ms on this tenant; a stale hint costs
+  one failed RTT once, the full chain re-runs and rewrites it), roster
+  names cache 5 min per chat. New multi-item fetches must not be
+  `for { x().await }`.
 - fastframe-tray `Tray::spawn` must run on a thread with NO ambient tokio
   runtime (ksni nested block_on panics) — see `spawn_tray` in app.rs;
   returns via mpsc with 3s timeout.
@@ -338,6 +354,10 @@ remaining Phase 2 item.
   copy of the app log lands in `/tmp/qa_last_run.log`. Send to the vision
   agent for pixel QA (this loop caught every layout bug so far).
 - Layout forensics: `TEAMSFAST_LAYOUT_DEBUG=1` prints own-bubble rects.
+- `TEAMSFAST_SCROLLBENCH=1` (with a chat open) drives a synthetic
+  150px/frame sweep through the conversation after 300 settle frames
+  and logs `SCROLLBENCH frame build: <us>` lines — per-frame layout
+  cost without a human scrolling. It self-repaints (env-gated).
 - `TEAMSFAST_RING=1` renders the ringing banner with a synthetic caller
   (pixel QA for incoming calls; Accept posts to dead links harmlessly).
 - `TEAMSFAST_VIDEOCALL=1` + `TEAMSFAST_HANGUP_AFTER=<secs>` place a
