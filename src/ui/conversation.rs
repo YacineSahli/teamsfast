@@ -637,18 +637,74 @@ pub fn conversation_composer(
                 // recessed fill (extreme bg), quiet idle stroke, and the
                 // accent focus ring comes from selection.stroke. No wrapper
                 // box: the old Frame-inside-TextEdit was three mismatched
-                // boxes in one row.
-                let field = ui.add(
-                    egui::TextEdit::singleline(draft)
-                        .hint_text(if ctx.edit.is_some() {
-                            "Edit message…"
-                        } else {
-                            "Type a message"
-                        })
-                        .desired_width(ui.available_width() - 44.0)
-                        .min_size(egui::vec2(0.0, 32.0)),
-                );
-                let _ = field;
+                // boxes in one row. Multi-line: Enter sends; Shift+Tab and
+                // Shift+Enter insert a newline (Teams parity). The input
+                // grows to ~6 lines, then scrolls internally.
+                //
+                // Keys are consumed BEFORE the TextEdit sees them: a
+                // multiline TextEdit turns plain Enter into a newline and
+                // Shift+Tab into a de-indent, so interception must happen
+                // upstream. Focus is the PREVIOUS frame's widget id (the
+                // field lives inside the ScrollArea's child Ui, so its id
+                // isn't derivable before add) — first-frame presses are
+                // impossible anyway: you can't type into an unfocused field.
+                let field_w = ui.available_width() - 44.0;
+                // Singleton composer: the field id is remembered under a
+                // fixed context key so next frame's interception can find
+                // it regardless of which Ui nests the TextEdit.
+                let field_key = egui::Id::new("teamsfast_composer_field");
+                let prev_field_id: Option<egui::Id> =
+                    ui.ctx().data_mut(|d| d.get_temp(field_key));
+                let field_focused = prev_field_id
+                    .is_some_and(|id| ui.memory(|m| m.focused() == Some(id)));
+                let mut send = false;
+                let mut newline = false;
+                if field_focused {
+                    ui.input_mut(|i| {
+                        // consume_key matches logically (extra Shift is
+                        // ignored), so each combo gets an exact-modifier
+                        // gate — plain Enter must not swallow Shift+Enter.
+                        if i.key_pressed(egui::Key::Tab)
+                            && i.modifiers.matches_exact(egui::Modifiers::SHIFT)
+                        {
+                            i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
+                            newline = true;
+                        } else if i.key_pressed(egui::Key::Enter) {
+                            if i.modifiers.matches_exact(egui::Modifiers::SHIFT) {
+                                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
+                                newline = true;
+                            } else if i.modifiers.matches_exact(egui::Modifiers::NONE) {
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                send = true;
+                            }
+                        }
+                    });
+                }
+                ui.vertical(|ui| {
+                    ui.set_max_width(field_w);
+                    egui::ScrollArea::vertical()
+                        .id_salt("composer_input_scroll")
+                        .auto_shrink([false, true])
+                        .max_height(130.0)
+                        .show(ui, |ui| {
+                            let field = ui.add(
+                                egui::TextEdit::multiline(draft)
+                                    .id_salt("composer_field")
+                                    .hint_text(if ctx.edit.is_some() {
+                                        "Edit message…"
+                                    } else {
+                                        "Type a message"
+                                    })
+                                    .desired_rows(1)
+                                    .desired_width(ui.available_width())
+                                    .min_size(egui::vec2(0.0, 32.0)),
+                            );
+                            ui.ctx().data_mut(|d| d.insert_temp(field_key, field.id));
+                            if newline && field.has_focus() {
+                                insert_newline(draft, ui.ctx(), field.id);
+                            }
+                        });
+                });
 
                 ui.add_space(6.0);
                 // Send: accent tile when armed, recessed when empty —
@@ -662,9 +718,7 @@ pub fn conversation_composer(
                     ctx.pal.on_accent,
                     ready,
                 );
-                let enter =
-                    field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (send_response.clicked() || enter) && ready {
+                if (send_response.clicked() || send) && ready {
                     let text = draft.trim().to_string();
                     draft.clear();
                     keep_focus = true;
@@ -686,6 +740,32 @@ pub fn conversation_composer(
         });
 
     keep_focus
+}
+
+/// Insert a line break at the composer cursor (Shift+Tab / Shift+Enter).
+/// The key was consumed before the TextEdit ran, so the insertion is done
+/// by hand: splice `\n` over the selection, then point the cursor just
+/// after it — otherwise it stays on the wrong side of the break.
+fn insert_newline(draft: &mut String, ctx: &egui::Context, field_id: egui::Id) {
+    let mut state =
+        egui::widgets::text_edit::TextEditState::load(ctx, field_id).unwrap_or_default();
+    if let Some(range) = state.cursor.char_range() {
+        let chars = range.as_sorted_char_range();
+        let (a, b) = (chars.start.0, chars.end.0);
+        // CCursor indices are character counts; String ranges are bytes.
+        let byte_of = |ci: usize| draft.char_indices().nth(ci).map(|(x, _)| x).unwrap_or(draft.len());
+        if a <= b && b <= draft.chars().count() {
+            draft.replace_range(byte_of(a)..byte_of(b), "\n");
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(
+                    a + 1,
+                ))));
+            state.store(ctx, field_id);
+        }
+    } else {
+        draft.push('\n');
+    }
 }
 
 fn is_own(m: &MessageInfo, ctx: &ConvCtx<'_>) -> bool {
@@ -1657,5 +1737,173 @@ mod tests {
 
     fn empty2() -> std::collections::HashMap<String, Vec<String>> {
         HashMap::new()
+    }
+
+    /// Draw only the composer; optionally focus `focus` first. Returns the
+    /// field's widget id (the composer records it in temp storage) and the
+    /// pushed actions.
+    fn draw_composer_frame(
+        egui_ctx: &egui::Context,
+        input: egui::RawInput,
+        draft: &mut String,
+        focus: Option<egui::Id>,
+    ) -> (Option<egui::Id>, Vec<Action>) {
+        let messages: Vec<MessageInfo> = Vec::new();
+        let empty: std::collections::HashMap<String, String> = HashMap::new();
+        let textures: HashMap<String, (egui::TextureHandle, [usize; 2])> = HashMap::new();
+        let image_sizes: HashMap<String, [usize; 2]> = HashMap::new();
+        let mut pending_images: HashSet<String> = HashSet::new();
+        let mut emoji_textures: HashMap<String, egui::TextureHandle> = HashMap::new();
+        let mut actions: Vec<Action> = Vec::new();
+        let mut field_id: Option<egui::Id> = None;
+        let mut out = egui_ctx.run_ui(input, |ui| {
+            if let Some(id) = focus {
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+            let mut ctx = ConvCtx {
+                chat_name: "Chat".into(),
+                chat_id: "19:chat@thread.v2".into(),
+                messages: &messages,
+                members: &empty,
+                self_name: "Me".into(),
+                self_id: Some("other-id"),
+                older_link: None,
+                loading_older: false,
+                typing_user: None,
+                edit: None,
+                reply: None,
+                uploads: &[],
+                pending: &[],
+                receipts: &empty2(),
+                pinned: &[],
+                can_call: false,
+                call_label: None,
+                textures: &textures,
+                image_sizes: &image_sizes,
+                pending_images: &mut pending_images,
+                emoji_textures: &mut emoji_textures,
+                pal: &Palette::dark(),
+                overlays_open: false,
+                actions: &mut actions,
+            };
+            conversation_composer(ui, &mut ctx, draft);
+            field_id = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<egui::Id>(egui::Id::new("teamsfast_composer_field")));
+        });
+        out.textures_delta.clear();
+        (field_id, actions)
+    }
+
+    fn key_input(
+        screen: egui::Rect,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    ) -> egui::RawInput {
+        // InputState.modifiers only advances on ModifiersChanged (winit
+        // always sends it first); a bare Key event does not carry it over.
+        let mut events = Vec::with_capacity(2);
+        if modifiers != egui::Modifiers::default() {
+            events.push(egui::Event::ModifiersChanged(modifiers));
+        }
+        events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        }
+    }
+
+    /// Regression: the multiline composer. Enter sends; Shift+Tab and
+    /// Shift+Enter insert a line break at the cursor (egui would otherwise
+    /// de-indent on Shift+Tab and newline on every Enter); none of the
+    /// combos leak through when the field is not focused.
+    #[test]
+    fn composer_enter_sends_shift_tab_newline() {
+        crate::emoji::setup();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 220.0));
+        let blank = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+
+        // Frame 1: paint once so the composer records its field id.
+        let egui_ctx = egui::Context::default();
+        let mut draft = "hello".to_string();
+        let (field_id, _) =
+            draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
+        let field_id = field_id.expect("composer must record its field id");
+
+        // Enter (focused) sends and clears.
+        let (_, actions) = draw_composer_frame(
+            &egui_ctx,
+            key_input(screen, egui::Key::Enter, egui::Modifiers::default()),
+            &mut draft,
+            Some(field_id),
+        );
+        assert!(
+            matches!(actions.as_slice(), [Action::Send(t)] if t == "hello"),
+            "{actions:?}"
+        );
+        assert!(draft.is_empty());
+
+        // Fresh context: Shift+Tab breaks the line, cursor lands after it.
+        let egui_ctx = egui::Context::default();
+        let mut draft = "hello".to_string();
+        let (field_id, _) =
+            draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
+        let field_id = field_id.unwrap();
+        let (_, actions) = draw_composer_frame(
+            &egui_ctx,
+            key_input(screen, egui::Key::Tab, egui::Modifiers::SHIFT),
+            &mut draft,
+            Some(field_id),
+        );
+        assert_eq!(draft, "hello\n");
+        assert!(actions.is_empty(), "{actions:?}");
+        let type_x = egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![egui::Event::Text("x".into())],
+            ..Default::default()
+        };
+        draw_composer_frame(&egui_ctx, type_x, &mut draft, Some(field_id));
+        assert_eq!(draft, "hello\nx", "cursor must sit after the break");
+
+        // Shift+Enter breaks too.
+        let egui_ctx = egui::Context::default();
+        let mut draft = "hello".to_string();
+        let (field_id, _) =
+            draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
+        let field_id = field_id.unwrap();
+        let (_, actions) = draw_composer_frame(
+            &egui_ctx,
+            key_input(screen, egui::Key::Enter, egui::Modifiers::SHIFT),
+            &mut draft,
+            Some(field_id),
+        );
+        assert_eq!(draft, "hello\n");
+        assert!(actions.is_empty(), "{actions:?}");
+
+        // Unfocused combos leak nowhere: no send, no break.
+        let egui_ctx = egui::Context::default();
+        let mut draft = "hello".to_string();
+        let _ = draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
+        let (_, actions) = draw_composer_frame(
+            &egui_ctx,
+            key_input(screen, egui::Key::Enter, egui::Modifiers::default()),
+            &mut draft,
+            None,
+        );
+        let (_, actions2) = draw_composer_frame(
+            &egui_ctx,
+            key_input(screen, egui::Key::Tab, egui::Modifiers::SHIFT),
+            &mut draft,
+            None,
+        );
+        assert!(actions.is_empty() && actions2.is_empty());
+        assert_eq!(draft, "hello");
     }
 }

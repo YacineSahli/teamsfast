@@ -186,6 +186,19 @@ remaining Phase 2 item.
   egui hit-tests against the PREVIOUS frame's rects — a test that renders
   each frame in a FRESH `egui::Context` eats every click (the warm-up
   frame must share the Context with the click frame).
+- Multiline composer (Enter sends; Shift+Tab/Shift+Enter newline):
+  consume keys BEFORE `ui.add(TextEdit)` — a multiline TextEdit turns
+  plain Enter into `\n` and Shift+Tab into a DE-INDENT natively.
+  `InputState::consume_key` matches LOGICALLY (extra Shift ignored), so
+  each combo needs an explicit `modifiers.matches_exact` gate or plain
+  Enter swallows Shift+Enter. The field lives inside the ScrollArea's
+  child Ui, so its id can't be derived before add: the composer stores
+  `field.id` under the fixed context key `teamsfast_composer_field` and
+  reads it back next frame. The break itself is spliced by hand
+  (char-range replace + `TextEditState` cursor after the break).
+  Regression: `composer_enter_sends_shift_tab_newline`. Key-event tests
+  MUST send `Event::ModifiersChanged` first — `InputState.modifiers`
+  only advances on that event, not on Key events' own modifiers field.
 - Call timers: one epoch only — `call_connected_at` (first frame the
   phase watch reads connected). Banner and stage share it; counting from
   placement showed two different durations on screen at once.
@@ -296,6 +309,10 @@ remaining Phase 2 item.
 - `fastframe_emoji::get()` must be called after `emoji::setup()`.
 
 ### Protocol / ost
+- Multi-line sends go out with `<br>` (teams-core `prose_html`, 2026-10-16):
+  a literal `\n` inside `<p>` is whitespace per HTML — real clients (and
+  our own block-noise collapsing) flatten it to a space. `<pre>` interiors
+  keep raw newlines; edit and quote-reply share the same body builder.
 - Chat sends to **topic-type channels** (`threadtype: "topic"`, e.g.
   literal:#alerts) return 2xx but the message never lands. conv::send now
   verifies via clientmessageid and surfaces a clear error. Proper topic
@@ -380,6 +397,8 @@ remaining Phase 2 item.
   (pair with TEAMSFAST_OPEN); `TEAMSFAST_ACTIVITY=1` seeds one synthetic
   activity-feed row (pair with TEAMSFAST_VIEW=activity) — the live feed
   only fills from unread/mentions, which headless runs usually lack.
+  `TEAMSFAST_DRAFT="a|b"` seeds the composer draft (`|` = newline) for
+  multi-line-composer QA (nothing sends).
 - `TEAMSFAST_VIDEOCALL=1` + `TEAMSFAST_HANGUP_AFTER=<secs>` place a
   camera-on echo call that hangs up on a timer — bounded headless call
   QA; the run's stdout carries the call summary

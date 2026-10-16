@@ -1006,7 +1006,11 @@ impl TeamsFastApp {
             members: HashMap::new(),
             older_link: None,
             loading_older: false,
-            draft: String::new(),
+            // QA hook: TEAMSFAST_DRAFT seeds the composer draft ("|" is a
+            // line break) so multi-line composer states render headlessly.
+            draft: std::env::var("TEAMSFAST_DRAFT")
+                .unwrap_or_default()
+                .replace('|', "\n"),
             edit: None,
             reply: None,
             uploads: Vec::new(),
