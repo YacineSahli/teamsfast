@@ -97,13 +97,26 @@ pub fn calendar_panel(
     view: &mut CalView,
     week_offset: &mut i32,
     month_offset: &mut i32,
+    list_offset: &mut i32,
     fetched: Option<(u64, u64)>,
 ) {
     ui.horizontal(|ui| {
         ui.heading(RichText::new("Calendar").strong().size(17.0));
         // Range label per view.
         let label = match view {
-            CalView::List => "Next 7 days".to_string(),
+            CalView::List => {
+                let start = today_date()
+                    .checked_add(jiff::ToSpan::days(7 * i64::from(*list_offset)))
+                    .unwrap_or_else(|_| today_date());
+                let end = start.checked_add(jiff::ToSpan::days(7)).unwrap_or(start);
+                format!(
+                    "{} {} – {} {}",
+                    start.day(),
+                    month_abbr(start.month()),
+                    end.day(),
+                    month_abbr(end.month()),
+                )
+            }
             CalView::Week => {
                 let monday = today_date()
                     .checked_add(jiff::ToSpan::days(
@@ -166,25 +179,26 @@ pub fn calendar_panel(
             if let Some(v) = toggle {
                 *view = v;
             }
-            if *view != CalView::List {
-                if ui.small_button("›").clicked() {
-                    match view {
-                        CalView::Week => *week_offset += 1,
-                        CalView::Month => *month_offset += 1,
-                        CalView::List => {}
-                    }
+            // Navigation for every view — List steps weeks inside the
+            // fetched window (pure client-side; the fetch covers 35 days).
+            if ui.small_button("›").clicked() {
+                match view {
+                    CalView::Week => *week_offset += 1,
+                    CalView::Month => *month_offset += 1,
+                    CalView::List => *list_offset += 1,
                 }
-                if ui.small_button("‹").clicked() {
-                    match view {
-                        CalView::Week => *week_offset -= 1,
-                        CalView::Month => *month_offset -= 1,
-                        CalView::List => {}
-                    }
+            }
+            if ui.small_button("‹").clicked() {
+                match view {
+                    CalView::Week => *week_offset -= 1,
+                    CalView::Month => *month_offset -= 1,
+                    CalView::List => *list_offset -= 1,
                 }
-                if crate::ui::widgets::btn::ghost(ui, pal, "Today").clicked() {
-                    *week_offset = 0;
-                    *month_offset = 0;
-                }
+            }
+            if crate::ui::widgets::btn::ghost(ui, pal, "Today").clicked() {
+                *week_offset = 0;
+                *month_offset = 0;
+                *list_offset = 0;
             }
         });
     });
@@ -200,12 +214,18 @@ pub fn calendar_panel(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-            let week_end = now_ms + 7 * 86_400_000;
+            // The stepped week window (offset 0 = now..+7d); navigation
+            // stays inside the fetched window — beyond it the list just
+            // runs empty instead of paging more data.
+            let win_start = now_ms as i64 + 7 * 86_400_000 * i64::from(*list_offset);
             let upcoming: Vec<&MeetingInfo> = meetings
                 .iter()
                 .filter(|m| {
                     m.start.as_deref().and_then(crate::model::to_epoch_ms)
-                        .map(|ms| ms + 86_400_000 >= now_ms && ms <= week_end)
+                        .map(|ms| {
+                            ms + 86_400_000 >= win_start as u64
+                                && ms <= (win_start + 7 * 86_400_000) as u64
+                        })
                         .unwrap_or(false)
                 })
                 .collect();
@@ -214,13 +234,29 @@ pub fn calendar_panel(
                 return;
             }
             if upcoming.is_empty() {
-                body_note(ui, false, pal, "No meetings in the coming week.");
+                let msg = if *list_offset == 0 {
+                    "No meetings in the coming week."
+                } else {
+                    "No meetings in this week (outside the fetched window)."
+                };
+                body_note(ui, false, pal, msg);
                 return;
             }
             ScrollArea::vertical()
                 .id_salt("calendar_scroll")
                 .auto_shrink(false)
                 .show(ui, |ui| {
+                    // "Today" separators carry the date too — a bare "Today"
+                    // rule while later rules show "Mon 19 Oct" read
+                    // asymmetrically.
+                    let t = today_date();
+                    let today_verbose = format!(
+                        "Today · {} {} {}",
+                        ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                            [t.weekday().to_monday_zero_offset() as usize],
+                        t.day(),
+                        month_abbr(t.month())
+                    );
                     let mut last_day = String::new();
                     for m in upcoming {
                         let day = m
@@ -231,7 +267,11 @@ pub fn calendar_panel(
                         if !day.is_empty() && day != last_day {
                             last_day = day.clone();
                             ui.add_space(6.0);
-                            crate::ui::widgets::day_separator(ui, pal, &day);
+                            crate::ui::widgets::day_separator(
+                                ui,
+                                pal,
+                                if day == "Today" { &today_verbose } else { &day },
+                            );
                             ui.add_space(6.0);
                         }
                         meeting_row(ui, m, pal, actions);
@@ -323,7 +363,7 @@ fn ensure_fetched(
 
 /// Cut `s` to fit `max_px` at `size` px, appending "…" — painter text has
 /// no built-in truncation, and clipping alone shears glyphs mid-stroke.
-fn ellipsize(ui: &Ui, s: &str, size: f32, max_px: f32) -> String {
+pub fn ellipsize(ui: &Ui, s: &str, size: f32, max_px: f32) -> String {
     if s.is_empty() {
         return s.to_string();
     }
@@ -405,6 +445,10 @@ fn meeting_pill(
 ) -> bool {
     let online = m.join_url.is_some();
     let dead = m.canceled;
+    // One indigo family: Teams-meetings carry the stronger tint, plain
+    // events a faint one — the old neutral `pal.surface` fill read as
+    // disabled/uncolored next to the online blocks. Canceled stays neutral
+    // (dim + strikethrough carry its state).
     let fill = if dead {
         pal.surface
     } else if online {
@@ -415,7 +459,7 @@ fn meeting_pill(
             0x38,
         )
     } else {
-        pal.surface
+        crate::theme::tint_over(pal.panel, pal.accent, 0.10)
     };
     let p = ui.painter().with_clip_rect(rect.shrink(1.0));
     p.rect_filled(rect, 6, fill);
@@ -651,16 +695,18 @@ fn week_grid(
                 let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
                 if mins >= h0 * 60 && mins <= h1 * 60 {
                     let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px;
-                    let x0 = rect.left() + gutter + col_w * day_idx;
-                    // The now-line spans the WHOLE grid (shared time
-                    // reference, not a per-day decoration) with a leading
-                    // dot at the current column.
+                    // The now-line spans the WHOLE grid from the shared time
+                    // axis (a line starting at today's column read as a
+                    // decoration of the days after it); the dot marks the
+                    // current column.
+                    let x_dot = rect.left() + gutter + col_w * day_idx;
                     let x_end = rect.left() + gutter + col_w * 7.0;
                     ui.painter().line_segment(
-                        [egui::pos2(x0, y), egui::pos2(x_end, y)],
+                        [egui::pos2(rect.left() + gutter, y), egui::pos2(x_end, y)],
                         egui::Stroke::new(1.5, pal.danger),
                     );
-                    ui.painter().circle_filled(egui::pos2(x0, y), 3.0, pal.danger);
+                    ui.painter()
+                        .circle_filled(egui::pos2(x_dot, y), 3.0, pal.danger);
                 }
             }
 
@@ -692,8 +738,12 @@ fn week_grid(
                 let mut lanes: Vec<i32> = Vec::new(); // lane -> end minute
                 let mut cluster_end = i32::MIN;
                 for (i, (_, s, d)) in spans.iter().enumerate() {
-                    if !cluster.is_empty() && *s >= cluster_end {
+                    if !cluster.is_empty() && *s > cluster_end {
                         // New cluster: finalize lane widths of the last one.
+                        // TOUCHING events (s == end) stay in the same
+                        // cluster — back-to-back meetings chained through a
+                        // morning used to re-lane per link, giving ragged
+                        // unequal lane widths down the column.
                         let n = lanes.len().max(1);
                         for &ci in &cluster {
                             geo[ci].1 = n;
@@ -857,11 +907,9 @@ fn month_grid(
                         if let Some(list) = by_date.get(&day) {
                             // Out-of-month pills dim like their numerals.
                             let dim = !in_month;
-                            for (i, m) in list.iter().take(
-                                ((cell_h as usize - 24) / 18).clamp(1, 4),
-                            )
-                            .enumerate()
-                            {
+                            let max_pills = ((cell_h as usize - 24) / 18).clamp(1, 4);
+                            let shown = list.len().min(max_pills);
+                            for (i, m) in list.iter().take(shown).enumerate() {
                                 let pill = egui::Rect::from_min_size(
                                     rect.left_top()
                                         + egui::vec2(4.0, 20.0 + i as f32 * 18.0),
@@ -871,13 +919,17 @@ fn month_grid(
                                     meeting_click(m, actions);
                                 }
                             }
-                            if list.len() > 2 {
+                            if list.len() > shown {
+                                // Accent "＋n more" like native (a bare "+3"
+                                // read as an unread count); the old text
+                                // also counted from 2 while up to 4 pills
+                                // render, overstating the hidden rows.
                                 ui.painter().text(
-                                    rect.left_bottom() + egui::vec2(6.0, -3.0),
+                                    rect.left_bottom() + egui::vec2(4.0, -3.0),
                                     egui::Align2::LEFT_BOTTOM,
-                                    format!("+{}", list.len() - 2),
+                                    format!("+{} more", list.len() - shown),
                                     egui::FontId::proportional(9.5),
-                                    pal.secondary,
+                                    if dim { pal.secondary } else { pal.accent },
                                 );
                             }
                         }
@@ -998,20 +1050,35 @@ pub fn files_panel(
     loading: bool,
     pal: &Palette,
     actions: &mut Vec<Action>,
+    subordinate: bool,
 ) {
-    ui.horizontal(|ui| {
-        ui.heading(RichText::new("Files").strong().size(17.0));
-        ui.label(RichText::new("Recent in OneDrive").small().weak());
-        if loading {
-            ui.spinner();
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
-                actions.push(Action::ReloadSection);
+    if subordinate {
+        // Shown UNDER a chat-scoped header ("Files · <chat>"): a full-size
+        // second "Files" heading outranked the page header and the global
+        // list read as mis-scoped chat content. A muted section label
+        // frames it as the fallback it is.
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new("Recent in OneDrive — nothing more shared in this conversation")
+                .small()
+                .weak(),
+        );
+        ui.separator();
+    } else {
+        ui.horizontal(|ui| {
+            ui.heading(RichText::new("Files").strong().size(17.0));
+            ui.label(RichText::new("Recent in OneDrive").small().weak());
+            if loading {
+                ui.spinner();
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
+                    actions.push(Action::ReloadSection);
+                }
+            });
         });
-    });
-    ui.separator();
+        ui.separator();
+    }
     if loading && files.is_empty() {
         body_note(ui, true, pal, "Loading files…");
         return;
@@ -1067,7 +1134,14 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
     );
     let hovered = response.hovered();
     if hovered {
-        ui.painter().rect_filled(rect, 6, pal.surface_hover);
+        // Inset the hover surface from the row bounds so the row separator
+        // below stays visible (skipping it left hovered rows divider-less
+        // and read as a hole in the list rhythm).
+        let hover_rect = egui::Rect::from_min_max(
+            rect.left_top() + egui::vec2(0.0, 2.0),
+            rect.right_bottom() - egui::vec2(0.0, 3.0),
+        );
+        ui.painter().rect_filled(hover_rect, 6, pal.surface_hover);
     }
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 2.0))));
     {
@@ -1159,11 +1233,9 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
             actions.push(Action::OpenLink(web.clone()));
         }
     }
-    // Separators yield to the hover surface (a rule drawn through the
-    // highlighted row slices it).
-    if !hovered {
-        ui.separator();
-    }
+    // Separator always drawn — the hover surface is inset above it, so the
+    // rule no longer slices the highlight.
+    ui.separator();
 }
 
 /// Files shared within one conversation (shown above the drive recents).
@@ -1191,6 +1263,12 @@ pub fn chat_files_panel(
         if loading {
             ui.spinner();
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Exit the chat scope (the rail toggle was the only way back).
+            if crate::ui::widgets::btn::ghost(ui, pal, "Show all files").clicked() {
+                actions.push(Action::CloseChatFiles);
+            }
+        });
     });
     ui.separator();
     ScrollArea::vertical()
@@ -1453,18 +1531,18 @@ pub fn activity_panel(
     }
     ScrollArea::vertical().id_salt("activity_scroll").auto_shrink(false).show(ui, |ui| {
         for e in entries {
-            let (icon, tint) = match e.kind {
-                "mention" => (crate::theme::Icon::AtSign, pal.warning),
-                "reaction" => (crate::theme::Icon::Smile, pal.ok),
-                "reply" => (crate::theme::Icon::Reply, pal.link),
-                _ => (crate::theme::Icon::MessageSquare, pal.secondary),
-            };
             let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width() - 4.0, 44.0),
+                egui::vec2(ui.available_width() - 4.0, 48.0),
                 egui::Sense::click(),
             );
             if response.hovered() {
-                ui.painter().rect_filled(rect, 6, pal.surface_hover);
+                // Inset like the file rows so the separator below stays
+                // visible.
+                let hover_rect = egui::Rect::from_min_max(
+                    rect.left_top() + egui::vec2(0.0, 2.0),
+                    rect.right_bottom() - egui::vec2(0.0, 3.0),
+                );
+                ui.painter().rect_filled(hover_rect, 6, pal.surface_hover);
             }
             let mut child = ui.new_child(
                 egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 3.0))),
@@ -1472,13 +1550,28 @@ pub fn activity_panel(
             {
                 let ui = &mut child;
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::Image::from_bytes(icon.uri(), icon.bytes())
-                            .tint(tint)
-                            .fit_to_exact_size(egui::Vec2::splat(15.0)),
+                    // Sender avatar leads the row (native feed anatomy — a
+                    // small type glyph made the feed read as a bare list);
+                    // the kind stays as the muted label on the name line.
+                    let (av, _) = ui.allocate_exact_size(
+                        egui::vec2(30.0, 30.0),
+                        egui::Sense::hover(),
                     );
+                    ui.painter().circle_filled(
+                        av.center(),
+                        15.0,
+                        crate::model::avatar_color(&e.who),
+                    );
+                    ui.painter().text(
+                        av.center(),
+                        egui::Align2::CENTER_CENTER,
+                        crate::model::initials(&e.who),
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::WHITE,
+                    );
+                    ui.add_space(2.0);
                     ui.vertical(|ui| {
-                        ui.set_width(ui.available_width() - 10.0);
+                        ui.set_width(ui.available_width() - 64.0);
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(&e.chat_name)
@@ -1499,6 +1592,14 @@ pub fn activity_panel(
                             )
                             .truncate()
                             .selectable(false),
+                        );
+                    });
+                    // Stamp pinned right, vertically centered.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(crate::model::format_epoch_ms_time(e.at_ms))
+                                .small()
+                                .weak(),
                         );
                     });
                 });

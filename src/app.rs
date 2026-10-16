@@ -558,6 +558,8 @@ pub struct TeamsFastApp {
     cal_view: crate::ui::sections::CalView,
     cal_week_offset: i32,
     cal_month_offset: i32,
+    /// List view steps in whole weeks through the fetched window.
+    cal_list_offset: i32,
     /// Window the current `meetings` set covers (unix secs), for lazy
     /// fetches when week/month navigation leaves it.
     calendar_fetched: Option<(u64, u64)>,
@@ -1076,6 +1078,7 @@ impl TeamsFastApp {
             cal_view: crate::ui::sections::CalView::List,
             cal_week_offset: 0,
             cal_month_offset: 0,
+            cal_list_offset: 0,
             calendar_fetched: None,
             drive_files: Vec::new(),
             files_loading: false,
@@ -1459,6 +1462,22 @@ impl TeamsFastApp {
                     // with a synthetic caller (pixel QA for incoming calls).
                     if std::env::var("TEAMSFAST_RING").as_deref() == Ok("1") {
                         self.incoming = Some(qa_incoming_ring());
+                    }
+                    // QA hook: TEAMSFAST_ACTIVITY=1 seeds a synthetic feed
+                    // row (the live feed only fills from unread/mentions,
+                    // which headless QA runs usually have none of).
+                    if std::env::var("TEAMSFAST_ACTIVITY").as_deref() == Ok("1") {
+                        self.activity.push(crate::ui::sections::ActivityEntry {
+                            kind: "mention",
+                            chat_id: String::new(),
+                            chat_name: "Alerting".into(),
+                            who: "Marta Kowalska".into(),
+                            preview: "heads up on the deploy window @you".into(),
+                            at_ms: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0),
+                        });
                     }
                     // QA hook: TEAMSFAST_CHATFILES=1 fetches the open chat's
                     // shared files (pair with TEAMSFAST_OPEN).
@@ -2565,6 +2584,9 @@ impl TeamsFastApp {
                 self.chat_files_loading = true;
                 self.cmd.send(Command::ChatFiles(chat_id)).ok();
             }
+            Action::CloseChatFiles => {
+                self.chat_files = None;
+            }
             Action::SetPlannerDone {
                 task_id,
                 etag,
@@ -2677,6 +2699,7 @@ impl TeamsFastApp {
                 self.calendar_loading = true;
                 self.cal_week_offset = 0;
                 self.cal_month_offset = 0;
+                self.cal_list_offset = 0;
                 let start = jiff::Zoned::now().with().hour(0).minute(0).second(0).subsec_nanosecond(0).build().map(|z| z.timestamp().as_second() as u64).unwrap_or(0);
                 self.calendar_fetched = Some((start, start + 35 * 86_400));
                 self.cmd
@@ -3223,13 +3246,17 @@ impl eframe::App for TeamsFastApp {
                 // rail, search and chat list down on every ring — an
                 // incoming call must never reflow the app. Slides in from
                 // above (ease-out cubic, anchored at the ring's start).
-                let screen = ui.input(|i| i.raw.screen_rect);
+                let screen = ui.input(|i| i.raw.screen_rect).unwrap_or(egui::Rect::ZERO);
                 let card_w = 460.0;
                 let target_y = 40.0;
                 let t_in = (ring.at.elapsed().as_secs_f32() / 0.35).min(1.0);
                 let ease = 1.0 - (1.0 - t_in) * (1.0 - t_in) * (1.0 - t_in);
                 let y = -90.0 + (target_y + 90.0) * ease;
-                let x = screen.unwrap_or(egui::Rect::ZERO).center().x - card_w / 2.0;
+                // Anchored over the CONTENT pane at the top-right (16px from
+                // the window edge): native call toasts never cover the
+                // navigation rail or the "+ New" button, which the centered
+                // placement did at every window size.
+                let x = (screen.right() - 16.0 - card_w).max(screen.left() + 8.0);
                 egui::Area::new(egui::Id::new("ringing_card"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(egui::pos2(x, y))
@@ -4188,6 +4215,7 @@ impl eframe::App for TeamsFastApp {
                         &mut self.cal_view,
                         &mut self.cal_week_offset,
                         &mut self.cal_month_offset,
+                        &mut self.cal_list_offset,
                         self.calendar_fetched,
                     ),
                     MainView::Files => {
@@ -4209,6 +4237,7 @@ impl eframe::App for TeamsFastApp {
                             self.files_loading,
                             &self.palette,
                             &mut actions,
+                            self.chat_files.is_some(),
                         )
                     }
                     MainView::ToDo => {
@@ -4610,21 +4639,29 @@ impl eframe::App for TeamsFastApp {
                 );
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(10.0);
-                // Actions right-aligned; primary last.
+                // Actions right-aligned; primary last. Join stays disabled
+                // until there is something to join — the New-chat dialog's
+                // convention (a saturated button over an empty field read
+                // as enabled).
+                let can_join = !self.join_source.trim().is_empty();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("Join").strong().color(self.palette.on_accent),
+                    ui.add_enabled_ui(can_join, |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Join")
+                                        .strong()
+                                        .color(self.palette.on_accent),
+                                )
+                                .fill(self.palette.accent)
+                                .min_size(egui::vec2(84.0, 26.0)),
                             )
-                            .fill(self.palette.accent)
-                            .min_size(egui::vec2(84.0, 26.0)),
-                        )
-                        .clicked()
-                        || enter
-                    {
-                        join_now = true;
-                    }
+                            .clicked()
+                            || (enter && can_join)
+                        {
+                            join_now = true;
+                        }
+                    });
                     if crate::ui::widgets::btn::secondary(ui, &self.palette, "Cancel")
                         .clicked()
                     {

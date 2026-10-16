@@ -174,7 +174,7 @@ pub fn new_chat_dialog(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("New conversation").strong().size(15.0));
+        ui.label(RichText::new("New chat").strong().size(15.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(

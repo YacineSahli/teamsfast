@@ -145,9 +145,11 @@ pub fn sidebar(
                 .auto_shrink(false)
                 .show(ui, |ui| {
                     for team in ctx.teams {
-                        ui.add_space(4.0);
+                        // Team blocks breathe apart — chips-to-chips 4px
+                        // spacing made a 20-channel team read as one wall.
+                        ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            avatar(ui, &team.name, 22.0);
+                            crate::ui::widgets::avatar_tile(ui, &team.name, 22.0);
                             ui.strong(&team.name);
                         });
                         // Channels indent under their team (hierarchy cue;
@@ -155,16 +157,41 @@ pub fn sidebar(
                         ui.add_space(0.0);
                         for ch in &team.channels {
                             let sel = ctx.selected == Some(&ch.id);
+                            // Flat full-width rows, not pill buttons —
+                            // rounded chips read as tags and carried no
+                            // room for state.
                             ui.horizontal(|ui| {
                                 ui.add_space(32.0);
-                                // Truncate with ellipsis — selectable_label
-                                // hard-clips long channel names at the border.
-                                let row = ui.add(
-                                    egui::Button::new(
-                                        RichText::new(format!("# {}", ch.name)).small(),
-                                    )
-                                    .truncate()
-                                    .selected(sel),
+                                let row_w = ui.available_width();
+                                let (rect, row) = ui.allocate_exact_size(
+                                    egui::vec2(row_w, 22.0),
+                                    egui::Sense::click(),
+                                );
+                                let hovered = row.hovered();
+                                if sel || hovered {
+                                    let fill = if sel {
+                                        crate::theme::tint_over(
+                                            ctx.pal.panel,
+                                            ctx.pal.accent,
+                                            0.28,
+                                        )
+                                    } else {
+                                        ctx.pal.surface_hover
+                                    };
+                                    ui.painter().rect_filled(rect, 5, fill);
+                                }
+                                let text = crate::ui::sections::ellipsize(
+                                    ui,
+                                    &format!("# {}", ch.name),
+                                    12.5,
+                                    rect.width() - 12.0,
+                                );
+                                ui.painter().text(
+                                    rect.left_top() + egui::vec2(6.0, 11.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    text,
+                                    egui::FontId::proportional(12.5),
+                                    if sel { ctx.pal.text } else { ctx.pal.secondary },
                                 );
                                 if row.clicked() {
                                     actions.push(Action::OpenChat(ch.id.clone()));

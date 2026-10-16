@@ -167,6 +167,8 @@ pub enum Action {
     },
     /// Show this chat's shared files in the Files section.
     ShowChatFiles(String),
+    /// Leave the per-chat files scope in the Files section.
+    CloseChatFiles,
     ReadNotePage(String),
     AppendNote { page_id: String, text: String },
     /// Create an instant meeting and join it.

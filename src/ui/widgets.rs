@@ -149,6 +149,23 @@ pub fn avatar(ui: &mut Ui, name: &str, size: f32) {
     );
 }
 
+/// Rounded-square glyph for TEAMS (the circle is the PEOPLE shape — teams
+/// rendered as circles read as persons in the sidebar).
+pub fn avatar_tile(ui: &mut Ui, name: &str, size: f32) {
+    let color = avatar_color(name);
+    let text = initials(name);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, (size * 0.25) as u8, color);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(size * 0.42),
+        Color32::WHITE,
+    );
+}
+
 /// A parsed segment of Teams message HTML.
 #[derive(Debug, Clone)]
 pub enum Seg {
@@ -688,9 +705,10 @@ pub fn render_segments(
                 }
                 Seg::Quote(t) => {
                     row_has_content = true;
-                    Frame::default()
+                    // Left accent bar only — a full outline read as a
+                    // selected/focused card; the threading cue is the bar.
+                    let quote = Frame::default()
                         .fill(crate::theme::tint_over(pal.bubble_in, pal.text, 0.05))
-                        .stroke(Stroke::new(2.0, pal.accent.gamma_multiply(0.7)))
                         .corner_radius(CornerRadius::same(4))
                         .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
@@ -698,6 +716,14 @@ pub fn render_segments(
                             // print for content the user is meant to parse.
                             ui.label(RichText::new(t).weak().size(13.0));
                         });
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            quote.response.rect.left_top(),
+                            egui::vec2(2.5, quote.response.rect.height()),
+                        ),
+                        1,
+                        pal.accent.gamma_multiply(0.8),
+                    );
                 }
                 Seg::Image { url } => {
                     // Images always own their line: break before AND after

@@ -220,8 +220,11 @@ fn render_element(
                     let title = fact.get("title").and_then(|v| v.as_str()).unwrap_or("");
                     let value = fact.get("value").and_then(|v| v.as_str()).unwrap_or("");
                     ui.horizontal(|ui| {
+                        // Fixed title column with a hard gutter: the value
+                        // starts right after the 92px slot, so long titles
+                        // can't crowd it ("Priority: P1" sat 6px apart).
                         let (tr, _) = ui.allocate_exact_size(
-                            egui::vec2(92.0, 15.0),
+                            egui::vec2(92.0 + 14.0, 15.0),
                             egui::Sense::hover(),
                         );
                         ui.painter().text(

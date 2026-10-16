@@ -3,10 +3,18 @@
 use egui::Color32;
 use std::collections::HashMap;
 
+/// Activity-feed stamp from epoch millis — same shape as
+/// [`format_message_time`] (delegates via the ISO rendering).
+pub fn format_epoch_ms_time(ms: u64) -> String {
+    let iso = jiff::Timestamp::from_millisecond(ms as i64)
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+    format_message_time(&iso)
+}
+
 /// Message timestamp: `"14:32"` today, `"14:32, 3 Oct"` this year, else with year.
 /// Server timestamps are UTC; rendered in the machine's local zone via jiff.
-pub fn format_message_time(ts: &str) -> String {
-    // Preferred path: jiff parses the instant and converts to the system
+pub fn format_message_time(ts: &str) -> String {    // Preferred path: jiff parses the instant and converts to the system
     // zone. (Zoned::from_str needs a [zone annotation]; Teams stamps have
     // only a trailing Z, so parse as Timestamp and convert.)
     if let Ok(zdt) = ts
