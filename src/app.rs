@@ -3966,7 +3966,13 @@ impl eframe::App for TeamsFastApp {
                 })
                 .collect();
             // QA hook: force the typing indicator without a live peer.
-            let forced_typing = std::env::var("TEAMSFAST_TYPING").ok();
+            // Read once — this line runs every frame and env::var takes a
+            // lock + allocates.
+            static FORCED_TYPING: std::sync::OnceLock<Option<String>> =
+                std::sync::OnceLock::new();
+            let forced_typing = FORCED_TYPING
+                .get_or_init(|| std::env::var("TEAMSFAST_TYPING").ok())
+                .clone();
             let pinned_here = self
                 .settings
                 .pinned_messages
