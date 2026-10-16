@@ -72,17 +72,34 @@ pub async fn upload(ses: &Session, tx: &Sender<Event>, chat_id: &str, path: &Pat
         total,
     });
     let path_str = path.to_string_lossy().to_string();
-    match ost::api::upload_file_data(c, chat_id, &path_str).await {
+    // Per-fragment progress: the callback fires inside the upload future
+    // (worker runtime) and std mpsc send is non-blocking, so it can emit
+    // events directly — no forwarder thread needed.
+    let prog_tx = tx.clone();
+    let prog_name = name.clone();
+    let prog_chat = chat_id.to_string();
+    let progress = move |sent: u64, total: u64| {
+        let _ = prog_tx.send(Event::UploadProgress {
+            chat_id: prog_chat.clone(),
+            name: prog_name.clone(),
+            sent,
+            total,
+        });
+    };
+    match ost::api::upload_file_data_with_progress(c, chat_id, &path_str, Some(&progress)).await
+    {
         Ok(_file) => {
             let _ = tx.send(Event::UploadDone {
                 chat_id: chat_id.to_string(),
                 name,
             });
-            // Refetch newest history so the file message shows up.
-            if let Ok(page) = ost::api::read_messages_page(c, chat_id, 50, None).await {
+            // Small merged slice so the file message shows up without
+            // re-downloading the whole page.
+            if let Ok(page) = ost::api::read_messages_page(c, chat_id, 10, None).await {
                 let _ = tx.send(Event::Messages {
-                    older_link: page.backward_link,
+                    older_link: None,
                     prepend: false,
+                    merge: true,
                     chat_id: chat_id.to_string(),
                     messages: page.messages,
                     members: HashMap::new(),

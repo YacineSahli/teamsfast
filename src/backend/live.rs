@@ -10,8 +10,9 @@ use std::sync::mpsc::Sender;
 /// - the trouter session is a plain async task (it reconnects internally);
 /// - `event_hub::drain_wait` is a blocking Condvar and MUST run on the
 ///   blocking pool, never on the async runtime;
-/// - every raw payload still goes out as `Event::Trouter` (the log panel),
-///   parsed ones additionally as `IncomingMessage` / `Typing`.
+/// - only PARSED events reach the UI (`IncomingMessage` / `Typing` /
+///   call events) — the raw-payload clone per push had no consumer and
+///   made every message pay a cross-thread String clone.
 pub fn start(tx: &Sender<Event>) {
     let tx2 = tx.clone();
     tokio::spawn(async {
@@ -22,9 +23,6 @@ pub fn start(tx: &Sender<Event>) {
 
     tokio::task::spawn_blocking(move || loop {
         for ev in ost::event_hub::drain_wait(32, 250) {
-            if tx2.send(Event::Trouter(ev.clone())).is_err() {
-                return; // UI gone
-            }
             match parse(&ev) {
                 Parsed::Incoming {
                     chat_id,

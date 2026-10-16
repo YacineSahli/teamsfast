@@ -99,6 +99,14 @@ impl Archive {
                 h INTEGER NOT NULL
             );",
         )?;
+        // image_sizes grows one row per unique media URL ever decoded and
+        // is fully loaded at every launch — cap it at the 2000 newest
+        // (rowid order = insertion order). After the schema batch: on a
+        // fresh DB the table exists only from it.
+        conn.execute_batch(
+            "DELETE FROM image_sizes WHERE rowid NOT IN
+             (SELECT rowid FROM image_sizes ORDER BY rowid DESC LIMIT 2000);",
+        )?;
         Ok(Self { conn })
     }
 

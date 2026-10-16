@@ -119,6 +119,29 @@ fn connected_stage(app: &TeamsFastApp) -> bool {
             .unwrap_or(false)
 }
 
+/// Small confirmation slice from an action (send/reply/edit/delete/react):
+/// merge by id so loaded older pages survive. Ids present in the slice
+/// take the slice's (fresher) version; absent ids survive regardless —
+/// other-client deletions heal on the next full refresh/open. Result
+/// stays oldest-first.
+fn merge_message_tail(existing: &mut Vec<MessageInfo>, page: Vec<MessageInfo>) {
+    let page_ids: std::collections::HashSet<&str> =
+        page.iter().map(|m| m.id.as_str()).collect();
+    let mut merged: Vec<MessageInfo> = existing
+        .drain(..)
+        .filter(|m| !page_ids.contains(m.id.as_str()))
+        .collect();
+    merged.extend(page);
+    merged.sort_by(|a, b| {
+        let (ta, tb) = (
+            crate::model::to_epoch_ms(&a.timestamp).unwrap_or(0),
+            crate::model::to_epoch_ms(&b.timestamp).unwrap_or(0),
+        );
+        ta.cmp(&tb).then_with(|| a.id.cmp(&b.id))
+    });
+    *existing = merged;
+}
+
 fn drain_latest(
     rx: &std::sync::mpsc::Receiver<ost::calling::video::VideoFrame>,
 ) -> Option<ost::calling::video::VideoFrame> {
@@ -444,7 +467,6 @@ pub struct TeamsFastApp {
 
     new_chat: NewChatState,
 
-    trouter_log: Vec<String>,
     trouter_on: bool,
     pending_open_refresh: bool,
     last_open_refresh: Instant,
@@ -979,7 +1001,6 @@ impl TeamsFastApp {
             search_query: String::new(),
             search_note: None,
             new_chat: NewChatState::default(),
-            trouter_log: Vec::new(),
             trouter_on: false,
             pending_open_refresh: false,
             last_open_refresh: Instant::now() - Duration::from_secs(10),
@@ -1525,6 +1546,7 @@ impl TeamsFastApp {
                     members,
                     resolved_name,
                     prepend,
+                    merge,
                     older_link,
                 } => {
                     if self.selected.as_deref() != Some(chat_id.as_str()) {
@@ -1545,13 +1567,19 @@ impl TeamsFastApp {
                         merged.retain(|m| seen.insert(m.id.clone()));
                         self.messages = merged;
                         self.loading_older = false;
+                    } else if merge {
+                        merge_message_tail(&mut self.messages, messages);
                     } else {
                         self.messages = messages;
                     }
                     if !members.is_empty() {
                         self.members = members;
                     }
-                    self.older_link = older_link;
+                    // Merge slices carry no cursor (the pre-action one stays
+                    // valid); only overwrite when the page actually has one.
+                    if older_link.is_some() {
+                        self.older_link = older_link;
+                    }
                     if let Some(name) = resolved_name {
                         self.rename_chat(&chat_id, name);
                     }
@@ -1676,12 +1704,6 @@ impl TeamsFastApp {
                 }
                 Event::DownloadDone { path, .. } => {
                     self.status = format!("saved {}", path.display());
-                }
-                Event::Trouter(json) => {
-                    self.trouter_log.push(json);
-                    if self.trouter_log.len() > 200 {
-                        self.trouter_log.drain(..100);
-                    }
                 }
                 Event::TrouterConnected => {
                     self.trouter_on = true;
@@ -4619,5 +4641,52 @@ impl eframe::App for TeamsFastApp {
         if let Some(t) = tick {
             ui.ctx().request_repaint_after(t);
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn msg(id: &str, ts: &str) -> MessageInfo {
+        MessageInfo {
+            id: id.into(),
+            sender_mri: "8:orgid:a".into(),
+            sender: "A".into(),
+            timestamp: ts.into(),
+            content: format!("content-{id}"),
+            raw: format!("<div>content-{id}</div>"),
+            reactions: Vec::new(),
+            reply_to: None,
+            client_message_id: None,
+        }
+    }
+
+    #[test]
+    fn merge_keeps_older_overwrites_overlap_orders_chronologically() {
+        let mut existing = vec![
+            msg("m1", "2026-10-16T10:00:00.0000000Z"),
+            msg("m2", "2026-10-16T10:01:00.0000000Z"),
+            msg("m3", "2026-10-16T10:02:00.0000000Z"),
+        ];
+        // Page = newest slice: m2 EDITED (same id, so replaced), m4 new.
+        // m3 is NOT in the page, so by design it SURVIVES (a mid-tail
+        // deletion from another client heals on the next full open).
+        let mut edited = msg("m2", "2026-10-16T10:01:00.0000000Z");
+        edited.content = "edited".into();
+        let page = vec![edited, msg("m4", "2026-10-16T10:05:00.0000000Z")];
+        merge_message_tail(&mut existing, page);
+        let ids: Vec<&str> = existing.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m2", "m3", "m4"], "older kept, overlap replaced, new appended");
+        assert_eq!(existing[1].content, "edited", "overlap takes the page version");
+
+        // A page slice that re-delivers m3 replaces its content (same id)
+        // — deletions are never inferable from a slice; they heal on the
+        // next FULL refresh (replace) instead.
+        let mut m3_new = msg("m3", "2026-10-16T10:02:00.0000000Z");
+        m3_new.content = "resurrected".into();
+        merge_message_tail(&mut existing, vec![m3_new]);
+        assert_eq!(existing.len(), 4, "slice never drops absent ids");
+        assert_eq!(existing[2].content, "resurrected");
     }
 }

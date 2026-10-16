@@ -202,6 +202,11 @@ pub enum Event {
         resolved_name: Option<String>,
         /// True = prepend these (older page); false = replace the view.
         prepend: bool,
+        /// True = the page is a SMALL confirmation slice from an action
+        /// (send/reply/edit/delete/react): merge by id instead of
+        /// replacing, so loaded older pages survive. Only ids present in
+        /// the slice update — other-client deletions heal on full refresh.
+        merge: bool,
         /// Cursor for "load older"; None when history is exhausted.
         older_link: Option<String>,
     },
@@ -230,7 +235,6 @@ pub enum Event {
     },
     UploadDone { chat_id: String, name: String },
     DownloadDone { name: String, path: PathBuf },
-    Trouter(String),
     TrouterConnected,
     /// Message search refused by Graph on this tenant (token lacks Chat.Read).
     SearchUnavailable(String),

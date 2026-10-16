@@ -34,6 +34,7 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
         let _ = tx.send(Event::Messages {
             older_link: None,
             prepend: false,
+            merge: false,
             chat_id: chat_id.clone(),
             messages: cached,
             members: HashMap::new(),
@@ -136,6 +137,7 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
             let _ = tx.send(Event::Messages {
                 older_link: Some(cursor),
                 prepend: false,
+                merge: false,
                 chat_id,
                 messages: page.messages,
                 members,
@@ -174,6 +176,7 @@ pub async fn load_older(ses: &mut Session, tx: &Sender<Event>, chat_id: &str) {
             let _ = tx.send(Event::Messages {
                 older_link: Some(cursor),
                 prepend: true,
+                merge: false,
                 chat_id: chat_id.to_string(),
                 messages: page.messages,
                 members: HashMap::new(),
@@ -205,10 +208,11 @@ pub async fn send(ses: &mut Session, tx: &Sender<Event>, chat_id: &str, text: &s
                 chat_id: chat_id.to_string(),
                 action: MsgAction::Replied,
             });
-            if let Ok(page) = read_messages_page(c, chat_id, 50, None).await {
+            // Small confirmation slice, merged into the view: the send's
+            // feedback should not wait on (or re-download) a full page, and
+            // the pre-action older cursor stays valid.
+            if let Ok(page) = read_messages_page(c, chat_id, 10, None).await {
                 let landed = ost::api::find_by_client_id(&page.messages, cmid).is_some();
-                let cursor = page.backward_link.clone().unwrap_or_default();
-                ses.older_links.insert(chat_id.to_string(), cursor.clone());
                 if !landed {
                     let _ = tx.send(Event::SendFailed {
                         chat_id: chat_id.to_string(),
@@ -219,8 +223,9 @@ pub async fn send(ses: &mut Session, tx: &Sender<Event>, chat_id: &str, text: &s
                     });
                 }
                 let _ = tx.send(Event::Messages {
-                    older_link: Some(cursor),
+                    older_link: None,
                     prepend: false,
+                    merge: true,
                     chat_id: chat_id.to_string(),
                     messages: page.messages,
                     members: HashMap::new(),
@@ -282,7 +287,7 @@ pub async fn reply(
                 chat_id: chat_id.to_string(),
                 action: MsgAction::Replied,
             });
-            refetch(ses, tx, chat_id).await;
+            refetch_tail(ses, tx, chat_id).await;
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("reply: {e:#}")));
@@ -300,7 +305,7 @@ pub async fn edit(ses: &Session, tx: &Sender<Event>, chat_id: &str, message_id: 
                 chat_id: chat_id.to_string(),
                 action: MsgAction::Edited,
             });
-            refetch(ses, tx, chat_id).await;
+            refetch_tail(ses, tx, chat_id).await;
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("edit: {e:#}")));
@@ -318,7 +323,7 @@ pub async fn delete(ses: &Session, tx: &Sender<Event>, chat_id: &str, message_id
                 chat_id: chat_id.to_string(),
                 action: MsgAction::Deleted,
             });
-            refetch(ses, tx, chat_id).await;
+            refetch_tail(ses, tx, chat_id).await;
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("delete: {e:#}")));
@@ -348,7 +353,7 @@ pub async fn react(
                 chat_id: chat_id.to_string(),
                 action: MsgAction::Reacted,
             });
-            refetch(ses, tx, chat_id).await;
+            refetch_tail(ses, tx, chat_id).await;
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("reaction: {e:#}")));
@@ -378,13 +383,41 @@ pub async fn mark_read(ses: &Session, tx: &Sender<Event>, chat_id: &str, message
     }
 }
 
-/// Refetch the newest page for a chat (after an action, or as the light
-/// live-activity refresh) without touching the roster — member names were
-/// already delivered when the chat was opened.
+/// Post-action confirmation slice: small newest page merged into the view.
+/// The action's feedback must not wait on (or re-download) a full page, and
+/// older pages the user already loaded survive. Only ids present in the
+/// slice are updated — other-client deletions heal on the full refresh.
+pub(crate) async fn refetch_tail(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    if let Ok(page) = read_messages_page(c, chat_id, 10, None).await {
+        if let Some(archive) = ses.archive.as_ref()
+            && let Err(e) = archive.save_messages(chat_id, &page.messages)
+        {
+            log::warn!("archive save messages: {e:#}");
+        }
+        let _ = tx.send(Event::Messages {
+            older_link: None,
+            prepend: false,
+            merge: true,
+            chat_id: chat_id.to_string(),
+            messages: page.messages,
+            members: HashMap::new(),
+            resolved_name: None,
+        });
+    }
+}
+
+/// Refetch the newest page for a chat (the light live-activity refresh)
+/// without touching the roster — member names were already delivered when
+/// the chat was opened.
 pub(crate) async fn refetch(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
     let Some(c) = client(ses) else {
         return;
     };
+    // Full replace: the live-activity refresh (RefreshChat) must also heal
+    // deletions made by other clients, which a merged slice cannot see.
     if let Ok(page) = read_messages_page(c, chat_id, 50, None).await {
         if let Some(archive) = ses.archive.as_ref()
             && let Err(e) = archive.save_messages(chat_id, &page.messages)
@@ -394,6 +427,7 @@ pub(crate) async fn refetch(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
         let _ = tx.send(Event::Messages {
             older_link: page.backward_link,
             prepend: false,
+            merge: false,
             chat_id: chat_id.to_string(),
             messages: page.messages,
             members: HashMap::new(),
