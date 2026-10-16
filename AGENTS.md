@@ -232,6 +232,20 @@ remaining Phase 2 item.
   future = silent dead backend, "Starting…" forever).
 - Commands channel: tokio unbounded, `rx.recv().await` (root task must
   yield so spawned tasks run). Events channel: std mpsc, drained per frame.
+- Worker sync sections stall EVERYTHING (trouter included, same runtime).
+  Perf pass 2026-10-16 proved it: archive saves were SQLCipher autocommit
+  (one journal fsync per INSERT) = **560ms per 50-message save on real
+  disk** — every open/refresh/send/react paused the worker that long, and
+  the paint event sent AFTER the save ate the stall too. WAL +
+  synchronous=NORMAL + one `unchecked_transaction` per batch = 0.5ms
+  (~1000x). Rule: batched archive writes ONLY; benchmark on
+  ~/.local/state, never /tmp (tmpfs hides fsync cost). Paint events also
+  go out before any bookkeeping. UI side: `chat_mem` (12-chat RAM cache)
+  paints re-opens instantly — `open_chat`/`refresh_chat` must never clear
+  the visible pane, and live-activity refresh is `Command::RefreshChat`
+  (history-only), never a full re-open. Hot render paths use
+  `parse_html_cached`/`plain_cached` (per-frame re-parses of multi-KB
+  message HTML were 2-3 parses/bubble/frame).
 - fastframe-tray `Tray::spawn` must run on a thread with NO ambient tokio
   runtime (ksni nested block_on panics) — see `spawn_tray` in app.rs;
   returns via mpsc with 3s timeout.
