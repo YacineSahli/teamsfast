@@ -1849,6 +1849,14 @@ impl TeamsFastApp {
                 }
                 // ---- sections ----
                 Event::Calendar(meetings) => {
+                    // QA hook: TEAMSFAST_CALDUMP=1 logs every meeting's
+                    // span triple — lane/size forensics without a debugger.
+                    if std::env::var("TEAMSFAST_CALDUMP").as_deref() == Ok("1") {
+                        for m in &meetings {
+                            let (d, s, dur) = crate::ui::sections::meeting_span_pub(m);
+                            log::info!("CALDUMP date={d} start_min={s} dur_min={dur}");
+                        }
+                    }
                     // QA hook: TEAMSFAST_JOIN=1 auto-joins the first meeting
                     // that has a join link.
                     if std::env::var("TEAMSFAST_JOIN").as_deref() == Ok("1") {

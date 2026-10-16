@@ -16,6 +16,31 @@ use crate::theme::RichTextBold;
 /// Centered body note for loading/empty states. Drawn with the painter
 /// (no layout): ScrollAreas and nested layouts collapse available rects,
 /// which pinned every layout-based attempt to the top.
+/// body_note with a ghosted icon above the text (the standard empty-state
+/// anatomy; body_note alone is text-only). ui.put places the image at an
+/// absolute rect — painter-style centering for a widget.
+pub fn body_note_icon(ui: &mut Ui, pal: &Palette, icon: crate::theme::Icon, text: &str) {
+    let rect = ui.max_rect();
+    let center = egui::pos2(rect.center().x, rect.center().y.max(rect.top() + 90.0));
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(center.x, center.y - 28.0),
+        egui::Vec2::splat(34.0),
+    );
+    ui.put(
+        icon_rect,
+        egui::Image::from_bytes(icon.uri(), icon.bytes())
+            .tint(pal.outline)
+            .fit_to_exact_size(egui::Vec2::splat(34.0)),
+    );
+    ui.painter().text(
+        egui::pos2(center.x, center.y + 10.0),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(13.0),
+        pal.secondary,
+    );
+}
+
 pub fn body_note(ui: &mut Ui, spinner: bool, pal: &Palette, text: &str) {
     let _ = spinner;
     let rect = ui.max_rect();
@@ -40,7 +65,9 @@ pub enum CalView {
 }
 
 const DAY_HEADERS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const WEEK_HOURS: (i32, i32) = (7, 21); // 07:00 – 21:00 grid
+/// Default week window — stretched at render time to include every event
+/// of the displayed week (see week_grid).
+const WEEK_HOURS: (i32, i32) = (7, 21);
 /// Teams-default hour height: 36px crushed 30-min meetings into 17px
 /// strips; 48px keeps them readable and fills the viewport.
 const HOUR_PX: f32 = 48.0;
@@ -49,6 +76,11 @@ const HOUR_PX: f32 = 48.0;
 /// calendar dateTimes are NAIVE (the meeting's own zone) — parse the wall
 /// components directly so grid blocks sit where the printed times say, not
 /// shifted by the local offset.
+/// Public meeting_span for QA dumps (TEAMSFAST_CALDUMP).
+pub fn meeting_span_pub(m: &MeetingInfo) -> (jiff::civil::Date, i32, i32) {
+    meeting_span(m).unwrap_or((today_date(), 0, 0))
+}
+
 fn meeting_span(m: &MeetingInfo) -> Option<(jiff::civil::Date, i32, i32)> {
     let num = |t: &str, a: usize, n: usize| t.get(a..a + n)?.parse::<i64>().ok();
     let t = m.start.as_deref()?;
@@ -476,7 +508,9 @@ fn meeting_pill(
         .end
         .as_deref()
         .map(hm_only)
-        .map(|e| format!("{time} – {e}"))
+        // Space-free form: in narrow lanes the spaced dash cost the END
+        // time ("11:00 – 13…").
+        .map(|e| format!("{time}–{e}"))
         .unwrap_or_else(|| time.clone());
     let title_col = if dead || dim {
         pal.secondary
@@ -499,7 +533,11 @@ fn meeting_pill(
         let subj_e = ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0));
         // Lane too narrow for "time title" — a title fragment still says
         // more than a bare time; never render "14:00 …" (time + nothing).
-        let line = if subj_e.chars().count() <= 2 {
+        // An EMPTY subject renders the time alone (the old empty line left
+        // a stroke-only pill that read as a stray glyph in month cells).
+        let line = if subject.trim().is_empty() {
+            time.clone()
+        } else if subj_e.chars().count() <= 2 {
             ellipsize(ui, &subject, 10.0, text_w.max(8.0))
         } else {
             format!("{time} {subj_e}")
@@ -515,10 +553,15 @@ fn meeting_pill(
             p.line_segment([r.left_center(), r.right_center()], egui::Stroke::new(1.0, pal.secondary));
         }
     } else {
+        let head = if subject.trim().is_empty() {
+            range.clone()
+        } else {
+            ellipsize(ui, &subject, 10.5, text_w)
+        };
         let r = p.text(
             rect.left_top() + egui::vec2(5.0, 3.0),
             egui::Align2::LEFT_TOP,
-            ellipsize(ui, &subject, 10.5, text_w),
+            head,
             egui::FontId::proportional(10.5),
             title_col,
         );
@@ -547,6 +590,38 @@ fn meeting_pill(
     .clicked()
 }
 
+/// Lane assignment for one day's (start, duration) spans, sorted by
+/// start. Returns (lane, lanes_in_cluster) per span. Touching events
+/// (start == lane end) share a lane and stay in the same cluster.
+fn lane_geometry(spans: &[(i32, i32)]) -> Vec<(usize, usize)> {
+    let mut geo: Vec<(usize, usize)> = vec![(0, 1); spans.len()];
+    let mut cluster: Vec<usize> = Vec::new();
+    let mut lanes: Vec<i32> = Vec::new();
+    let mut cluster_end = i32::MIN;
+    for (i, (s, d)) in spans.iter().enumerate() {
+        if !cluster.is_empty() && *s > cluster_end {
+            let n = lanes.len().max(1);
+            for &ci in &cluster {
+                geo[ci].1 = n;
+            }
+            cluster.clear();
+            lanes.clear();
+        }
+        match lanes.iter().position(|end| *end <= *s) {
+            Some(li) => lanes[li] = s + d,
+            None => lanes.push(s + d),
+        }
+        geo[i].0 = lanes.len() - 1;
+        cluster.push(i);
+        cluster_end = cluster_end.max(s + d);
+    }
+    let n = lanes.len().max(1);
+    for &ci in &cluster {
+        geo[ci].1 = n;
+    }
+    geo
+}
+
 fn week_grid(
     ui: &mut Ui,
     meetings: &[MeetingInfo],
@@ -556,13 +631,53 @@ fn week_grid(
 ) {
     let avail_w = ui.available_width() - 8.0;
     let gutter = 42.0;
-    // Fit the 7 columns to the available width (a "just barely scrolls"
-    // grid clipped Sunday at common widths — worst of both worlds). The
-    // 96px floor is where horizontal scroll takes over on tiny panes;
-    // narrow overlap lanes degrade gracefully via compact pills instead
-    // of forcing the whole grid wider.
-    let col_w = ((avail_w - gutter) / 7.0).max(96.0);
-    let (h0, h1) = WEEK_HOURS;
+
+    // Spans + lane geometry per day FIRST: the grid's bounds derive from
+    // the real events. The old fixed 07:00–21:00 window silently dropped
+    // early/late meetings (a 20:00–00:00 upgrade rendered as a stub) and
+    // fixed-width columns crushed 3-lane clusters into unreadable slivers.
+    let monday = monday_of(offset);
+    let mut by_day: Vec<(i32, Vec<(&MeetingInfo, i32, i32)>, Vec<(usize, usize)>)> = Vec::new();
+    let mut max_lanes = 1usize;
+    {
+        let mut map: std::collections::HashMap<i32, Vec<(&MeetingInfo, i32, i32)>> =
+            std::collections::HashMap::new();
+        for m in meetings {
+            if let Some((date, s, d)) = meeting_span(m) {
+                let idx = (date - monday).get_days();
+                if (0..7).contains(&idx) {
+                    map.entry(idx).or_default().push((m, s, d));
+                }
+            }
+        }
+        for (idx, mut spans) in map {
+            spans.sort_by_key(|(_, s, _)| *s);
+            let geo = lane_geometry(
+                &spans.iter().map(|(_, s, d)| (*s, *d)).collect::<Vec<_>>(),
+            );
+            for (_, n) in &geo {
+                max_lanes = max_lanes.max(*n);
+            }
+            by_day.push((idx, spans, geo));
+        }
+        by_day.sort_by_key(|(idx, _, _)| *idx);
+    }
+    // Column width: fit the week's widest cluster — 60px per lane keeps
+    // pills readable; the ScrollArea scrolls horizontally instead of
+    // crushing 3-lane afternoons into slivers.
+    let col_w = ((avail_w - gutter) / 7.0)
+        .max(max_lanes as f32 * 60.0)
+        .max(96.0);
+    // Hour window: the fixed 07:00–21:00 default, stretched to include
+    // every event of this week (early standups, midnight-crossing upgrades).
+    let mut h0 = WEEK_HOURS.0;
+    let mut h1 = WEEK_HOURS.1;
+    for (_, spans, _) in &by_day {
+        for (_, s, d) in spans {
+            h0 = h0.min(s / 60);
+            h1 = h1.max((s + d + 59) / 60).min(24);
+        }
+    }
     let rows = (h1 - h0) as f32;
     // Hour height fits the viewport when it can (the old fixed 48px pushed
     // 21:00 below the fold at 1100x760 with no visible affordance); below
@@ -574,7 +689,6 @@ fn week_grid(
     let total_w = gutter + col_w * 7.0;
 
     let today = today_date();
-    let monday = monday_of(offset);
 
     ScrollArea::both()
         .id_salt("calendar_week")
@@ -712,62 +826,13 @@ fn week_grid(
             }
 
             // Meeting blocks: concurrent events lane side-by-side within
-            // their day column instead of overlapping.
-            let mut by_day: std::collections::HashMap<i32, Vec<&MeetingInfo>> =
-                std::collections::HashMap::new();
-            for m in meetings {
-                if let Some((date, _, _)) = meeting_span(m) {
-                    let idx = (date - monday).get_days();
-                    if (0..7).contains(&idx) {
-                        by_day.entry(idx).or_default().push(m);
-                    }
-                }
-            }
-            for (idx, list) in by_day {
-                // Sort by start, then split into overlap CLUSTERS (events
-                // connected directly or transitively through an overlap).
-                // Lanes are computed per cluster: a day with ONE overlap
-                // used to squeeze every block that day to 1/N width, even
-                // the 08:00 ones that overlap nothing.
-                let mut spans: Vec<(&&MeetingInfo, i32, i32)> = list
-                    .iter()
-                    .filter_map(|m| meeting_span(m).map(|(_, s, d)| (m, s, d)))
-                    .collect();
-                spans.sort_by_key(|(_, s, _)| *s);
-                let mut geo: Vec<(usize, usize)> = vec![(0, 1); spans.len()]; // (lane, lane_count)
-                let mut cluster: Vec<usize> = Vec::new();
-                let mut lanes: Vec<i32> = Vec::new(); // lane -> end minute
-                let mut cluster_end = i32::MIN;
-                for (i, (_, s, d)) in spans.iter().enumerate() {
-                    if !cluster.is_empty() && *s > cluster_end {
-                        // New cluster: finalize lane widths of the last one.
-                        // TOUCHING events (s == end) stay in the same
-                        // cluster — back-to-back meetings chained through a
-                        // morning used to re-lane per link, giving ragged
-                        // unequal lane widths down the column.
-                        let n = lanes.len().max(1);
-                        for &ci in &cluster {
-                            geo[ci].1 = n;
-                        }
-                        cluster.clear();
-                        lanes.clear();
-                    }
-                    match lanes.iter().position(|end| *end <= *s) {
-                        Some(li) => lanes[li] = s + d,
-                        None => lanes.push(s + d),
-                    }
-                    geo[i].0 = lanes.len() - 1;
-                    cluster.push(i);
-                    cluster_end = cluster_end.max(s + d);
-                }
-                let n = lanes.len().max(1);
-                for &ci in &cluster {
-                    geo[ci].1 = n;
-                }
+            // their day column instead of overlapping. Spans + lane
+            // geometry were precomputed above (they size the grid too).
+            for (idx, spans, geo) in &by_day {
                 for (i, (m, s, d)) in spans.iter().enumerate() {
                     let (lane, total_lanes) = geo[i];
                     let lane_w = col_w / total_lanes as f32;
-                    let x = rect.left() + gutter + col_w * idx as f32 + lane_w * lane as f32 + 1.0;
+                    let x = rect.left() + gutter + col_w * *idx as f32 + lane_w * lane as f32 + 1.0;
                     // Blocks starting before the visible window clamp their
                     // TOP; the height must run to the REAL end, not the full
                     // duration (a 06:00-10:10 meeting drew until 11:10).
@@ -1090,8 +1155,13 @@ pub fn files_panel(
     }
 
     ScrollArea::vertical().id_salt("files_scroll").auto_shrink(false).show(ui, |ui| {
-
+        // The drive recents endpoint can return the same item twice in a
+        // row (observed live: identical CV pdf neighbors); keep first.
+        let mut seen = std::collections::HashSet::new();
         for f in files {
+            if !seen.insert(f.id.clone()) {
+                continue;
+            }
             file_row(ui, f, pal, actions);
         }
     });
@@ -1175,7 +1245,9 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
                     (true, false) => modified.clone(),
                     (false, true) => size.clone(),
                     (false, false) => format!("{size} · {modified}"),
-                    (true, true) => "In OneDrive".to_string(),
+                    // The header already says these are OneDrive recents;
+                    // repeating the origin read as filler.
+                    (true, true) => "Opened recently".to_string(),
                 };
                 ui.label(RichText::new(meta).small().weak());
             });
@@ -1360,25 +1432,59 @@ pub fn todo_panel(
                 ui.vertical(|ui| {
                 for l in lists {
                     let sel = st.selected_list.as_deref() == Some(l.id.as_str());
-                    ui.horizontal(|ui| {
-                        // A glyph per list (bare text rows read unfinished
-                        // next to every other nav pane).
-                        ui.add(
-                            egui::Image::from_bytes(
-                                crate::theme::Icon::ListTodo.uri(),
-                                crate::theme::Icon::ListTodo.bytes(),
-                            )
-                            .tint(if sel { pal.accent } else { pal.secondary })
-                            .fit_to_exact_size(egui::Vec2::splat(14.0)),
+                    // Whole-row selection: the glyph sits INSIDE the
+                    // highlighted pill (a selectable_label highlighted only
+                    // the text and left the glyph floating outside it).
+                    let row_h = 28.0;
+                    let (rect, row) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_h),
+                        egui::Sense::click(),
+                    );
+                    if sel {
+                        ui.painter().rect_filled(
+                            rect.shrink(1.0),
+                            6,
+                            crate::theme::tint_over(pal.panel, pal.accent, 0.20),
                         );
-                        if ui
-                            .selectable_label(sel, RichText::new(&l.name).bold())
-                            .clicked()
-                        {
-                            st.selected_list = Some(l.id.clone());
-                            actions.push(Action::OpenTodoList(l.id.clone()));
-                        }
-                    });
+                    } else if row.hovered() {
+                        ui.painter().rect_filled(rect.shrink(1.0), 6, pal.surface_hover);
+                    }
+                    // A glyph per list (bare text rows read unfinished next
+                    // to every other nav pane); the bundled set has no flag,
+                    // so device lists get a monitor and flagged lists a pin.
+                    let icon = if l.name.to_ascii_lowercase().contains("flagged") {
+                        crate::theme::Icon::Pin
+                    } else if l.name.to_ascii_lowercase().contains("laptop")
+                        || l.name.to_ascii_lowercase().contains("pc")
+                        || l.name.to_ascii_lowercase().contains("device")
+                    {
+                        crate::theme::Icon::Monitor
+                    } else {
+                        crate::theme::Icon::ListTodo
+                    };
+                    ui.new_child(egui::UiBuilder::new().max_rect(rect))
+                        .horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.add(
+                                egui::Image::from_bytes(icon.uri(), icon.bytes())
+                                    .tint(if sel { pal.accent } else { pal.secondary })
+                                    .fit_to_exact_size(egui::Vec2::splat(14.0)),
+                            );
+                            ui.add_space(7.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&l.name)
+                                        .bold()
+                                        .size(12.5)
+                                        .color(if sel { pal.text } else { pal.secondary }),
+                                )
+                                .selectable(false),
+                            );
+                        });
+                    if row.clicked() {
+                        st.selected_list = Some(l.id.clone());
+                        actions.push(Action::OpenTodoList(l.id.clone()));
+                    }
                 }
                 })
             });
@@ -1501,7 +1607,12 @@ pub fn todo_panel(
                     });
                 }
                 if shown == 0 {
-                    body_note(ui, false, pal, "Nothing here — add a task above.");
+                    body_note_icon(
+                        ui,
+                        pal,
+                        crate::theme::Icon::SquareCheck,
+                        "Nothing here — add a task above.",
+                    );
                 }
             });
         });
@@ -1562,7 +1673,10 @@ pub fn activity_panel(
             );
             {
                 let ui = &mut child;
-                ui.horizontal(|ui| {
+                // Cross-align CENTER: the 30px avatar centers against the
+                // two-line text block (top-aligned cross left it riding the
+                // row top with dead space below).
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     // Sender avatar leads the row (native feed anatomy — a
                     // small type glyph made the feed read as a bare list);
                     // the kind stays as the muted label on the name line.
@@ -1605,6 +1719,24 @@ pub fn activity_panel(
                                 )
                                 .selectable(false),
                             );
+                            // Stamp on the TITLE line (a row-centered stamp
+                            // floated between the two text lines). r2l as
+                            // the LAST element is the safe pattern.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(crate::model::format_epoch_ms_time(
+                                                e.at_ms,
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        )
+                                        .selectable(false),
+                                    );
+                                },
+                            );
                         });
                         ui.add(
                             egui::Label::new(
@@ -1616,17 +1748,7 @@ pub fn activity_panel(
                             .selectable(false),
                         );
                     });
-                    // Stamp pinned right, vertically centered.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(crate::model::format_epoch_ms_time(e.at_ms))
-                                    .small()
-                                    .weak(),
-                            )
-                            .selectable(false),
-                        );
-                    });
+
                 });
             }
             if response.clicked() {
