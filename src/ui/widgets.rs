@@ -694,12 +694,20 @@ pub fn render_segments(
                         .corner_radius(CornerRadius::same(4))
                         .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
-                            ui.label(RichText::new(t).weak().small());
+                            // Body-adjacent size — .small() read as fine
+                            // print for content the user is meant to parse.
+                            ui.label(RichText::new(t).weak().size(13.0));
                         });
                 }
                 Seg::Image { url } => {
-                    row_has_content = true;
+                    // Images always own their line: break before AND after
+                    // so a picture never hangs mid-sentence.
+                    if row_has_content {
+                        ui.end_row();
+                    }
                     image(ui, url);
+                    ui.end_row();
+                    row_has_content = false;
                 }
                 Seg::LineBreak => {
                     if row_has_content {
