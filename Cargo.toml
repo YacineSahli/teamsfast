@@ -76,6 +76,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 # Logging to stderr; the fastframe log file arrives in Phase 1.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
+# The archive encryption key at rest (same stack as ost's token storage —
+# same crate/features, so no new build inputs).
+keyring = { version = "3", features = ["sync-secret-service"] }
+
 # Inline images: decode jpg/png/webp/gif from the core's media fetch.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 # Desktop notifications (dbus) for incoming messages.

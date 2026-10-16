@@ -3,8 +3,11 @@
 //! offline. The network remains the source of truth; the archive mirrors
 //! it after every successful fetch.
 //!
-//! Key handling: a random 32-byte hex key in `archive.key` (0600) beside
-//! the database. Upgrading to the OS keyring is a later step.
+//! Key handling: the encryption key lives in the OS keyring (service
+//! "teamsfast", user "archive-key") like the auth tokens. The legacy
+//! `archive.key` file (0600) is migrated in on first open and removed;
+//! when the keyring is unavailable (no daemon, headless) the file remains
+//! the source — never lose the key over a missing service.
 
 use anyhow::{Context, Result};
 use ost::api::{ChatInfo, MessageInfo};
@@ -28,24 +31,69 @@ pub fn default_paths() -> (PathBuf, PathBuf) {
     (state.join("archive.db"), state.join("archive.key"))
 }
 
+/// The keyring entry, when the secret service is reachable at all.
+fn keyring_entry() -> Result<keyring::Entry> {
+    keyring::Entry::new("teamsfast", "archive-key").context("open keyring entry")
+}
+
+/// Store `key` in the keyring and verify a readback before the caller may
+/// retire the file copy.
+fn keyring_store_verified(key: &str) -> Result<()> {
+    let entry = keyring_entry()?;
+    entry.set_password(key).context("keyring set")?;
+    let back = entry.get_password().context("keyring readback")?;
+    if back != key {
+        anyhow::bail!("keyring readback mismatch");
+    }
+    Ok(())
+}
+
 fn load_or_create_key(path: &Path) -> Result<String> {
+    // 1. Keyring is authoritative when it has the key (migration done).
+    if let Ok(entry) = keyring_entry()
+        && let Ok(key) = entry.get_password()
+        && key.len() >= 32
+    {
+        // A pre-migration leftover file is now redundant.
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+        return Ok(key);
+    }
+    // 2. Legacy file: migrate it into the keyring; keep the file on any
+    //    failure (the file works without a daemon, the keyring must never
+    //    become a new single point of failure mid-migration).
     if let Ok(text) = std::fs::read_to_string(path) {
         let key = text.trim().to_string();
         if key.len() >= 32 {
+            match keyring_store_verified(&key) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(path);
+                    log::info!("archive key migrated to the OS keyring");
+                }
+                Err(e) => log::info!("archive key stays in the key file ({e:#})"),
+            }
             return Ok(key);
         }
     }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
+    // 3. Fresh install: try keyring-only; file as the fallback.
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)?;
     let key: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(path, &key)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    match keyring_store_verified(&key) {
+        Ok(()) => log::info!("archive key created in the OS keyring"),
+        Err(e) => {
+            log::info!("archive key created in the key file ({e:#})");
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(path, &key)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
     }
     Ok(key)
 }

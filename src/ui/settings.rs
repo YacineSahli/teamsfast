@@ -519,7 +519,7 @@ fn account(
             info.self_name
         });
         ui.label(
-            RichText::new("Tokens live in the OS keyring (libsecret / kwallet).")
+            RichText::new("Tokens and the archive key live in the OS keyring (libsecret / kwallet).")
                 .small()
                 .weak(),
         );

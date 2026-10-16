@@ -5351,6 +5351,7 @@ dependencies = [
  "getrandom 0.3.4",
  "image",
  "jiff",
+ "keyring",
  "log",
  "notify-rust",
  "open",
