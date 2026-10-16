@@ -393,7 +393,15 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
         let lower = tag.to_ascii_lowercase();
         let name = lower.split(|c: char| c == ' ' || c == '\t').next().unwrap_or("");
         match name {
-            "br" => flush(&mut text, &mut segs),
+            // `<br>` must BOTH flush pending text and break the line. A
+            // long-lived bug kept only the flush (the LineBreak push sat
+            // in an unreachable inner arm), so multi-line messages —
+            // every `<br>`-separated list Teams produces — rendered
+            // flattened into one wrapped paragraph.
+            "br" => {
+                flush(&mut text, &mut segs);
+                segs.push(Seg::LineBreak);
+            }
             "b" | "strong" | "i" | "em" | "u" | "pre" | "code" | "a" | "at" | "img" | "blockquote"
             | "span" | "div" | "p" | "ol" | "ul" | "li" | "h1" | "h2" | "h3" => {
                 // closing?
@@ -409,7 +417,6 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                     Some(low[p..e].to_string())
                 };
                 match name {
-                    "br" => segs.push(Seg::LineBreak),
                     "b" | "strong" => {
                         let (inner, next) = take_until(rest, &format!("</{}", name));
                         flush(&mut text, &mut segs);
@@ -1233,5 +1240,34 @@ mod mention_tests {
             vec![("Bob".to_string(), Some("8:orgid:abc".to_string()))],
             "sweep-clicking the row must hit the mention chip exactly once"
         );
+    }
+}
+
+#[cfg(test)]
+mod br_tests {
+    // `<br>` used to only flush pending text (the LineBreak push sat in an
+    // unreachable inner match arm), so multi-line messages rendered as one
+    // flattened paragraph. This pins the fix.
+    use super::{parse_html, Seg};
+
+    #[test]
+    fn br_produces_linebreak() {
+        let segs = parse_html("line one<br>line two");
+        let shape: Vec<&str> = segs
+            .iter()
+            .map(|s| match s {
+                Seg::Text(t) => t.as_str(),
+                Seg::LineBreak => "\n",
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(shape, vec!["line one", "\n", "line two"]);
+    }
+
+    #[test]
+    fn blank_br_runs_collapse_to_one_break() {
+        let segs = parse_html("a<br><br>b");
+        let breaks = segs.iter().filter(|s| matches!(s, Seg::LineBreak)).count();
+        assert_eq!(breaks, 1, "Teams renders blank lines as a single gap");
     }
 }
