@@ -19,7 +19,10 @@ else
 fi
 APP=$!
 sleep 10
-import -window root -display :77 "$OUT" 2>/dev/null
+# ffmpeg x11grab, not `import` — ImageMagick's import is intercepted by the
+# zcode harness appimage on QA machines and fails with "unrecognized option
+# `-window'"; ffmpeg's x11grab always works.
+ffmpeg -y -loglevel error -f x11grab -video_size "${SIZE}" -i :77 -frames:v 1 "$OUT" 2>/dev/null
 kill "$APP" 2>/dev/null
 sleep 0.3
 kill "$XV" 2>/dev/null
