@@ -129,6 +129,14 @@ remaining Phase 2 item.
 - Adaptive Card payloads arrive as `<Swift b64="…"/>` (quote form) inside
   a URIObject, wrapped in `{"attachments":[{"content":{card}}]}` — see
   ui/cards.rs extract_card (handles `b64,` param form too).
+- Connector text carries MARKDOWN the web client would render: links,
+  `**bold**`, `_italic_` and Jira-wiki `*bold*` (this tenant's dominant
+  shape — single asterisks, also around table cells). `split_markdown_links`
+  + `scan_emphasis` (widgets.rs) handle all four with word-boundary rules
+  (never intraword, no newlines, no `***`; bullets/arithmetic stay literal).
+  7 unit tests + live-verified. CRITICAL: in card TextBlocks the pieces MUST
+  render inside `ui.horizontal_wrapped` — one `ui.label` per piece in the
+  vertical flow tears multi-piece text one fragment per line.
 - `egui::Panel::left` has no `exact_width`; use `default_size` +
   `resizable(false)`.
 
@@ -208,8 +216,10 @@ remaining Phase 2 item.
   needs the pkg-config shims `~/.local/lib/teamfast-pc/`
   (libpipewire-0.3.pc + libspa-0.2.pc point at the GNOME SDK 50 headers,
   same pattern as the alsa shim) and the machine-local `[patch]` in
-  ~/.cargo/config.toml. Clean pw main-loop teardown still TODO (the
-  capture thread parks; frames cease but the thread leaks per share).
+  ~/.cargo/config.toml. Clean pw teardown SHIPPED 2026-10-16 (teams-core
+  5c63f74): a 150ms loop timer quits the pw main loop on stop() (works
+  even when frames stop flowing) and the consumer thread joins on drop
+  (1.5s budget, wedged stream falls back to the bounded leak).
 - The call stack needs `alsa-sys` → alsa.pc. System has runtime
   libasound only; headers come from the Flatpak GNOME SDK via a local
   shim (`~/.local/lib/teamfast-pc/alsa.pc` + lib/libasound.so symlink to
@@ -312,8 +322,14 @@ remaining Phase 2 item.
 
 ## Local archive (persistence)
 
-- SQLCipher DB `~/.local/state/teamsfast/archive.db`; key in `archive.key`
-  (0600, random hex). Keyring upgrade for the archive key = future work.
+- SQLCipher DB `~/.local/state/teamsfast/archive.db`; key lives in the **OS
+  keyring** (service `teamsfast`, user `archive-key`) since 2026-10-16 —
+  migrated from `archive.key` on first open after a VERIFIED keyring
+  readback, file removed only then. Keyring unavailable → the file stays the
+  source (fresh installs fall back to it too). Edge: a locked daemon on a
+  migrated profile = archive unavailable that session (DB unharmed; network
+  still syncs). Ad-hoc DB queries read the key via secret-tool/python
+  secretstorage — the key file may no longer exist.
 - Written after every successful fetch (chats, newest 50 per open chat,
   refetches); loaded at worker start (instant cached chat list) and on
   open_chat (cached history paints before the network reply).
@@ -360,6 +376,10 @@ remaining Phase 2 item.
   cost without a human scrolling. It self-repaints (env-gated).
 - `TEAMSFAST_RING=1` renders the ringing banner with a synthetic caller
   (pixel QA for incoming calls; Accept posts to dead links harmlessly).
+- `TEAMSFAST_TYPING="Name"` forces the typing indicator in the chat header
+  (pair with TEAMSFAST_OPEN); `TEAMSFAST_ACTIVITY=1` seeds one synthetic
+  activity-feed row (pair with TEAMSFAST_VIEW=activity) — the live feed
+  only fills from unread/mentions, which headless runs usually lack.
 - `TEAMSFAST_VIDEOCALL=1` + `TEAMSFAST_HANGUP_AFTER=<secs>` place a
   camera-on echo call that hangs up on a timer — bounded headless call
   QA; the run's stdout carries the call summary
@@ -455,8 +475,7 @@ Teams per-channel unread dots (needs data), checkbox→toggle switch.
   tile, vision 5/5). Remaining: interactive portal test against a REAL
   peer (user-gated), remote-decode verification (echo sends no video),
   true modality renegotiation (toggles are soft gates), screenshare on
-  MEETING joins (join currently places audio-only legs), pw main-loop
-  teardown (the capture thread parks; one leaked thread per share).
+  MEETING joins (join currently places audio-only legs).
 - **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,
   Submit actions shown disabled). Interactive submits (Input.Text +
   Action.Submit) are CAPTURE-GATED, not mere TODO: the submit wire
