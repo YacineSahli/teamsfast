@@ -2681,6 +2681,10 @@ impl TeamsFastApp {
                         self.teams.first().map(|t| t.id.clone());
                 }
             }
+            Action::NewChannelInTeam(team_id) => {
+                self.team_dialog.open = true;
+                self.team_dialog.channel_team = Some(team_id);
+            }
             Action::CreateChannel { team_id, name } => {
                 self.status = format!("creating #{name}…");
                 self.cmd

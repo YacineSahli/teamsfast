@@ -165,9 +165,64 @@ pub fn sidebar(
                         // Team blocks breathe apart — chips-to-chips 4px
                         // spacing made a 20-channel team read as one wall.
                         ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            crate::ui::widgets::avatar_tile(ui, &team.name, 22.0);
-                            ui.strong(&team.name);
+                        // Team row: allocate-first clickable row (labels
+                        // swallow clicks), hover reveals a "+" for a
+                        // channel in THIS team, right-click offers the
+                        // same — the "+ Channel" header button had no team
+                        // context.
+                        let row_h = 26.0;
+                        let (rect, row) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), row_h),
+                            egui::Sense::click(),
+                        );
+                        let hovered = row.hovered();
+                        if hovered {
+                            ui.painter().rect_filled(
+                                rect,
+                                5,
+                                crate::theme::tint_over(
+                                    ctx.pal.panel,
+                                    ctx.pal.text,
+                                    0.05,
+                                ),
+                            );
+                        }
+                        ui.new_child(egui::UiBuilder::new().max_rect(rect))
+                            .horizontal(|ui| {
+                                ui.add_space(4.0);
+                                crate::ui::widgets::avatar_tile(ui, &team.name, 22.0);
+                                ui.add_space(7.0);
+                                // selectable labels swallow the row click
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&team.name).bold().size(13.0),
+                                    )
+                                    .selectable(false),
+                                );
+                            });
+                        if hovered {
+                            ui.painter().text(
+                                egui::pos2(rect.right() - 14.0, rect.center().y),
+                                egui::Align2::CENTER_CENTER,
+                                "+",
+                                egui::FontId::proportional(15.0),
+                                ctx.pal.secondary,
+                            );
+                        }
+                        // Click on the trailing "+" zone = new channel for
+                        // this team (the row body stays informational).
+                        if row.clicked()
+                            && row.interact_pointer_pos()
+                                .map(|p| p.x > rect.right() - 30.0)
+                                .unwrap_or(false)
+                        {
+                            actions.push(Action::NewChannelInTeam(team.id.clone()));
+                        }
+                        row.context_menu(|ui| {
+                            if ui.button("New channel…").clicked() {
+                                actions.push(Action::NewChannelInTeam(team.id.clone()));
+                                ui.close();
+                            }
                         });
                         // Channels indent under their team (hierarchy cue;
                         // they previously out-dented left of the team name).

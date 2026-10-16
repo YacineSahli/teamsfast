@@ -162,6 +162,9 @@ pub enum Action {
         channel_id: String,
         name: String,
     },
+    /// Open the create-channel dialog with this team preselected (the
+    /// per-team affordance from a team row's "+" / context menu).
+    NewChannelInTeam(String),
     DeleteChannel {
         team_id: String,
         channel_id: String,
