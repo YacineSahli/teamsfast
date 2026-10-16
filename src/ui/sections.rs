@@ -1858,6 +1858,7 @@ pub fn notes_panel(
                                 pal,
                                 |_, _| false,
                                 |_, _, _| {},
+                                |_, _, _| {},
                             );
                         });
                     ui.add_space(4.0);

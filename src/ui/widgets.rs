@@ -157,7 +157,10 @@ pub enum Seg {
     Italic(String),
     Code(String),
     Link { text: String, url: String },
-    Mention(String),
+    /// An @-mention. `mri` arrives inline on `<at id="…">`; the span-index
+    /// shape (schema.skype.com/Mention) has none — the click handler falls
+    /// back to resolving the name against the chat roster.
+    Mention { name: String, mri: Option<String> },
     Image { url: String },
     Quote(String),
     LineBreak,
@@ -294,7 +297,12 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                     "at" => {
                         let (inner, next) = take_until(rest, "</at>");
                         flush(&mut text, &mut segs);
-                        segs.push(Seg::Mention(decode_entities(&strip_tags(&inner))));
+                        segs.push(Seg::Mention {
+                            name: decode_entities(&strip_tags(&inner)),
+                            // Real MRIs contain ':' ("8:orgid:…"); a bare
+                            // index like itemid="0" is not an mri.
+                            mri: attr("id").filter(|id| id.contains(':')),
+                        });
                         rest = next;
                     }
                     "img" => {
@@ -305,6 +313,18 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                         if self_closing {
                             // already consumed
                         }
+                    }
+                    "span" => {
+                        if lower.contains("schema.skype.com/mention") {
+                            let (inner, next) = take_until(rest, "</span>");
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Mention {
+                                name: decode_entities(&strip_tags(&inner)),
+                                mri: None,
+                            });
+                            rest = next;
+                        }
+                        // other spans: unwrap, text flows
                     }
                     "blockquote" => {
                         let (inner, next) = take_until(rest, "</blockquote>");
@@ -516,6 +536,8 @@ pub fn render_segments(
     pal: &crate::theme::Palette,
     mut image: impl FnMut(&mut Ui, &str) -> bool,
     mut file: impl FnMut(&mut Ui, &str, &str),
+    // An @-mention chip was clicked (name, inline mri if the wire had one).
+    mut mention: impl FnMut(&mut Ui, &str, Option<&str>),
 ) {
     // Segments from `parse_html`/`parse_html_cached` are already
     // render-ready (normalized at parse time); no clone or re-normalize.
@@ -630,26 +652,39 @@ pub fn render_segments(
                         );
                     }
                 }
-                Seg::Mention(t) => {
+                Seg::Mention { name, mri } => {
                     row_has_content = true;
                     // Solid accent chip with on-accent text — reads on BOTH
                     // bubble fills (bare accent text vanished on the own
                     // indigo bubble; tinted chips matched one fill only).
-                    Frame::default()
-                        .fill(pal.accent)
-                        .corner_radius(CornerRadius::same(4))
-                        .inner_margin(egui::Margin::symmetric(5, 1))
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("@{t}"))
-                                        .size(12.5)
-                                        .color(pal.on_accent),
-                                )
-                                .wrap_mode(egui::TextWrapMode::Extend)
-                                .selectable(false),
-                            );
-                        });
+                    // Sized to its text and CLICKABLE: hover lightens the
+                    // fill and the hand cursor reads it as a link; click
+                    // opens the person's contact card via `mention`.
+                    let label = format!("@{name}");
+                    let gal = ui.painter().layout_no_wrap(
+                        label,
+                        egui::FontId::proportional(12.5),
+                        pal.on_accent,
+                    );
+                    let size = gal.size() + egui::vec2(10.0, 2.0);
+                    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                    let t = hover_t(ui.ctx(), resp.id, resp.hovered());
+                    let fill = if t > 0.01 {
+                        crate::theme::tint_over(pal.accent, pal.on_accent, 0.22 * t)
+                    } else {
+                        pal.accent
+                    };
+                    ui.painter().rect_filled(rect, 4, fill);
+                    ui.painter().galley(
+                        rect.left_top() + egui::vec2(5.0, 1.0),
+                        gal,
+                        pal.on_accent,
+                    );
+                    if resp.clicked() {
+                        mention(ui, name, mri.as_deref());
+                    }
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("View profile");
                 }
                 Seg::Quote(t) => {
                     row_has_content = true;
@@ -703,11 +738,11 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
             // Mentions render as padded chips in the UI; in PLAIN text
             // (previews, snippets) a chip needs its own spaces — the
             // source often omits them ("…comment<at>Name</at>").
-            Seg::Mention(t) => {
+            Seg::Mention { name, .. } => {
                 if !out.is_empty() && !out.ends_with(char::is_whitespace) {
                     out.push(' ');
                 }
-                out.push_str(t);
+                out.push_str(name);
                 out.push('\u{2009}');
             }
             Seg::Link { text, .. } => out.push_str(text),
@@ -820,6 +855,133 @@ mod markdown_link_tests {
         assert_eq!(
             got[3].1.as_ref().map(|(_, u)| u.as_str()),
             Some("http://y.io")
+        );
+    }
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::{parse_html, render_segments, Seg};
+    use crate::theme::Palette;
+
+    #[test]
+    fn at_tag_mri_is_mined_from_id() {
+        let segs = parse_html(r#"<p>hi <at id="8:orgid:abc-def">Bob</at>!</p>"#);
+        let mention = segs.iter().find_map(|s| match s {
+            Seg::Mention { name, mri } => Some((name.clone(), mri.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            mention,
+            Some(("Bob".to_string(), Some("8:orgid:abc-def".to_string())))
+        );
+    }
+
+    #[test]
+    fn span_itemtype_mention_is_a_mention_without_mri() {
+        let segs = parse_html(
+            r#"<span itemtype="http://schema.skype.com/Mention" itemscope="" itemid="0">Mathias Schreurs</span>&nbsp;reviewed this"#,
+        );
+        let mention = segs.iter().find_map(|s| match s {
+            Seg::Mention { name, mri } => Some((name.clone(), mri.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            mention,
+            Some(("Mathias Schreurs".to_string(), None))
+        );
+        assert!(
+            segs.iter().any(|s| matches!(s, Seg::Text(t) if t.contains("reviewed"))),
+            "the non-mention tail stays text"
+        );
+    }
+
+    #[test]
+    fn plain_span_is_not_a_mention() {
+        let segs = parse_html(r#"<span style="font-weight:bold">just text</span>"#);
+        assert!(
+            !segs.iter().any(|s| matches!(s, Seg::Mention { .. })),
+            "ordinary spans must not become mention chips"
+        );
+    }
+
+    #[test]
+    fn clicking_a_mention_chip_fires_the_hook() {
+        crate::emoji::setup();
+        let segs = parse_html(r#"<at id="8:orgid:abc">Bob</at> hello"#);
+        let egui_ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let blank = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+
+        let clicked: std::rc::Rc<std::cell::RefCell<Vec<(String, Option<String>)>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+        let draw = |egui_ctx: &egui::Context,
+                    input: egui::RawInput,
+                    clicked: &std::rc::Rc<std::cell::RefCell<Vec<(String, Option<String>)>>>| {
+            let sink = clicked.clone();
+            let mut out = egui_ctx.run_ui(input, |ui| {
+                render_segments(
+                    ui,
+                    &segs,
+                    &Palette::dark(),
+                    |_, _| false,
+                    |_, _, _| {},
+                    |_, name, mri| {
+                        sink.borrow_mut()
+                            .push((name.to_string(), mri.map(str::to_string)));
+                    },
+                );
+            });
+            out.textures_delta.clear();
+        };
+
+        // Warm-up frames (hit tests run one frame behind).
+        draw(&egui_ctx, blank.clone(), &clicked);
+        draw(&egui_ctx, blank.clone(), &clicked);
+
+        // Sweep-click the row; the chip sits in the first text line.
+        'outer: for y in (6..200).step_by(7) {
+            for x in (6..300).step_by(5) {
+                let pos = egui::pos2(x as f32, y as f32);
+                let hover = egui::RawInput {
+                    screen_rect: Some(screen),
+                    events: vec![egui::Event::PointerMoved(pos)],
+                    ..Default::default()
+                };
+                draw(&egui_ctx, hover, &clicked);
+                let press = egui::RawInput {
+                    screen_rect: Some(screen),
+                    events: vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    }],
+                    ..Default::default()
+                };
+                draw(&egui_ctx, press, &clicked);
+                let release = egui::RawInput {
+                    screen_rect: Some(screen),
+                    events: vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    }],
+                    ..Default::default()
+                };
+                draw(&egui_ctx, release, &clicked);
+                if !clicked.borrow().is_empty() {
+                    break 'outer;
+                }
+            }
+        }
+        let got = clicked.borrow().clone();
+        assert_eq!(
+            got,
+            vec![("Bob".to_string(), Some("8:orgid:abc".to_string()))],
+            "sweep-clicking the row must hit the mention chip exactly once"
         );
     }
 }

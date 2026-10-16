@@ -865,6 +865,10 @@ fn bubble_parts(
                                 std::cell::RefCell<Vec<(String, String)>>,
                             > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                             let hits2 = file_hits.clone();
+                            let mention_hits: std::rc::Rc<
+                                std::cell::RefCell<Vec<(String, Option<String>)>>,
+                            > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                            let hits3 = mention_hits.clone();
                             render_segments(
                                 ui,
                                 &segments,
@@ -885,7 +889,15 @@ fn bubble_parts(
                                         ));
                                     }
                                 },
+                                |_, name, mri| {
+                                    hits3
+                                        .borrow_mut()
+                                        .push((name.to_string(), mri.map(str::to_string)));
+                                },
                             );
+                            for (name, mri) in mention_hits.borrow().iter() {
+                                open_mention_contact(ctx, name, mri.as_deref());
+                            }
                             for (name, url) in file_hits.borrow().iter() {
                                 ctx.actions.push(Action::DownloadFile {
                                     name: name.clone(),
@@ -926,6 +938,10 @@ fn bubble_parts(
                             std::cell::RefCell<Vec<(String, String)>>,
                         > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                         let hits2 = file_hits.clone();
+                        let mention_hits: std::rc::Rc<
+                            std::cell::RefCell<Vec<(String, Option<String>)>>,
+                        > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                        let hits3 = mention_hits.clone();
                         render_segments(
                             ui,
                             &segments,
@@ -944,7 +960,15 @@ fn bubble_parts(
                                         .push((name.to_string(), url.to_string()));
                                 }
                             },
+                            |_, name, mri| {
+                                hits3
+                                    .borrow_mut()
+                                    .push((name.to_string(), mri.map(str::to_string)));
+                            },
                         );
+                        for (name, mri) in mention_hits.borrow().iter() {
+                            open_mention_contact(ctx, name, mri.as_deref());
+                        }
                         for (name, url) in file_hits.borrow().iter() {
                             ctx.actions.push(Action::DownloadFile {
                                 name: name.clone(),
@@ -1422,6 +1446,30 @@ fn emoji_widget(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, cluster: &str, px: f32
         None => {
             ui.label(RichText::new(cluster).size(px));
         }
+    }
+}
+
+/// A mention chip was clicked: open the person's contact card. The wire
+/// MRI wins; without one (the span-index mention shape), resolve the name
+/// against this chat's roster. Unresolvable names surface a status note
+/// instead of a dead click.
+fn open_mention_contact(ctx: &mut ConvCtx<'_>, name: &str, mri: Option<&str>) {
+    let resolved = mri
+        .map(str::to_string)
+        .or_else(|| {
+            ctx.members
+                .iter()
+                .find(|(_, n)| n.as_str() == name)
+                .map(|(m, _)| m.clone())
+        });
+    if let Some(mri) = resolved {
+        ctx.actions.push(Action::ShowContact {
+            mri,
+            name: name.to_string(),
+        });
+    } else {
+        ctx.actions
+            .push(Action::Status(format!("No member info for {name} in this chat")));
     }
 }
 
