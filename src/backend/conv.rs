@@ -21,7 +21,8 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
     };
 
     // Cached history paints FIRST — before any network round-trip. The
-    // roster fetch below is an RTT, and making the user wait for it before
+    // roster fetch below is an RTT (often several: blank roster names fan
+    // out to Graph user lookups), and making the user wait for it before
     // a cached conversation appeared read as "clicking a chat is slow".
     // Message rows carry their own sender names, so the cached paint is
     // complete without the roster (which arrives with the network refresh).
@@ -40,21 +41,28 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
         });
     }
 
+    // Roster and history are independent — run them concurrently instead of
+    // serializing two network phases (the roster's Graph name-fill can take
+    // several round-trips; the history page must not queue behind it).
+    let is_onetoone = chat_id.starts_with("19:")
+        && !chat_id.contains("@thread")
+        && !chat_id.contains("meeting");
+    let roster_fut = list_chat_members_data(c, &chat_id);
+    let history_fut = read_messages_page(c, &chat_id, 50, None);
+    let (roster, page) = tokio::join!(roster_fut, history_fut);
+
     let mut members: HashMap<String, String> = HashMap::new();
     let mut resolved_name: Option<String> = None;
     // Roster-name resolution is ONLY meaningful for 1:1 chats: in a
     // group/meeting the roster is full of members and picking one would
     // name the chat after a random participant (e.g. "Standup" showing
     // "Souhail Khalfallah"). Groups take their topic from the chat list.
-    let is_onetoone = chat_id.starts_with("19:")
-        && !chat_id.contains("@thread")
-        && !chat_id.contains("meeting");
-    if is_onetoone {
-        if let Ok((_, roster)) = list_chat_members_data(c, &chat_id).await {
-            for m in roster {
-                if !m.display_name.is_empty() {
-                    members.insert(m.mri.clone(), m.display_name.clone());
-                }
+    if let Ok((_, roster)) = roster {
+        for m in roster {
+            if !m.display_name.is_empty() {
+                members.insert(m.mri.clone(), m.display_name.clone());
+            }
+            if is_onetoone {
                 let is_me = match ses.self_id.as_deref() {
                     Some(me) => {
                         m.user_id.as_deref() == Some(me) || m.mri == format!("8:orgid:{me}")
@@ -66,33 +74,30 @@ pub async fn open_chat(ses: &mut Session, tx: &Sender<Event>, chat_id: String) {
                 }
             }
         }
-    } else if let Ok((_, roster)) = list_chat_members_data(c, &chat_id).await {
-        for m in roster {
-            if !m.display_name.is_empty() {
-                members.insert(m.mri.clone(), m.display_name.clone());
-            }
-        }
     }
 
     // The roster's 1:1 name beats the chat-list heuristic (which falls
     // back to the last sender and can show our own name). Heal the cached
-    // list so the sidebar matches the header.
+    // row in place — a full list rewrite here cost a save per open.
     if let Some(name) = resolved_name.as_ref().filter(|n| !n.trim().is_empty()) {
-        if let Some(archive) = ses.archive.as_ref()
-            && let Ok(mut chats) = archive.load_chats()
-            && let Some(chat) = chats.iter_mut().find(|c| c.id == chat_id)
-            && chat.name != *name
-        {
-            chat.name = name.clone();
-            let _ = archive.save_chats(&chats);
-            let _ = tx.send(Event::ChatRenamed {
-                chat_id: chat_id.clone(),
-                name: name.clone(),
-            });
+        if let Some(archive) = ses.archive.as_ref() {
+            let needs_heal = archive
+                .load_chats()
+                .ok()
+                .and_then(|chats| chats.iter().find(|c| c.id == chat_id).map(|c| c.name.clone()))
+                .map(|current| current != *name)
+                .unwrap_or(false);
+            if needs_heal {
+                let _ = archive.rename_chat(&chat_id, name);
+                let _ = tx.send(Event::ChatRenamed {
+                    chat_id: chat_id.clone(),
+                    name: name.clone(),
+                });
+            }
         }
     }
 
-    match read_messages_page(c, &chat_id, 50, None).await {
+    match page {
         Ok(page) => {
             let cursor = page.backward_link.clone().unwrap_or_default();
             if let Some(archive) = ses.archive.as_ref()
@@ -339,9 +344,10 @@ pub async fn mark_read(ses: &Session, tx: &Sender<Event>, chat_id: &str, message
     }
 }
 
-/// Refetch the newest page for a chat (after an action) without touching the
-/// roster — member names were already delivered when the chat was opened.
-async fn refetch(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
+/// Refetch the newest page for a chat (after an action, or as the light
+/// live-activity refresh) without touching the roster — member names were
+/// already delivered when the chat was opened.
+pub(crate) async fn refetch(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
     let Some(c) = client(ses) else {
         return;
     };

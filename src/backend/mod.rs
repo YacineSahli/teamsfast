@@ -34,6 +34,9 @@ pub enum Command {
     LoadChats,
     /// Open a chat or channel conversation.
     OpenChat(String),
+    /// Light refresh of the open conversation: history page only, no
+    /// roster, no UI-side state reset (live-activity refresh path).
+    RefreshChat(String),
     /// Send with the caller's clientmessageid (pending-bubble reconciliation).
     Send { chat_id: String, text: String, cmid: String },
     Reply {
@@ -539,6 +542,9 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::OpenChat(chat_id) => {
                 conv::open_chat(&mut ses, &tx, chat_id).await;
+            }
+            Command::RefreshChat(chat_id) => {
+                conv::refetch(&ses, &tx, &chat_id).await;
             }
             Command::Send { chat_id, text, cmid } => {
                 conv::send(&mut ses, &tx, &chat_id, &text, &cmid).await;

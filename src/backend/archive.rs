@@ -60,6 +60,12 @@ impl Archive {
         let conn = Connection::open(&db_path)
             .with_context(|| format!("open archive {db_path:?}"))?;
         conn.pragma_update(None, "key", &key)?;
+        // WAL + synchronous=NORMAL: one fsync per checkpoint instead of one
+        // per commit — save_messages(50) went from ~50 journal fsyncs to a
+        // sub-ms batched commit (this DB is a mirror; NORMAL is plenty).
+        // Must run before the schema batch so the journal mode sticks.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS chats (
                 id TEXT PRIMARY KEY,
@@ -231,19 +237,35 @@ impl Archive {
     }
 
     pub fn save_chats(&self, chats: &[ChatInfo]) -> Result<()> {
-        let mut stmt = self
-            .conn
-            .prepare("INSERT OR REPLACE INTO chats VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
-        for c in chats {
-            stmt.execute((
-                &c.id,
-                &c.name,
-                c.is_group,
-                &c.last_message_time,
-                &c.last_message_sender,
-                &c.last_message_preview,
-            ))?;
+        // One transaction for the whole list — each autocommit INSERT is a
+        // separate journal cycle, and this runs after every chat refresh.
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO chats VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for c in chats {
+                stmt.execute((
+                    &c.id,
+                    &c.name,
+                    c.is_group,
+                    &c.last_message_time,
+                    &c.last_message_sender,
+                    &c.last_message_preview,
+                ))?;
+            }
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Persist one roster-resolved name (the sidebar heal) without
+    /// rewriting the whole cached list.
+    pub fn rename_chat(&self, chat_id: &str, name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chats SET name = ?2 WHERE id = ?1",
+            rusqlite::params![chat_id, name],
+        )?;
         Ok(())
     }
 
@@ -269,26 +291,30 @@ impl Archive {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
-    /// Replace the cached messages of one conversation.
+    /// Replace the cached messages of one conversation (single transaction).
     pub fn save_messages(&self, chat_id: &str, messages: &[MessageInfo]) -> Result<()> {
-        let mut stmt = self.conn.prepare(
-            "INSERT OR REPLACE INTO messages
-             (chat_id, id, ts, sender, sender_mri, content, raw, reply_to, client_message_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        )?;
-        for m in messages {
-            stmt.execute((
-                chat_id,
-                &m.id,
-                &m.timestamp,
-                &m.sender,
-                &m.sender_mri,
-                &m.content,
-                &m.raw,
-                &m.reply_to,
-                &m.client_message_id,
-            ))?;
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO messages
+                 (chat_id, id, ts, sender, sender_mri, content, raw, reply_to, client_message_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for m in messages {
+                stmt.execute((
+                    chat_id,
+                    &m.id,
+                    &m.timestamp,
+                    &m.sender,
+                    &m.sender_mri,
+                    &m.content,
+                    &m.raw,
+                    &m.reply_to,
+                    &m.client_message_id,
+                ))?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -516,3 +542,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+

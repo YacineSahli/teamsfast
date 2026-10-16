@@ -12,7 +12,7 @@
 
 use crate::model::{format_day_label, format_message_time};
 use crate::theme::Palette;
-use crate::ui::widgets::{avatar, parse_html, render_segments};
+use crate::ui::widgets::{avatar, parse_html, parse_html_cached, render_segments};
 use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense, Stroke};
 use ost::api::MessageInfo;
 use std::collections::{HashMap, HashSet};
@@ -661,11 +661,11 @@ fn message_row(
         // (shrink-to-fit, capped), right-aligned; avatar at the far right.
         let avail = ui.available_width() - 12.0;
         let cap = (avail * 0.85).min(680.0);
-        let plain = crate::ui::widgets::segs_to_plain(&crate::ui::widgets::parse_html(&m.raw));
+        let plain = crate::ui::widgets::plain_cached(&m.raw);
         let text_w = ui
             .painter()
             .layout(
-                plain,
+                plain.as_str().to_owned(),
                 egui::FontId::proportional(14.0),
                 Color32::WHITE,
                 f32::INFINITY,
@@ -799,7 +799,7 @@ fn bubble_parts(
                     ui.with_layout(
                         egui::Layout::left_to_right(egui::Align::TOP),
                         |ui| {
-                            let segments = parse_html(&m.raw);
+                            let segments = parse_html_cached(&m.raw);
                             let file_hits: std::rc::Rc<
                                 std::cell::RefCell<Vec<(String, String)>>,
                             > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -860,7 +860,7 @@ fn bubble_parts(
                 ui.with_layout(
                     egui::Layout::left_to_right(egui::Align::TOP),
                     |ui| {
-                        let segments = parse_html(&m.raw);
+                        let segments = parse_html_cached(&m.raw);
                         let file_hits: std::rc::Rc<
                             std::cell::RefCell<Vec<(String, String)>>,
                         > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));

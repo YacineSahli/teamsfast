@@ -50,6 +50,17 @@ pub struct ForwardState {
     pub filter: String,
 }
 
+/// In-memory snapshot of a recently viewed conversation — what `open_chat`
+/// paints instantly on a re-click, before any backend round-trip.
+struct CachedConv {
+    messages: Vec<MessageInfo>,
+    members: HashMap<String, String>,
+    older_link: Option<String>,
+}
+
+/// Keep the last N viewed conversations in RAM.
+const CHAT_MEM_CAP: usize = 12;
+
 /// A ringing incoming call: caller identity for the banner plus the raw
 /// invitation JSON the backend needs to accept/decline.
 #[derive(Clone)]
@@ -404,6 +415,15 @@ pub struct TeamsFastApp {
     members: HashMap<String, String>,
     older_link: Option<String>,
     loading_older: bool,
+    /// Last-viewed conversations (messages + members + older cursor) so a
+    /// re-open paints instantly from RAM while the backend refreshes.
+    /// Small LRU: the newest `CHAT_MEM_CAP` chats stay, older ones evict.
+    chat_mem: HashMap<String, CachedConv>,
+    /// Last message id we sent a mark-read POST for, per chat — refreshes
+    /// re-deliver the same tail and would otherwise re-POST every time.
+    marked_read: HashMap<String, String>,
+    /// When read receipts were last fetched per chat (throttle).
+    last_receipts: HashMap<String, Instant>,
 
     draft: String,
     edit: Option<(String, String)>,
@@ -949,6 +969,9 @@ impl TeamsFastApp {
             trouter_on: false,
             pending_open_refresh: false,
             last_open_refresh: Instant::now() - Duration::from_secs(10),
+            chat_mem: HashMap::new(),
+            marked_read: HashMap::new(),
+            last_receipts: HashMap::new(),
             typing: None,
             textures: HashMap::new(),
             emoji_textures: HashMap::new(),
@@ -1493,7 +1516,6 @@ impl TeamsFastApp {
                     if self.selected.as_deref() != Some(chat_id.as_str()) {
                         continue;
                     }
-                    eprintln!("DBG ui: Messages APPLIED n={}", messages.len());
                     // Reconcile own pending sends: once the server shows the
                     // message (by clientmessageid) the bubble is real.
                     let cmids: std::collections::HashSet<&str> = messages
@@ -1519,19 +1541,30 @@ impl TeamsFastApp {
                     if let Some(name) = resolved_name {
                         self.rename_chat(&chat_id, name);
                     }
-                    // Who has read what (quiet fetch, no error surfaced).
-                    self.cmd.send(Command::ReadReceipts(chat_id.clone())).ok();
-                    // Freshly loaded tail: mark read — unless ghost mode
-                    // holds read receipts back.
-                    if !self.settings.ghost_mode
-                        && let (Some(sel), Some(last)) = (
-                            self.selected.clone(),
-                            self.messages.last().map(|m| m.id.clone()),
-                        )
+                    // Who has read what (quiet fetch, no error surfaced) —
+                    // throttled: refreshes land in bursts and receipts move
+                    // slowly, each fetch is a worker round-trip.
+                    if self
+                        .last_receipts
+                        .get(&chat_id)
+                        .map(|t| t.elapsed() >= Duration::from_secs(4))
+                        .unwrap_or(true)
                     {
+                        self.last_receipts.insert(chat_id.clone(), Instant::now());
+                        self.cmd.send(Command::ReadReceipts(chat_id.clone())).ok();
+                    }
+                    // Freshly loaded tail: mark read — unless ghost mode
+                    // holds read receipts back. Skip when the tail id is
+                    // unchanged: every refresh re-delivers the same last
+                    // message and would re-POST the receipt each time.
+                    if !self.settings.ghost_mode
+                        && let Some(last) = self.messages.last().map(|m| m.id.clone())
+                        && self.marked_read.get(&chat_id) != Some(&last)
+                    {
+                        self.marked_read.insert(chat_id.clone(), last.clone());
                         self.cmd
                             .send(Command::MarkRead {
-                                chat_id: sel,
+                                chat_id: chat_id.clone(),
                                 message_id: last,
                             })
                             .ok();
@@ -1781,15 +1814,15 @@ impl TeamsFastApp {
             self.cmd.send(Command::PollPresence).ok();
         }
 
-        // Debounced open-chat refresh on live activity.
+        // Debounced open-chat refresh on live activity — history only; the
+        // view never blanks (the full open_chat re-run it replaced also
+        // refetched the roster on every incoming message).
         if self.pending_open_refresh
             && self.last_open_refresh.elapsed() >= Duration::from_millis(900)
         {
             self.pending_open_refresh = false;
             self.last_open_refresh = Instant::now();
-            if let Some(chat) = self.selected.clone() {
-                self.open_chat(chat);
-            }
+            self.refresh_chat();
         }
     }
 
@@ -1973,13 +2006,41 @@ impl TeamsFastApp {
     }
 
     fn open_chat(&mut self, id: String) {
+        // Park the conversation we are leaving (its live state is the
+        // freshest copy that exists) so a re-click paints instantly.
+        if let Some(prev) = self.selected.clone()
+            && prev != id
+        {
+            let cached = CachedConv {
+                messages: std::mem::take(&mut self.messages),
+                members: std::mem::take(&mut self.members),
+                older_link: self.older_link.take(),
+            };
+            self.chat_mem.insert(prev.clone(), cached);
+            if self.chat_mem.len() > CHAT_MEM_CAP
+                && let Some(k) = self.chat_mem.keys().find(|k| **k != prev).cloned()
+            {
+                self.chat_mem.remove(&k);
+            }
+        }
         self.selected = Some(id.clone());
-        self.messages.clear();
-        self.members.clear();
-        self.receipts.clear();
-        self.older_link = None;
         self.edit = None;
         self.reply = None;
+        // Paint immediately from RAM when this chat was viewed recently —
+        // the backend refresh then reconciles when it lands. Without this
+        // the pane blanked until the worker round-tripped, which read as
+        // "clicking a chat is slow" even with a warm archive.
+        if let Some(cached) = self.chat_mem.remove(&id) {
+            self.messages = cached.messages;
+            self.members = cached.members;
+            self.older_link = cached.older_link;
+        } else {
+            self.messages.clear();
+            self.members.clear();
+            self.older_link = None;
+        }
+        self.loading_older = false;
+        self.receipts.clear();
         // Opening the conversation reads it: badge off (the mark-read the
         // history load triggers persists the new horizon).
         self.unread.insert(id.clone(), (false, 0));
@@ -2008,6 +2069,16 @@ impl TeamsFastApp {
             };
         }
         self.cmd.send(Command::OpenChat(id)).ok();
+    }
+
+    /// Light live-activity refresh of the open conversation: history page
+    /// only, nothing cleared — the view stays on screen until the fresh
+    /// page replaces it (the old path re-opened the chat, blanking it and
+    /// re-fetching the roster every time a message arrived).
+    fn refresh_chat(&mut self) {
+        if let Some(chat) = self.selected.clone() {
+            self.cmd.send(Command::RefreshChat(chat)).ok();
+        }
     }
 
     // ---------------------------------------------------------------- actions

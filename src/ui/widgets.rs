@@ -3,6 +3,7 @@
 use crate::model::{avatar_color, initials};
 use crate::theme::Palette;
 use egui::{Color32, CornerRadius, FontId, Frame, RichText, Stroke, TextFormat, Ui, epaint};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------- buttons
 
@@ -274,6 +275,65 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
     text.push_str(&decode_entities(rest));
     flush(&mut text, &mut segs);
     segs
+}
+
+/// Cached parse of one message's Teams HTML (segments + plain projection).
+struct HtmlCacheEntry {
+    raw: String,
+    segs: std::sync::Arc<Vec<Seg>>,
+    plain: std::sync::Arc<String>,
+}
+
+/// The conversation re-renders every frame; without this every visible
+/// bubble re-parsed its (multi-KB) HTML each frame, several times over
+/// (bubble body + own-row measure + previews). Keyed by content hash with
+/// a full-string equality check, so edits and collisions can't go stale.
+fn html_cache() -> &'static std::sync::Mutex<HashMap<u64, HtmlCacheEntry>> {
+    use std::sync::Mutex;
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<u64, HtmlCacheEntry>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn ensure_html_cached(raw: &str) -> (std::sync::Arc<Vec<Seg>>, std::sync::Arc<String>) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    raw.hash(&mut h);
+    let key = h.finish();
+
+    let mut cache = html_cache().lock().unwrap();
+    if let Some(e) = cache.get(&key)
+        && e.raw == raw
+    {
+        return (e.segs.clone(), e.plain.clone());
+    }
+    let segs = std::sync::Arc::new(parse_html(raw));
+    let plain = std::sync::Arc::new(segs_to_plain(&segs));
+    if cache.len() >= 2048 {
+        cache.clear(); // crude bound; a miss costs one parse
+    }
+    cache.insert(
+        key,
+        HtmlCacheEntry {
+            raw: raw.to_string(),
+            segs: segs.clone(),
+            plain: plain.clone(),
+        },
+    );
+    (segs, plain)
+}
+
+/// [`parse_html`] with the per-frame cache — use this on the hot message
+/// render path; plain `parse_html` stays for one-off parses.
+pub fn parse_html_cached(raw: &str) -> std::sync::Arc<Vec<Seg>> {
+    ensure_html_cached(raw).0
+}
+
+/// Cached [`segs_to_plain`] over the cached parse (previews, snippets,
+/// own-row width measurement).
+pub fn plain_cached(raw: &str) -> std::sync::Arc<String> {
+    ensure_html_cached(raw).1
 }
 
 fn take_until<'a>(s: &'a str, pat: &str) -> (&'a str, &'a str) {
