@@ -215,6 +215,11 @@ pub struct ConvCtx<'a> {
     /// Emoji raster cache: cluster -> texture (colour, from bundled Noto).
     pub emoji_textures: &'a mut HashMap<String, egui::TextureHandle>,
     pub pal: &'a Palette,
+    /// Any modal overlay (settings / new chat / join / teams / forward) is
+    /// open: message hover bars must not render — they live in the same
+    /// Foreground order as egui::Modal and otherwise z-fight above it
+    /// (reachable for real via hover-message + Ctrl+N).
+    pub overlays_open: bool,
     pub actions: &'a mut Vec<Action>,
 }
 
@@ -1000,7 +1005,8 @@ fn bubble_parts(
     let hook = std::env::var("TEAMSFAST_HOVER").as_deref() == Ok("1");
     let forced = hook
         && std::ptr::eq(m as *const _, ctx.messages.last().unwrap_or(m) as *const _);
-    let open = if hook { forced } else { in_bubble || in_bar };
+    let pointer_open = in_bubble || in_bar;
+    let open = if hook { forced } else { pointer_open && !ctx.overlays_open };
 
     if open {
         let clip = ui.clip_rect();
@@ -1506,6 +1512,7 @@ mod tests {
                     pending_images,
                     emoji_textures,
                     pal: &Palette::dark(),
+                    overlays_open: false,
                     actions: &mut actions,
                 };
                 conversation_messages(ui, &mut ctx);

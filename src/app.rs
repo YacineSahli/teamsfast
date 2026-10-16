@@ -763,7 +763,7 @@ fn teams_dialog(
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut st.join_query)
                         .hint_text("Search public teams…")
-                        .desired_width(ui.available_width() - 70.0),
+                        .desired_width(ui.available_width() - 78.0),
                 );
                 let enter =
                     field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -2948,10 +2948,13 @@ impl TeamsFastApp {
                     }
                 }
                 State::Ready => {
-                    let (rect, _) =
+                    let (rect, dot) =
                         ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter()
                         .circle_filled(rect.center(), 4.0, self.palette.ok);
+                    // The dot was unlabeled — a critic read it as stray
+                    // decoration. It is the connection indicator.
+                    let _ = dot.on_hover_text("Connected to Teams");
                     ui.add_space(2.0);
                     // Ghost icon buttons: transparent at rest — the visual
                     // style's inactive fill otherwise paints four chips.
@@ -3288,7 +3291,7 @@ impl eframe::App for TeamsFastApp {
                                     )
                                     .fill(accept_fill)
                                     .min_size(egui::vec2(88.0, 30.0))
-                                    .corner_radius(egui::CornerRadius::same(15));
+                                    .corner_radius(egui::CornerRadius::same(8));
                                     if ui
                                         .add_enabled(!busy, accept_btn)
                                         .clicked()
@@ -3306,7 +3309,7 @@ impl eframe::App for TeamsFastApp {
                                             )
                                             .fill(palette.danger)
                                             .min_size(egui::vec2(88.0, 30.0))
-                                            .corner_radius(egui::CornerRadius::same(15)),
+                                            .corner_radius(egui::CornerRadius::same(8)),
                                         )
                                         .clicked()
                                     {
@@ -3926,6 +3929,11 @@ impl eframe::App for TeamsFastApp {
                     let id = chat_id.as_str();
                     id.contains("@unq.gbl.spaces")
                         && !chat_id.starts_with("19:meeting_")
+                        // A call needs a human on the other end — bot-only
+                        // threads (connector DMs) get no call buttons.
+                        // "Any 28: rider" would disable every human 1:1:
+                        // Cortana rides along in those rosters.
+                        && !self.members.keys().all(|m| m.starts_with("28:"))
                 },
                 call_label: self.call.as_ref().map(|(l, _)| l.as_str()),
                 textures: &self.textures,
@@ -3933,6 +3941,11 @@ impl eframe::App for TeamsFastApp {
                 pending_images: &mut self.pending_images,
                 emoji_textures: &mut self.emoji_textures,
                 pal: &self.palette,
+                overlays_open: self.new_chat.open
+                    || self.forward.is_some()
+                    || self.settings_ui.open
+                    || self.join_open
+                    || self.team_dialog.open,
                 actions: &mut actions,
             };
             egui::Panel::bottom("composer").show_inside(ui, |ui| {

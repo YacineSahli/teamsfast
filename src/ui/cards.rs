@@ -188,18 +188,30 @@ fn render_element(
         }
         "FactSet" => {
             if let Some(facts) = el.get("facts").and_then(|v| v.as_array()) {
-                egui::Grid::new(("card-facts", salt))
-                    .num_columns(2)
-                    .spacing([14.0, 3.0])
-                    .show(ui, |ui| {
-                        for fact in facts {
-                            let title = fact.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                            let value = fact.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                            ui.label(RichText::new(title).small().color(pal.secondary));
-                            ui.label(RichText::new(value).small());
-                            ui.end_row();
-                        }
+                // Rows, not a Grid: the grid's value column auto-sized to
+                // its content, so one long URL stretched past the card
+                // edge and clipped. The value now wraps inside the card
+                // width (unbreakable tokens break mid-word — correct for
+                // URLs); the title keeps a fixed column so rows align.
+                for fact in facts {
+                    let title = fact.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                    let value = fact.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                    ui.horizontal(|ui| {
+                        let (tr, _) = ui.allocate_exact_size(
+                            egui::vec2(92.0, 15.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().text(
+                            tr.left_top(),
+                            egui::Align2::LEFT_TOP,
+                            title,
+                            egui::FontId::proportional(11.5),
+                            pal.secondary,
+                        );
+                        ui.label(RichText::new(value).small());
                     });
+                    ui.add_space(2.0);
+                }
                 ui.add_space(2.0);
             }
         }
