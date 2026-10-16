@@ -418,6 +418,11 @@ pub(crate) struct Session {
     /// Activity seeding runs once per process (it re-runs on every
     /// offline-retry recovery otherwise).
     activity_seeded: bool,
+    /// Consecutive presence-poll failures — some tenants 403 the Graph
+    /// presence API outright; the poll backs off to one attempt per 10 min
+    /// instead of burning an RTT every minute for a permanent error.
+    presence_failures: u32,
+    presence_last_try: Option<std::time::Instant>,
     /// Hang-up switch for the active call (None when idle).
     pub call_stop: Option<tokio::sync::watch::Sender<bool>>,
 }
@@ -438,6 +443,8 @@ impl Session {
             archive,
             roster_cache: HashMap::new(),
             activity_seeded: false,
+            presence_failures: 0,
+            presence_last_try: None,
             call_stop: None,
         }
     }
@@ -720,12 +727,34 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 }
             }
             Command::PollPresence => {
+                // Back off after repeated failures: a tenant that forbids
+                // the presence API would otherwise pay an RTT every minute
+                // forever. Three strikes → one attempt per 10 minutes; a
+                // success resets immediately.
+                if ses.presence_failures >= 3
+                    && ses
+                        .presence_last_try
+                        .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600))
+                {
+                    continue;
+                }
+                ses.presence_last_try = Some(std::time::Instant::now());
                 let Some(c) = ses.client.as_ref() else {
                     continue;
                 };
-                match ost::api::get_presence_data(c).await {
-                    Ok(p) => send!(Event::MyPresence(p.availability)),
-                    Err(e) => log::debug!("presence poll: {e:#}"),
+                let res = ost::api::get_presence_data(c).await;
+                match res {
+                    Ok(p) => {
+                        ses.presence_failures = 0;
+                        send!(Event::MyPresence(p.availability));
+                    }
+                    Err(e) => {
+                        ses.presence_failures += 1;
+                        log::debug!(
+                            "presence poll (strike {}): {e:#}",
+                            ses.presence_failures
+                        )
+                    }
                 }
             }
             Command::SetPresence(status) => {
