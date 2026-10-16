@@ -834,15 +834,35 @@ fn take_until<'a>(s: &'a str, pat: &str) -> (&'a str, &'a str) {
 
 fn strip_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut depth = 0usize;
-    for c in s.chars() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(c),
-            _ => {}
+    let mut rest = s;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let after = &rest[lt..];
+        let Some(gt_rel) = after.find('>') else {
+            // malformed tail: drop it (an unclosed '<' skips to the end)
+            return out;
+        };
+        let tag = &after[1..gt_rel];
+        let name = tag
+            .trim_start_matches('/')
+            .split(|c: char| c == ' ' || c == '\t')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        // Block tags imply whitespace: quote payloads run
+        // "…</strong><p itemprop=preview>And…" and plain concatenation
+        // fused the author into the preview ("GrguricinAnd we are…").
+        if matches!(
+            name.as_str(),
+            "p" | "div" | "br" | "blockquote" | "li" | "h1" | "h2" | "h3"
+        ) && !out.is_empty()
+            && !out.ends_with(char::is_whitespace)
+        {
+            out.push(' ');
         }
+        rest = &after[gt_rel + 1..];
     }
+    out.push_str(rest);
     out
 }
 
@@ -1221,7 +1241,14 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
                 out.push(' ');
             }
             Seg::Link { text, .. } => out.push_str(text),
-            Seg::Quote(t) => out.push_str(t),
+            // Quotes are block-level: the text after one starts a fresh
+            // sentence ("NameAnd we are still not done" fused in previews).
+            Seg::Quote(t) => {
+                out.push_str(t);
+                if !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+            }
             Seg::Image { .. } => out.push_str("[image]"),
             Seg::LineBreak => out.push('\n'),
         }
@@ -1744,3 +1771,22 @@ mod block_break_tests {
 }
 
 
+
+#[cfg(test)]
+mod quote_plain_tests {
+    use super::{parse_html, segs_to_plain};
+
+    #[test]
+    fn quote_then_text_gets_a_separator() {
+        // The real reply-quote payload: <strong> author then <p> preview
+        // inside the blockquote (from the live SSRE/DevOps chat).
+        let segs = parse_html(
+            "<blockquote itemscope itemtype=\"http://schema.skype.com/Reply\" itemid=\"1\">\n<strong itemprop=\"mri\" itemid=\"8:orgid:x\">Cvitan Grguricin</strong><span itemprop=\"time\"></span><p itemprop=\"preview\">And we are still not done</p>\n</blockquote>\n<p>Does it mean that we are developing on staging?</p>",
+        );
+        let plain = segs_to_plain(&segs);
+        assert!(
+            plain.contains("Grguricin And"),
+            "author and preview must not fuse: {plain:?}"
+        );
+    }
+}
