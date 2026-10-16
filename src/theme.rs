@@ -89,6 +89,9 @@ impl Palette {
         v.window_fill = self.surface;
         v.extreme_bg_color = self.window;
         v.selection.bg_fill = self.accent;
+        // Striped-grid row band (egui Grid::striped). The stock LIGHT
+        // faint_bg equals white — zebra rows vanished on light tables.
+        v.faint_bg_color = tint_over(v.panel_fill, self.text, 0.04);
         // selection.stroke doubles as the FOCUSED-INPUT ring (egui paints
         // focused TextEdits with it) — the one loud stroke, accent.
         v.selection.stroke = Stroke::new(1.5, self.accent);

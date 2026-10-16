@@ -378,7 +378,12 @@ pub async fn mark_read(ses: &Session, tx: &Sender<Event>, chat_id: &str, message
             }
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("mark-read: {e:#}")));
+            // Best-effort, log-only: read receipts are non-critical, and
+            // some thread shapes reject the horizon PUT outright (this
+            // tenant's @unq.gbl.spaces chats 400 with errorCode 201) —
+            // an error banner on every open of those chats read as
+            // broken, while the local horizon already advanced above.
+            log::warn!("mark-read (best-effort): {e:#}");
         }
     }
 }

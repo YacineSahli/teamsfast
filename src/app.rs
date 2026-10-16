@@ -995,7 +995,7 @@ impl TeamsFastApp {
         // Interface zoom from settings.
         cc.egui_ctx.set_zoom_factor(settings_load.zoom);
         let (notif_tx, notif_rx) = std::sync::mpsc::channel::<String>();
-        Self {
+        let mut app = Self {
             state: State::Boot,
             status: "Starting…".into(),
             error: None,
@@ -1121,7 +1121,13 @@ impl TeamsFastApp {
             update: UpdateState::default(),
             update_receipt: receipt,
             launch_error,
-        }
+        };
+        // Apply the SAVED theme at startup: the builtin light choice used
+        // to reset to dark on every restart (apply_selected_theme only ran
+        // on settings CHANGES; file themes had a pending-catalog path,
+        // builtins had none).
+        app.apply_selected_theme();
+        app
     }
 
     /// Stop the incoming-call ringer (accept / decline / caller gone /
