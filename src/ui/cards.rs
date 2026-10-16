@@ -179,11 +179,34 @@ fn render_element(
                 "accent" => pal.accent,
                 _ => pal.text,
             };
-            let mut rt = RichText::new(text).size(size).color(color);
-            if weight {
-                rt = rt.strong();
+            // Connector card text (Jira etc.) carries markdown links —
+            // render link-shaped spans as links, the rest as plain text
+            // with the card's size/weight/color.
+            if text.contains("](") {
+                for piece in crate::ui::widgets::split_markdown_links(text) {
+                    match piece {
+                        crate::ui::widgets::Piece::Plain(t) => {
+                            let mut rt = RichText::new(t).size(size).color(color);
+                            if weight {
+                                rt = rt.strong();
+                            }
+                            ui.label(rt);
+                        }
+                        crate::ui::widgets::Piece::MdLink { text: lt, url } => {
+                            ui.hyperlink_to(
+                                RichText::new(lt).size(size).underline().color(pal.link),
+                                url,
+                            );
+                        }
+                    }
+                }
+            } else {
+                let mut rt = RichText::new(text).size(size).color(color);
+                if weight {
+                    rt = rt.strong();
+                }
+                ui.label(rt);
             }
-            ui.label(rt);
             ui.add_space(2.0);
         }
         "FactSet" => {

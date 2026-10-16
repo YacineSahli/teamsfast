@@ -163,6 +163,64 @@ pub enum Seg {
     LineBreak,
 }
 
+/// One piece of a markdown-split text span.
+pub enum Piece {
+    Plain(String),
+    MdLink { text: String, url: String },
+}
+
+/// Split a text span into plain pieces and `[text](https://…)` markdown
+/// links. Hand-rolled scan (no regex dep): find `](`, expand to the
+/// enclosing `[` and the closing `)`, accept only when the paren part is
+/// an absolute http(s) URL with no whitespace. Unbalanced or non-link
+/// text passes through untouched; the scan always advances.
+pub fn split_markdown_links(t: &str) -> Vec<Piece> {
+    let bytes = t.as_bytes();
+    let mut out: Vec<Piece> = Vec::new();
+    let mut plain_start = 0;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b']' && bytes[i + 1] == b'(' {
+            // Text end: the '[' opening this link.
+            let Some(open) = t[..i].rfind('[') else {
+                i += 2;
+                continue;
+            };
+            if open < plain_start {
+                // '[' belongs to an already-emitted piece — not a link.
+                i += 2;
+                continue;
+            }
+            let Some(close_rel) = t[i + 2..].find(')') else {
+                i += 2;
+                continue;
+            };
+            let url = &t[i + 2..i + 2 + close_rel];
+            let is_http = url.starts_with("http://") || url.starts_with("https://");
+            let has_ws = url.bytes().any(|b| b.is_ascii_whitespace());
+            if !is_http || has_ws {
+                i += 2;
+                continue;
+            }
+            if open > plain_start {
+                out.push(Piece::Plain(t[plain_start..open].to_string()));
+            }
+            out.push(Piece::MdLink {
+                text: t[open + 1..i].to_string(),
+                url: url.to_string(),
+            });
+            plain_start = i + 2 + close_rel + 1;
+            i = plain_start;
+        } else {
+            i += 1;
+        }
+    }
+    if plain_start < t.len() {
+        out.push(Piece::Plain(t[plain_start..].to_string()));
+    }
+    out
+}
+
 /// Minimal Teams-HTML walker into segments. Unknown tags are unwrapped,
 /// their text kept; scripts/styles dropped. Good enough for chat content.
 pub fn parse_html(raw: &str) -> Vec<Seg> {
@@ -467,8 +525,35 @@ pub fn render_segments(
         for seg in segs {
             match seg {
                 Seg::Text(t) => {
-                    ui.label(RichText::new(t));
                     row_has_content = true;
+                    // Connectors (Jira etc.) post markdown links inside the
+                    // message HTML; the stripper keeps them as literal
+                    // "[text](url)" bracket soup. Render link-shaped spans
+                    // as links (conservative: only ](http…) counts — any
+                    // other bracket text is untouched).
+                    if t.contains("](") {
+                        for piece in split_markdown_links(t) {
+                            match piece {
+                                Piece::Plain(text) => {
+                                    ui.label(RichText::new(text));
+                                }
+                                Piece::MdLink { text, url } => {
+                                    if text.is_empty() {
+                                        ui.hyperlink(shorten_link_text(&url));
+                                    } else {
+                                        ui.hyperlink_to(
+                                            RichText::new(shorten_link_text(&text))
+                                                .underline()
+                                                .color(pal.link),
+                                            url,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        ui.label(RichText::new(t));
+                    }
                 }
                 Seg::Bold(t) => {
                     ui.label(RichText::new(t).strong());
@@ -666,4 +751,75 @@ pub fn day_separator(ui: &mut Ui, pal: &Palette, label: &str) {
         ],
         stroke,
     );
+}
+
+#[cfg(test)]
+mod markdown_link_tests {
+    use super::split_markdown_links;
+    use super::Piece;
+
+    fn pieces(t: &str) -> Vec<(String, Option<(String, String)>)> {
+        split_markdown_links(t)
+            .into_iter()
+            .map(|p| match p {
+                Piece::Plain(s) => (s, None),
+                Piece::MdLink { text, url } => (text.clone(), Some((text, url))),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn jira_style_links_become_links() {
+        let got = pieces("See [QA-1002 job failed](https://qa-tenant.atlassian.net/browse/QA-1002?atlOrigin=x) now");
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].0, "See ");
+        assert_eq!(got[1].0, "QA-1002 job failed");
+        assert_eq!(
+            got[1].1,
+            Some((
+                "QA-1002 job failed".to_string(),
+                "https://qa-tenant.atlassian.net/browse/QA-1002?atlOrigin=x".to_string()
+            ))
+        );
+        assert_eq!(got[2].0, " now");
+    }
+
+    #[test]
+    fn plain_brackets_stay_plain() {
+        // No http(s) → untouched; unbalanced → untouched.
+        assert_eq!(pieces("array[0] (weird)"), vec![("array[0] (weird)".to_string(), None)]);
+        assert_eq!(
+            pieces("[not a link](ftp://x)"),
+            vec![("[not a link](ftp://x)".to_string(), None)]
+        );
+        assert_eq!(pieces("[still not](https://no closing"), vec![("[still not](https://no closing".to_string(), None)]);
+    }
+
+    #[test]
+    fn jira_real_payload_with_quotes_links() {
+        let t = concat!(
+            "[QA-1001 Statuspage userscript: add \"open public page\" and ",
+            "\"copy public link\" buttons](https://qa-tenant.atlassian.net/browse/",
+            "QA-1001?atlOrigin=eyJpIjoiQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQLCJw",
+            "IjoibXN0ZWFtcy1qaXJhIn0)"
+        );
+        let got = pieces(t);
+        assert_eq!(got.len(), 1);
+        let (text, url) = got[0].1.clone().expect("must be a link");
+        assert!(text.starts_with("QA-1001 Statuspage"));
+        assert!(url.starts_with("https://qa-tenant.atlassian.net/browse/QA-1001"));
+    }
+
+    #[test]
+    fn multiple_links_and_multibyte_text() {
+        let got = pieces("á [a](https://x.io) mid [b](http://y.io) ü");
+        assert_eq!(got.len(), 5);
+        assert_eq!(got[0].0, "á ");
+        assert_eq!(got[2].0, " mid ");
+        assert_eq!(got[4].0, " ü");
+        assert_eq!(
+            got[3].1.as_ref().map(|(_, u)| u.as_str()),
+            Some("http://y.io")
+        );
+    }
 }
