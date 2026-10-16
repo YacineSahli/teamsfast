@@ -87,11 +87,17 @@ pub fn sidebar(
             ui.add_space(2.0);
             ui.separator();
 
-            ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                for chat in ctx.chats {
-                    chat_row(ui, ctx, chat, actions);
-                }
-            });
+            // Uniform 44px rows → egui row virtualization: only visible
+            // rows allocate widgets (a long list was fully rebuilt every
+            // frame). show_rows accounts for item spacing itself.
+            ScrollArea::vertical()
+                .auto_shrink(false)
+                .show_rows(ui, 44.0, ctx.chats.len(), |ui, range| {
+                    let chats = ctx.chats;
+                    for chat in &chats[range] {
+                        chat_row(ui, ctx, chat, actions);
+                    }
+                });
         }
         SideView::Teams => {
             // Header rhythm matches the section panels: heading + subtitle +

@@ -274,6 +274,11 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
     }
     text.push_str(&decode_entities(rest));
     flush(&mut text, &mut segs);
+    // Render-ready output: the block-noise/leading-break normalization used
+    // to run per frame inside render_segments (Vec clone + re-normalize per
+    // bubble). Doing it once here means the cache holds final segments and
+    // render_segments can borrow them directly.
+    let segs = strip_block_noise(strip_leading_breaks(segs));
     segs
 }
 
@@ -302,7 +307,7 @@ fn ensure_html_cached(raw: &str) -> (std::sync::Arc<Vec<Seg>>, std::sync::Arc<St
     raw.hash(&mut h);
     let key = h.finish();
 
-    let mut cache = html_cache().lock().unwrap();
+    let mut cache = html_cache().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = cache.get(&key)
         && e.raw == raw
     {
@@ -459,11 +464,12 @@ pub fn render_segments(
     mut image: impl FnMut(&mut Ui, &str) -> bool,
     mut file: impl FnMut(&mut Ui, &str, &str),
 ) {
-    let segs = strip_block_noise(strip_leading_breaks(segs.to_vec()));
+    // Segments from `parse_html`/`parse_html_cached` are already
+    // render-ready (normalized at parse time); no clone or re-normalize.
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let mut row_has_content = false;
-        for seg in &segs {
+        for seg in segs {
             match seg {
                 Seg::Text(t) => {
                     ui.label(RichText::new(t));

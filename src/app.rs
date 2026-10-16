@@ -929,10 +929,24 @@ impl TeamsFastApp {
     ) -> Self {
         let settings_load = theme::load_settings();
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
-        let cmd = backend::spawn(tx);
+        let (cmd, wake_rx) = backend::spawn(tx);
         cmd.send(Command::CheckReady).ok();
         if settings_load.auto_live {
             cmd.send(Command::StartTrouter).ok();
+        }
+        // Park a thread on the event-wake channel: every backend event
+        // requests a repaint directly, so the render loop can be fully
+        // event-driven (the old unconditional 500ms repaint is gone).
+        {
+            let ctx = cc.egui_ctx.clone();
+            std::thread::Builder::new()
+                .name("event-wake-ui".into())
+                .spawn(move || {
+                    while wake_rx.recv().is_ok() {
+                        ctx.request_repaint();
+                    }
+                })
+                .ok();
         }
         // Interface zoom from settings.
         cc.egui_ctx.set_zoom_factor(settings_load.zoom);
@@ -4580,7 +4594,29 @@ impl eframe::App for TeamsFastApp {
             }
         }
 
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(500));
+        // Repaint policy: the render loop is event-driven — every backend
+        // event wakes it directly (event-wake thread). What remains is
+        // ticking for TIME-based state, and only while that state is live:
+        // call timers, ring pulse/timeout, typing expiry, offline retry,
+        // refresh debounce, upload progress, presence poll, and a slow
+        // once-a-minute heartbeat while connected (relative timestamps,
+        // theme catalog scans) so nothing goes stale when idle.
+        let tick = if self.call.is_some() {
+            Some(Duration::from_millis(500))
+        } else if self.incoming.is_some()
+            || self.typing.is_some()
+            || self.offline.is_some()
+            || self.pending_open_refresh
+            || !self.uploads.is_empty()
+        {
+            Some(Duration::from_millis(250))
+        } else if self.state == State::Ready {
+            Some(Duration::from_secs(60))
+        } else {
+            None
+        };
+        if let Some(t) = tick {
+            ui.ctx().request_repaint_after(t);
+        }
     }
 }

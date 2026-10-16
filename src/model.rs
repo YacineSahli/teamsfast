@@ -1,6 +1,7 @@
 //! Shared app-side helpers: time formatting, avatar colors.
 
 use egui::Color32;
+use std::collections::HashMap;
 
 /// Message timestamp: `"14:32"` today, `"14:32, 3 Oct"` this year, else with year.
 /// Server timestamps are UTC; rendered in the machine's local zone via jiff.
@@ -65,6 +66,49 @@ pub fn format_day_label(ts: &str) -> String {
     };
     let (y, m, d) = (zdt.year() as i64, zdt.month() as i64, zdt.day() as i64);
     day_label_from(y, m, d)
+}
+
+/// Cached [`format_day_label`]: the message list re-derives separators for
+/// every row every frame, each a jiff parse + zone conversion. The label
+/// only changes when the local day rolls over, so the cache key is the
+/// timestamp and entries are invalidated by the local day number.
+pub fn format_day_label_cached(ts: &str) -> std::sync::Arc<String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    struct Entry {
+        ts: String,
+        label: Arc<String>,
+        local_day: i32,
+    }
+    static CACHE: OnceLock<Mutex<HashMap<u64, Entry>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let local_day = jiff::Zoned::now().day_of_year() as i32;
+    let mut h = DefaultHasher::new();
+    ts.hash(&mut h);
+    let key = h.finish();
+    if let Some(e) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key)
+        && e.ts == ts
+        && e.local_day == local_day
+    {
+        return e.label.clone();
+    }
+    let label = Arc::new(format_day_label(ts));
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= 4096 {
+        cache.clear();
+    }
+    cache.insert(
+        key,
+        Entry {
+            ts: ts.to_string(),
+            label: label.clone(),
+            local_day,
+        },
+    );
+    label
 }
 
 /// Fixed-position naive ISO components ("YYYY-MM-DD…").

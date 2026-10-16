@@ -321,9 +321,32 @@ pub enum Event {
 
 use ost::api::MessageInfo;
 
-/// Spawn the worker; returns the command sender for the UI.
-pub fn spawn(tx: Sender<Event>) -> tokio::sync::mpsc::UnboundedSender<Command> {
+/// Spawn the worker; returns the command sender plus a wake receiver that
+/// yields one `()` per event sent to the UI. The UI parks a thread on it
+/// calling `request_repaint`, so backend activity paints immediately while
+/// the render loop itself stays event-driven (no polling repaint).
+pub fn spawn(
+    tx: Sender<Event>,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<Command>,
+    std::sync::mpsc::Receiver<()>,
+) {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
+    // Forwarder: worker → poke → UI sender. One extra channel hop per
+    // event (events are low-rate) buys instant repaints with zero idle cost.
+    let (ev_tx, ev_rx) = std::sync::mpsc::channel::<Event>();
+    let (poke_tx, poke_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("event-wake".into())
+        .spawn(move || {
+            for ev in ev_rx {
+                let _ = poke_tx.send(());
+                if tx.send(ev).is_err() {
+                    return; // UI gone
+                }
+            }
+        })
+        .expect("spawn event-wake thread");
     std::thread::Builder::new()
         .name("teamsfast-backend".into())
         .spawn(move || {
@@ -331,10 +354,10 @@ pub fn spawn(tx: Sender<Event>) -> tokio::sync::mpsc::UnboundedSender<Command> {
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
-            rt.block_on(worker(cmd_rx, tx));
+            rt.block_on(worker(cmd_rx, ev_tx));
         })
         .expect("spawn backend thread");
-    cmd_tx
+    (cmd_tx, poke_rx)
 }
 
 /// Sort key for the chat list: last-activity time, newest first.

@@ -8,6 +8,7 @@ use crate::ui::conversation::Action;
 use base64::Engine as _;
 use egui::{RichText, Ui};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Find the Adaptive Card payload in a message's raw HTML and decode its
 /// JSON. Two wire shapes occur: `b64,<payload>` inside a param value and
@@ -48,19 +49,77 @@ fn decode_b64_card(b64: &str) -> Option<Value> {
     Some(json)
 }
 
+struct CardCacheEntry {
+    raw: String,
+    card: Option<std::sync::Arc<Value>>,
+    /// Stable widget-id salt derived from the card JSON (see `render_card`).
+    salt: u64,
+}
+
+/// The conversation re-renders every frame; without this every card-bearing
+/// bubble re-ran the multi-KB HTML scan + base64 decode + serde_json parse
+/// (and `render_card` re-stringified the whole card for its id salt) per
+/// frame. Keyed by content hash with an equality check, like the segment
+/// cache in widgets.rs.
+fn card_cache() -> &'static std::sync::Mutex<HashMap<u64, CardCacheEntry>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<u64, CardCacheEntry>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// [`extract_card`] with the per-frame cache; returns the decoded card (if
+/// this message carries one) plus its stable id salt.
+pub fn extract_card_cached(raw: &str) -> (Option<std::sync::Arc<Value>>, u64) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    raw.hash(&mut h);
+    let key = h.finish();
+
+    let mut cache = card_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = cache.get(&key)
+        && e.raw == raw
+    {
+        return (e.card.clone(), e.salt);
+    }
+    let card = extract_card(raw).map(std::sync::Arc::new);
+    let salt = card
+        .as_ref()
+        .map(|c| {
+            let mut sh = DefaultHasher::new();
+            c.to_string().hash(&mut sh);
+            sh.finish()
+        })
+        .unwrap_or(0);
+    if cache.len() >= 1024 {
+        cache.clear();
+    }
+    cache.insert(
+        key,
+        CardCacheEntry {
+            raw: raw.to_string(),
+            card: card.clone(),
+            salt,
+        },
+    );
+    (card, salt)
+}
+
 /// Render a decoded Adaptive Card into `ui`. Unknown elements are skipped
 /// silently; `actions` receives OpenUrl presses. `salt` keeps widget ids
-/// unique when several cards render in one view.
-pub fn render_card(ui: &mut Ui, card: &Value, pal: &Palette, actions: &mut Vec<Action>) {
+/// unique when several cards render in one view — precomputed once per
+/// message content by `extract_card_cached` (hashing the card JSON per
+/// frame was a full `to_string` of the payload).
+pub fn render_card(
+    ui: &mut Ui,
+    card: &Value,
+    pal: &Palette,
+    actions: &mut Vec<Action>,
+    salt: u64,
+) {
     let Some(body) = card.get("body").and_then(|v| v.as_array()) else {
         return;
     };
-    // Unique per message content (same card JSON → same id, different cards
-    // in one view never clash).
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    card.to_string().hash(&mut hasher);
-    let salt = hasher.finish();
     let width = ui.available_width().min(560.0);
     egui::Frame::default()
         .fill(pal.surface)

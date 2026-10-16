@@ -10,7 +10,7 @@
 //! the list opens at offset 0 — which we make the newest message. Older
 //! history pages downward via "Load earlier messages".
 
-use crate::model::{format_day_label, format_message_time};
+use crate::model::format_message_time;
 use crate::theme::Palette;
 use crate::ui::widgets::{avatar, parse_html, parse_html_cached, render_segments};
 use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense, Stroke};
@@ -353,17 +353,37 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 }
             });
         }
-        let n = ctx.messages.len();
+        // Row culling: egui's ScrollArea clips PAINTING but still allocates
+        // and lays out every row. With a few hundred messages loaded that is
+        // hundreds of widget trees per frame. Rows whose (previous-frame)
+        // height places them fully outside the view ± margin get a cheap
+        // placeholder allocation instead — same flow, same scroll extent
+        // (sizes self-heal when a row scrolls into view and renders).
+        let clip = ui.clip_rect();
+        const CULL_MARGIN: f32 = 240.0;
         let mut last_day = String::new();
         for (i, m) in ctx.messages.iter().enumerate() {
-            let day = format_day_label(&m.timestamp);
-            let is_new_day = !day.is_empty() && day != last_day;
+            // Day label is content-cached (a jiff parse per row per frame
+            // otherwise); it must advance for every row, culled or not, or
+            // separators after a culled run would repeat.
+            let day = crate::model::format_day_label_cached(&m.timestamp);
+            let is_new_day = !day.is_empty() && day.as_str() != last_day;
             if is_new_day {
-                let label = day.clone();
+                let label = day.to_string();
                 ui.add_space(6.0);
                 crate::ui::widgets::day_separator(ui, ctx.pal, &label);
                 ui.add_space(6.0);
-                last_day = day;
+                last_day = day.to_string();
+            }
+            let row_id = ui.id().with(("msg-row-h", &m.id));
+            let known: Option<egui::Vec2> = ui.ctx().data_mut(|d| d.get_temp(row_id));
+            let top = ui.cursor().top();
+            if let Some(sz) = known
+                && (top > clip.bottom() + CULL_MARGIN
+                    || top + sz.y < clip.top() - CULL_MARGIN)
+            {
+                ui.allocate_exact_size(sz, egui::Sense::hover());
+                continue;
             }
             let own = is_own(m, ctx);
             // Group consecutive messages from the same sender within a
@@ -389,6 +409,14 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 !groups_with(n, m)
             });
             message_row(ui, ctx, m, own, grouped, last_of_group);
+            // Record the rendered height for culling. The flow adds item
+            // spacing on top of each allocation, so strip it back out — the
+            // placeholder gets its own spacing when allocated.
+            let h = (ui.cursor().top() - top - ui.spacing().item_spacing.y).max(0.0);
+            if h > 0.0 {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(row_id, egui::vec2(0.0, h)));
+            }
         }
         // Own sends in flight / failed: translucent bubble, Retry on error.
         for p in ctx.pending {
@@ -762,8 +790,9 @@ fn bubble_parts(
     }
     // Connector/adaptive card: a Swift-b64 payload renders as a card;
     // the "cards.unsupported" stub (MS sends it when the client can't
-    // display cards) shows a muted placeholder.
-    let decoded_card = crate::ui::cards::extract_card(&m.raw);
+    // display cards) shows a muted placeholder. Decode + id salt are
+    // content-cached (b64 scan + JSON parse per frame is expensive).
+    let (decoded_card, card_salt) = crate::ui::cards::extract_card_cached(&m.raw);
 
     // The bubble itself
     let row_id = egui::Id::new(("msg", &m.id));
@@ -787,7 +816,7 @@ fn bubble_parts(
                 .inner_margin(egui::Margin::symmetric(12, 7))
                 .show(ui, |ui| {
                     if let Some(card) = decoded_card.as_ref() {
-                        crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions);
+                        crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions, card_salt);
                         return;
                     }
                     if m.raw.contains("cards.unsupported") {
@@ -850,7 +879,7 @@ fn bubble_parts(
             .inner_margin(egui::Margin::symmetric(12, 7))
             .show(ui, |ui| {
                 if let Some(card) = decoded_card.as_ref() {
-                    crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions);
+                    crate::ui::cards::render_card(ui, card, ctx.pal, ctx.actions, card_salt);
                     return;
                 }
                 if m.raw.contains("cards.unsupported") {
@@ -1288,7 +1317,7 @@ fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
                         RichText::new(format!(
                             "{}: {}",
                             sender_label(parent, ctx),
-                            crate::ui::widgets::segs_to_plain(&parse_html(&parent.raw))
+                            crate::ui::widgets::plain_cached(&parent.raw)
                                 .lines()
                                 .next()
                                 .unwrap_or("")
