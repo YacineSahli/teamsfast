@@ -935,22 +935,6 @@ fn bubble_parts(
     // moves into the gap), so track the bar's rect and test containment
     // directly, with a 6px grow to bridge the bubble→bar gap.
     let hover_id = egui::Id::new(("msg-hover", &m.id));
-    let pointer = ui.input(|i| i.pointer.latest_pos());
-    let bar_rect_prev: Option<egui::Rect> = ui.ctx().data(|d| d.get_temp(hover_id));
-    let expand = |r: egui::Rect, by: f32| {
-        egui::Rect::from_min_max(
-            egui::pos2(r.left() - by, r.top() - by),
-            egui::pos2(r.right() + by, r.bottom() + by),
-        )
-    };
-    let in_bubble = pointer
-        .map(|p| expand(bubble_rect, 2.0).contains(p))
-        .unwrap_or(false);
-    let in_bar = pointer
-        .zip(bar_rect_prev)
-        .map(|(p, r)| expand(r, 6.0).contains(p))
-        .unwrap_or(false);
-    let open = in_bubble || in_bar;
 
     if last_of_group {
         let pinned = ctx.pinned.contains(&m.id);
@@ -1232,7 +1216,11 @@ fn bubble_parts(
         if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
             eprintln!(
                 "hover bar msg={} rect={:?} bubble={:?} clip={clip:?}",
-                &m.id[m.id.len().saturating_sub(6)..],
+                &m.id
+                    .chars()
+                    .rev()
+                    .take(6)
+                    .collect::<String>(),
                 bar.rect,
                 bubble_rect
             );
@@ -1331,6 +1319,28 @@ fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
 }
 
 /// Rasterize (cached) and return a sized image for an emoji cluster.
+/// Clusters whose raster failed — retried never (otherwise every frame
+/// re-attempted the render and re-logged the warning).
+fn emoji_failed(cluster: &str) -> bool {
+    static FAILED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    FAILED
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(cluster)
+}
+
+fn emoji_mark_failed(cluster: &str) {
+    static FAILED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    FAILED
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(cluster.to_string());
+}
+
 /// Does NOT add anything to a Ui — callers place it inside their widget
 /// (a pre-added image paints on the parent and leaves its button empty).
 fn emoji_image(
@@ -1339,7 +1349,7 @@ fn emoji_image(
     cluster: &str,
     px: f32,
 ) -> Option<egui::Image<'static>> {
-    if !ctx.emoji_textures.contains_key(cluster) {
+    if !ctx.emoji_textures.contains_key(cluster) && !emoji_failed(cluster) {
         if let Some((rgba, size)) = crate::theme::raster_emoji(cluster, 64) {
             let img = egui::ColorImage::from_rgba_unmultiplied(
                 [size[0], size[1]],
@@ -1349,6 +1359,8 @@ fn emoji_image(
                 .ctx()
                 .load_texture(format!("emoji:{cluster}"), img, Default::default());
             ctx.emoji_textures.insert(cluster.to_string(), tex);
+        } else {
+            emoji_mark_failed(cluster);
         }
     }
     let tex = ctx.emoji_textures.get(cluster)?;

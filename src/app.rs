@@ -4266,22 +4266,23 @@ impl eframe::App for TeamsFastApp {
         if let Some(fwd) = self.forward.as_mut() {
             let mut picked: Option<(String, String)> = None; // (chat_id, text)
             let mut close = false;
+            // Char-boundary safe preview: a byte slice here panics on
+            // emoji/CJK at the cut (the calendar en-dash class of crash).
+            let chars: Vec<char> = fwd.text.chars().collect();
+            let preview = if chars.len() > 80 {
+                format!("{}…", chars[..80].iter().collect::<String>())
+            } else {
+                fwd.text.clone()
+            };
             egui::Window::new("Forward message")
                 .default_width(380.0)
                 .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "“{}”",
-                            if fwd.text.len() > 80 {
-                                format!("{}…", &fwd.text[..80])
-                            } else {
-                                fwd.text.clone()
-                            }
-                        ))
-                        .small()
-                        .weak(),
+                        egui::RichText::new(format!("“{}”", preview))
+                            .small()
+                            .weak(),
                     );
                     ui.add_space(4.0);
                     ui.add(

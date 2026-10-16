@@ -60,18 +60,29 @@ pub fn search_panel(
             {
                 let ui = &mut child;
                 ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new(&h.sender)
-                        .strong()
-                        .size(12.5)
-                        .color(pal.link),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&h.sender)
+                            .strong()
+                            .size(12.5)
+                            .color(pal.link),
+                    )
+                    .selectable(false),
                 );
                 ui.add(
                     egui::Label::new(RichText::new(&h.preview).small())
                         .truncate()
                         .selectable(false),
                 );
-                ui.label(RichText::new(&h.timestamp).small().weak().color(pal.secondary));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&h.timestamp)
+                            .small()
+                            .weak()
+                            .color(pal.secondary),
+                    )
+                    .selectable(false),
+                );
             }
 
             if response.clicked() && !target.is_empty() {
