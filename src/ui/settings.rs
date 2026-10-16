@@ -107,8 +107,9 @@ pub fn settings_window(
         });
         ui.add_space(4.0);
         {
-            // Segmented tab control: recessed track, one accent chip for
-            // the active tab, even chip widths.
+            // Native-style layout: left nav rail + right content pane.
+            // (The horizontal segmented pill row cramped six tabs and left
+            // a dead right gutter on short tabs.)
             let tabs = [
                 SettingsTab::General,
                 SettingsTab::Appearance,
@@ -117,69 +118,72 @@ pub fn settings_window(
                 SettingsTab::Storage,
                 SettingsTab::About,
             ];
-            ui.add_space(2.0);
-            let track_h = 30.0;
-            let (track, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), track_h),
-                egui::Sense::hover(),
-            );
-            ui.painter().rect_filled(track, 8, pal.window);
-            let chip_w = track.width() / tabs.len() as f32;
-            let mut tab = st.tab;
-            // The accent chip SLIDES between tabs (ease-out ~180ms) —
-            // iOS-segmented-control motion; a teleporting chip read as a
-            // state glitch.
-            let sel_idx = tabs
-                .iter()
-                .position(|t| Some(*t) == st.tab)
-                .unwrap_or(0) as f32;
-            let slide =
-                ui.ctx()
-                    .animate_value_with_time(egui::Id::new("settings_tab_chip"), sel_idx, 0.18);
-            let chip_at = |idx: f32| {
-                egui::Rect::from_min_size(
-                    track.left_top() + egui::vec2(chip_w * idx + 2.0, 2.0),
-                    egui::vec2(chip_w - 4.0, track_h - 4.0),
-                )
-            };
-            ui.painter()
-                .rect_filled(chip_at(slide).shrink(1.0), 5, pal.accent);
-            for (i, t) in tabs.iter().enumerate() {
-                let rect = chip_at(i as f32);
-                let sel = tab == Some(*t);
-                let resp = ui.allocate_rect(rect, egui::Sense::click());
-                let p = ui.painter();
-                if !sel && resp.hovered() {
-                    p.rect_filled(rect.shrink(1.0), 7, pal.surface_hover);
-                }
-                p.text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    t.title(),
-                    egui::FontId::proportional(11.5),
-                    if sel { pal.on_accent } else { pal.secondary },
-                );
-                if resp.clicked() {
-                    tab = Some(*t);
-                    st.confirm_clear = false;
-                    st.confirm_signout = false;
-                }
-            }
             ui.add_space(6.0);
-            // Persist the click the loop picked up. Without this write-back
-            // the content pane (and the accent chip) never move — every tab
-            // but the current one reads as dead.
-            st.tab = tab;
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| match tab {
-                    Some(SettingsTab::General) => general(ui, settings, info, pal, actions),
-                    Some(SettingsTab::Appearance) => appearance(ui, settings, info, pal, actions),
-                    Some(SettingsTab::Notifications) => notifications(ui, settings, pal),
-                    Some(SettingsTab::Account) => account(ui, st, info, pal, actions),
-                    Some(SettingsTab::Storage) => storage(ui, st, info, pal, actions),
-                    _ => about(ui, pal),
+            ui.horizontal(|ui| {
+                let mut tab = st.tab;
+                // Left rail: full-width rows, active = accent-tinted well +
+                // accent text (the app's rail idiom, matches the section
+                // switcher).
+                ui.vertical(|ui| {
+                    ui.set_width(136.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for t in tabs {
+                        let sel = tab == Some(t);
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(136.0, 30.0), egui::Sense::click());
+                        let p = ui.painter();
+                        if sel {
+                            p.rect_filled(
+                                rect.shrink(1.0),
+                                6,
+                                crate::theme::tint_over(pal.window, pal.accent, 0.20),
+                            );
+                        } else if resp.hovered() {
+                            p.rect_filled(rect.shrink(1.0), 6, pal.surface_hover);
+                        }
+                        p.text(
+                            egui::pos2(rect.left() + 12.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            t.title(),
+                            egui::FontId::proportional(12.5),
+                            if sel { pal.text } else { pal.secondary },
+                        );
+                        if resp.clicked() {
+                            tab = Some(t);
+                            st.confirm_clear = false;
+                            st.confirm_signout = false;
+                        }
+                    }
                 });
+                // Persist the click the loop picked up. Without this write-back
+                // the content pane never moves — every tab but the current
+                // one reads as dead.
+                st.tab = tab;
+                ui.add_space(14.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    // Cap below the popup area's full height: an uncapped
+                    // scroll expands to the modal's max and the last row
+                    // renders sliced at the frame edge.
+                    .max_height((ui.available_height() - 14.0).max(120.0))
+                    .show(ui, |ui| {
+                        // ScrollArea content INHERITS the parent layout —
+                        // this scroll lives inside a horizontal row, so its
+                        // body MUST be re-wrapped vertical (the todo/notes
+                        // nav columns hit this same trap).
+                        ui.set_min_width(ui.available_width());
+                        ui.vertical(|ui| match tab {
+                            Some(SettingsTab::General) => general(ui, settings, info, pal, actions),
+                            Some(SettingsTab::Appearance) => {
+                                appearance(ui, settings, info, pal, actions)
+                            }
+                            Some(SettingsTab::Notifications) => notifications(ui, settings, pal),
+                            Some(SettingsTab::Account) => account(ui, st, info, pal, actions),
+                            Some(SettingsTab::Storage) => storage(ui, st, info, pal, actions),
+                            _ => about(ui, pal),
+                        });
+                    });
+            });
         }
     });
     if resp.should_close() {
