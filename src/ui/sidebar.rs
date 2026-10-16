@@ -73,7 +73,23 @@ pub fn sidebar(
                         [ui.available_width(), 24.0],
                         egui::TextEdit::singleline(search)
                             .hint_text("Search")
-                            .font(egui::TextStyle::Small),
+                            .font(egui::TextStyle::Small)
+                            // Recessed well: the default raised field fill
+                            // read as a button next to the flat header.
+                            .frame(
+                                egui::Frame::default()
+                                    .fill(crate::theme::tint_over(
+                                        ctx.pal.panel,
+                                        egui::Color32::BLACK,
+                                        0.16,
+                                    ))
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        ctx.pal.outline.gamma_multiply(0.6),
+                                    ))
+                                    .corner_radius(6)
+                                    .inner_margin(egui::Margin::symmetric(6, 3)),
+                            ),
                     );
                     if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         let q = search.trim().to_string();
@@ -407,6 +423,12 @@ fn chat_row(
                                         .tint(ctx.pal.secondary)
                                         .fit_to_exact_size(egui::Vec2::splat(12.0)),
                                     );
+                                } else if has_time {
+                                    // Reserve the group-glyph slot on 1:1 rows
+                                    // too — otherwise the pin/mute/time
+                                    // cluster sat at two different x columns
+                                    // across the list.
+                                    ui.add_space(14.0);
                                 }
                             },
                         );

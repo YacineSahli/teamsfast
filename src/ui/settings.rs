@@ -82,7 +82,7 @@ pub fn settings_window(
             .inner_margin(egui::Margin::same(18)),
     );
     let resp = modal.show(ui.ctx(), |ui| {
-        ui.set_width(470.0);
+        ui.set_width(560.0);
         // Header row: title + close affordance (the modal itself also
         // closes on Esc / backdrop click).
         ui.horizontal(|ui| {
@@ -187,15 +187,16 @@ pub fn settings_window(
     st.open = open;
 }
 
-/// Checkbox that reports whether it changed (caller persists settings).
+/// Boolean setting control that reports whether it changed (caller persists
+/// settings).
 ///
-/// Custom-drawn Fluent-style square: the stock `ui.checkbox` inherits the
-/// global widget corner radius (8), which on its ~14px box renders as a
-/// CIRCLE — reading as a radio (mutually exclusive) for what are
-/// independent booleans.
+/// Fluent-style SWITCH: native Teams renders booleans as pill toggles, and
+/// the earlier square checkbox still read as radio-ish at a glance (the
+/// stock ui.checkbox inherited the global radius 8 — a circle on a ~14px
+/// box — which is why this was hand-drawn in the first place).
 fn toggle(ui: &mut Ui, pal: &crate::theme::Palette, label: &str, value: &mut bool) -> bool {
     let (rect, mut resp) = ui.allocate_exact_size(
-        egui::vec2(16.0 + 8.0 + ui.painter().layout(
+        egui::vec2(34.0 + 8.0 + ui.painter().layout(
             label.into(),
             egui::FontId::proportional(13.0),
             pal.text,
@@ -210,36 +211,38 @@ fn toggle(ui: &mut Ui, pal: &crate::theme::Palette, label: &str, value: &mut boo
         // and the quiet-hours row re-writing its value each repaint).
         resp.mark_changed();
     }
-    let box_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 8.0, rect.center().y),
-        egui::vec2(16.0, 16.0),
-    );
     let p = ui.painter();
+    // 34x18 pill with a sliding knob; the knob position eases so a flip
+    // doesn't teleport (egui's value animation re-arms repaints itself, so
+    // the event-driven loop stays correct).
+    let track = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), rect.center().y - 9.0),
+        egui::vec2(34.0, 18.0),
+    );
+    let knob_t = ui.ctx().animate_value_with_time(
+        resp.id.with("knob"),
+        if *value { 1.0 } else { 0.0 },
+        0.14,
+    );
+    let track_fill = if knob_t > 0.5 { pal.accent } else { pal.surface_hover };
     p.rect(
-        box_rect,
-        egui::CornerRadius::same(4),
-        if *value { pal.accent } else { egui::Color32::TRANSPARENT },
+        track,
+        egui::CornerRadius::same(9),
+        track_fill,
         egui::Stroke::new(
             1.0,
             if resp.hovered() { pal.text } else { pal.dim },
         ),
         egui::StrokeKind::Inside,
     );
-    if *value {
-        // Check mark: two strokes, Fluent weight.
-        let c = box_rect.center();
-        let s = 3.2;
-        p.line_segment(
-            [c - egui::vec2(s, 0.0), c - egui::vec2(0.4, s - 0.8)],
-            egui::Stroke::new(1.8, pal.on_accent),
-        );
-        p.line_segment(
-            [c - egui::vec2(0.4, s - 0.8), c + egui::vec2(s + 0.4, -(s - 0.8))],
-            egui::Stroke::new(1.8, pal.on_accent),
-        );
-    }
+    let knob_x = track.left() + 3.0 + knob_t * (34.0 - 18.0 - 4.0 + 2.0);
+    p.circle_filled(
+        egui::pos2(knob_x + 6.0, track.center().y),
+        6.0,
+        if knob_t > 0.5 { pal.on_accent } else { pal.secondary },
+    );
     p.text(
-        egui::pos2(rect.left() + 28.0, rect.center().y),
+        egui::pos2(rect.left() + 46.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
         egui::FontId::proportional(13.0),
