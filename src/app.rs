@@ -1,6 +1,7 @@
 //! TeamsFast App: owns all UI state, drains backend events, applies actions.
 
 use crate::backend::{self, Command, Event};
+use base64::Engine as _;
 use crate::theme::{self, Palette};
 use crate::ui::conversation::{self, Action, ConvCtx};
 use crate::ui::panels::{new_chat_dialog, search_panel, NewChatState};
@@ -1627,6 +1628,47 @@ impl TeamsFastApp {
                     }
                     if let Some(name) = resolved_name {
                         self.rename_chat(&chat_id, name);
+                    }
+                    // QA hook: TEAMSFAST_TABLE=1 appends two synthetic
+                    // messages to the opened chat — a chat-HTML pipe table
+                    // (exercises the <br> grouping) and an Adaptive Card
+                    // carrying the real k8s-scan Jira table payload — so
+                    // table rendering is screenshot-verifiable without
+                    // scrolling a live chat to an old message. Network
+                    // refreshes full-replace the list, so re-append
+                    // whenever the seed is missing (checked by id, not a
+                    // one-shot flag).
+                    if std::env::var("TEAMSFAST_TABLE").as_deref() == Ok("1")
+                        && !self.messages.is_empty()
+                        && !self.messages.iter().any(|m| m.id == "qa-table-card")
+                    {
+                        let now_ts = "2026-10-16T21:30:00.000Z".to_string();
+                        let qa = |id: &str, sender: &str, content: &str, raw: String| MessageInfo {
+                            id: id.to_string(),
+                            sender_mri: "8:orgid:00000000-0000-0000-0000-0000000000f1".into(),
+                            sender: sender.to_string(),
+                            timestamp: now_ts.clone(),
+                            content: content.to_string(),
+                            raw,
+                            reactions: Vec::new(),
+                            reply_to: None,
+                            client_message_id: None,
+                        };
+                        self.messages.push(qa(
+                            "qa-table-chat",
+                            "QA Bot",
+                            "line one line two line three Workload Container Action",
+                            "<p>line one<br>line two<br>line three</p><p>before the table<br>||Workload||Container||Action||<br>|qa-default|api|*Reduce*<br>|qa-default|ast...</p>".into(),
+                        ));
+                        let card_json = r#"{"summary":"k8s right-sizing (QA)","attachments":[{"content":{"type":"AdaptiveCard","body":[{"type":"TextBlock","wrap":true,"text":" Resource request/limit right-sizing findings (7-day Grafana p95/max lookback)\n\nContainers where usage already exceeds the current request are marked *Increase* rather than reduced.\n\n 1. QA Production\n\n||Workload||Container||CPU req → suggested||Mem req → suggested||Action||\n|qa-default|api|0.500 → 0.20|512Mi → 384Mi|Reduce|\n|qa-default|management-api|0.200 → 0.05|500Mi → 384Mi|Reduce|\n|qa-default|ast..."}]}}]}"#;
+                        let b64 = base64::engine::general_purpose::STANDARD
+                            .encode(card_json.as_bytes());
+                        self.messages.push(qa(
+                            "qa-table-card",
+                            "QA Bot",
+                            "k8s right-sizing (QA)",
+                            format!(r#"<Swift b64="{b64}"/>"#),
+                        ));
                     }
                     // Who has read what (quiet fetch, no error surfaced) —
                     // throttled: refreshes land in bursts and receipts move
