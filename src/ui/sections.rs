@@ -1359,13 +1359,25 @@ pub fn todo_panel(
                 ui.vertical(|ui| {
                 for l in lists {
                     let sel = st.selected_list.as_deref() == Some(l.id.as_str());
-                    if ui
-                        .selectable_label(sel, RichText::new(&l.name).strong())
-                        .clicked()
-                    {
-                        st.selected_list = Some(l.id.clone());
-                        actions.push(Action::OpenTodoList(l.id.clone()));
-                    }
+                    ui.horizontal(|ui| {
+                        // A glyph per list (bare text rows read unfinished
+                        // next to every other nav pane).
+                        ui.add(
+                            egui::Image::from_bytes(
+                                crate::theme::Icon::ListTodo.uri(),
+                                crate::theme::Icon::ListTodo.bytes(),
+                            )
+                            .tint(if sel { pal.accent } else { pal.secondary })
+                            .fit_to_exact_size(egui::Vec2::splat(14.0)),
+                        );
+                        if ui
+                            .selectable_label(sel, RichText::new(&l.name).strong())
+                            .clicked()
+                        {
+                            st.selected_list = Some(l.id.clone());
+                            actions.push(Action::OpenTodoList(l.id.clone()));
+                        }
+                    });
                 }
                 })
             });
@@ -1573,15 +1585,24 @@ pub fn activity_panel(
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width() - 64.0);
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(&e.chat_name)
-                                    .strong()
-                                    .color(pal.text),
+                            // Rows are whole buttons — selectable labels
+                            // would swallow the clicks (same rule as the
+                            // file rows).
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&e.chat_name)
+                                        .strong()
+                                        .color(pal.text),
+                                )
+                                .selectable(false),
                             );
-                            ui.label(
-                                RichText::new(format!("· {}", e.kind))
-                                    .small()
-                                    .weak(),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("· {}", e.kind))
+                                        .small()
+                                        .weak(),
+                                )
+                                .selectable(false),
                             );
                         });
                         ui.add(
@@ -1596,10 +1617,13 @@ pub fn activity_panel(
                     });
                     // Stamp pinned right, vertically centered.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(crate::model::format_epoch_ms_time(e.at_ms))
-                                .small()
-                                .weak(),
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(crate::model::format_epoch_ms_time(e.at_ms))
+                                    .small()
+                                    .weak(),
+                            )
+                            .selectable(false),
                         );
                     });
                 });
