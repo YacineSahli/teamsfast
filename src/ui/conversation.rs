@@ -71,6 +71,8 @@ pub enum Action {
     },
     Refresh,
     // ---- app-level actions (settings, account, storage) ----
+    /// Settings opens through the gear/top-bar action; kept for parity.
+    #[allow(dead_code)]
     OpenSettings,
     /// Theme file selection: Some(filename) or None for the built-in.
     SetTheme(Option<String>),

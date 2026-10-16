@@ -158,7 +158,9 @@ pub enum Command {
     // ---- meet now ----
     MeetNow,
     // ---- planner + shifts ----
+    #[allow(dead_code)]
     LoadPlanner,
+    #[allow(dead_code)]
     LoadShifts,
     SetPlannerDone {
         task_id: String,
