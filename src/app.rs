@@ -3938,6 +3938,8 @@ impl eframe::App for TeamsFastApp {
                     error: p.error.clone(),
                 })
                 .collect();
+            // QA hook: force the typing indicator without a live peer.
+            let forced_typing = std::env::var("TEAMSFAST_TYPING").ok();
             let pinned_here = self
                 .settings
                 .pinned_messages
@@ -3953,7 +3955,10 @@ impl eframe::App for TeamsFastApp {
                 self_id: self.self_id.as_deref(),
                 older_link: self.older_link.as_deref(),
                 loading_older: self.loading_older,
-                typing_user: self.typing.as_ref().map(|(u, _)| u.as_str()),
+                typing_user: match forced_typing.as_deref() {
+                    None | Some("") => self.typing.as_ref().map(|(u, _)| u.as_str()),
+                    Some(name) => Some(name),
+                },
                 edit: self.edit.clone(),
                 reply: self.reply.clone(),
                 uploads: &self.uploads,
