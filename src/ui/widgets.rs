@@ -737,6 +737,12 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                         rest = next;
                     }
                     "div" | "p" | "h1" | "h2" | "h3" | "li" => {
+                        // Block open breaks the line — and must FLUSH the
+                        // pending text first: without the flush, "a</p><p>b"
+                        // stayed in one text buffer and the paragraphs
+                        // concatenated ("ab") while the LineBreaks piled up
+                        // at the front (strip_block_noise then dropped them).
+                        flush(&mut text, &mut segs);
                         segs.push(Seg::LineBreak);
                     }
                     _ => {}
@@ -1457,7 +1463,7 @@ mod mention_tests {
     fn clicking_a_mention_chip_fires_the_hook() {
         crate::emoji::setup();
         let segs = parse_html(r#"<at id="8:orgid:abc">Bob</at> hello"#);
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         let blank = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
 
@@ -1686,7 +1692,7 @@ mod pipe_table_tests {
     #[test]
     fn render_two_tables_smoke() {
         crate::emoji::setup();
-        let ctx = egui::Context::default();
+        let ctx = crate::theme::test_ctx();
         let pal = crate::theme::Palette::dark();
         let t1 = super::parse_pipe_run(&["||A||B||", "|1|2|", "|3|4|"]);
         let t2 = super::parse_pipe_run(&["||C||D||", "|x|y|"]);
@@ -1703,3 +1709,37 @@ mod pipe_table_tests {
         }
     }
 }
+
+
+
+#[cfg(test)]
+mod block_break_tests {
+    // `<p>a</p><p>b</p>` used to concatenate ("ab"): the block-open arm
+    // pushed LineBreak without flushing pending text, so both paragraphs
+    // stayed in one buffer and the break landed before both. This pins
+    // the flush.
+    use super::{parse_html, Seg};
+
+    fn shape(html: &str) -> Vec<&'static str> {
+        parse_html(html)
+            .iter()
+            .map(|s| match s {
+                Seg::Text(t) => match t.as_str() {
+                    "a" => "a",
+                    "b" => "b",
+                    _ => "t",
+                },
+                Seg::LineBreak => "L",
+                _ => "?",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn p_boundaries_break() {
+        assert_eq!(shape("<p>a</p><p>b</p>"), vec!["a", "L", "b"]);
+        assert_eq!(shape("a<div>b</div><div>c</div>"), vec!["a", "L", "b", "L", "t"]);
+    }
+}
+
+
