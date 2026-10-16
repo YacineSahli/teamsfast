@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
+use crate::theme::RichTextBold;
 
 #[derive(PartialEq, Clone, Copy)]
 enum State {
@@ -2873,7 +2874,7 @@ impl TeamsFastApp {
                                 .add(
                                     egui::Button::new(
                                         RichText::new("Restart to update")
-                                            .strong()
+                                            .bold()
                                             .color(self.palette.on_accent),
                                     )
                                     .fill(self.palette.accent)
@@ -3360,7 +3361,7 @@ impl eframe::App for TeamsFastApp {
                             ui.vertical(|ui| {
                                     ui.label(
                                         RichText::new(&ring.name)
-                                            .strong()
+                                            .bold()
                                             .size(13.5),
                                     );
                                 ui.label(
@@ -3394,7 +3395,7 @@ impl eframe::App for TeamsFastApp {
                                     let accept_btn = egui::Button::new(
                                         RichText::new("Accept")
                                             .small()
-                                            .strong()
+                                            .bold()
                                             .color(accept_fg),
                                     )
                                     .fill(accept_fill)
@@ -3412,7 +3413,7 @@ impl eframe::App for TeamsFastApp {
                                             egui::Button::new(
                                                 RichText::new("Decline")
                                                     .small()
-                                                    .strong()
+                                                    .bold()
                                                     .color(Color32::WHITE),
                                             )
                                             .fill(palette.danger)
@@ -3683,7 +3684,7 @@ impl eframe::App for TeamsFastApp {
                             // Name + full state already show in the banner;
                             // the stage header carries phase + timer only.
                             ui.label(
-                                RichText::new(format!("{phase}  {mm:02}:{ss:02}")).strong(),
+                                RichText::new(format!("{phase}  {mm:02}:{ss:02}")).bold(),
                             );
                         });
                         ui.add_space(6.0);
@@ -4095,7 +4096,7 @@ impl eframe::App for TeamsFastApp {
                             State::NeedLogin => {
                                 ui.label(
                                     RichText::new("Welcome to TeamsFast")
-                                        .strong()
+                                        .bold()
                                         .size(18.0),
                                 );
                                 ui.add_space(4.0);
@@ -4110,7 +4111,7 @@ impl eframe::App for TeamsFastApp {
                                     if ui
                                         .add(
                                             egui::Button::new(
-                                                RichText::new("Sign in").strong(),
+                                                RichText::new("Sign in").bold(),
                                             )
                                             .min_size(egui::vec2(120.0, 30.0)),
                                         )
@@ -4144,7 +4145,7 @@ impl eframe::App for TeamsFastApp {
                                         ui.monospace(
                                             RichText::new(&code)
                                                 .size(22.0)
-                                                .strong()
+                                                .bold()
                                                 .color(self.palette.text),
                                         );
                                         if ui.small_button("Copy").clicked() {
@@ -4519,7 +4520,7 @@ impl eframe::App for TeamsFastApp {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("Rename").strong().color(self.palette.on_accent),
+                                    RichText::new("Rename").bold().color(self.palette.on_accent),
                                 )
                                 .fill(self.palette.accent)
                                 .min_size(egui::vec2(70.0, 24.0)),
@@ -4604,7 +4605,7 @@ impl eframe::App for TeamsFastApp {
             let resp = modal.show(ui.ctx(), |ui| {
                 ui.set_width(430.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Teams").strong().size(15.0));
+                    ui.label(RichText::new("Teams").bold().size(15.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(
@@ -4655,7 +4656,7 @@ impl eframe::App for TeamsFastApp {
             let resp = modal.show(ui.ctx(), |ui| {
                 ui.set_width(440.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Join a meeting").strong().size(15.0));
+                    ui.label(RichText::new("Join a meeting").bold().size(15.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(
@@ -4702,7 +4703,7 @@ impl eframe::App for TeamsFastApp {
                             .add(
                                 egui::Button::new(
                                     RichText::new("Join")
-                                        .strong()
+                                        .bold()
                                         .color(self.palette.on_accent),
                                 )
                                 .fill(self.palette.accent)

@@ -5,6 +5,7 @@
 use crate::theme::{self, Settings};
 use crate::ui::conversation::Action;
 use egui::{RichText, Ui};
+use crate::theme::RichTextBold;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum SettingsTab {
@@ -86,7 +87,7 @@ pub fn settings_window(
         // Header row: title + close affordance (the modal itself also
         // closes on Esc / backdrop click).
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Settings").strong().size(15.0));
+            ui.label(RichText::new("Settings").bold().size(15.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
@@ -255,7 +256,7 @@ fn toggle(ui: &mut Ui, pal: &crate::theme::Palette, label: &str, value: &mut boo
 /// room above — the rhythm that made settings read as one long list.
 fn section(ui: &mut Ui, pal: &crate::theme::Palette, title: &str) {
     ui.add_space(6.0);
-    ui.label(RichText::new(title.to_uppercase()).small().strong().color(pal.secondary));
+    ui.label(RichText::new(title.to_uppercase()).small().bold().color(pal.secondary));
     ui.add_space(2.0);
 }
 

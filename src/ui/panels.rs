@@ -7,6 +7,7 @@ use crate::ui::conversation::Action;
 use egui::{RichText, ScrollArea};
 use ost::api::SearchHitInfo;
 use tokio::sync::mpsc::UnboundedSender;
+use crate::theme::RichTextBold;
 
 /// Search results overlay panel. Returns true when closed.
 pub fn search_panel(
@@ -63,7 +64,7 @@ pub fn search_panel(
                 ui.add(
                     egui::Label::new(
                         RichText::new(&h.sender)
-                            .strong()
+                            .bold()
                             .size(12.5)
                             .color(pal.link),
                     )
@@ -132,7 +133,7 @@ fn dialog_section(ui: &mut egui::Ui, pal: &Palette, title: &str) {
     ui.label(
         RichText::new(title.to_uppercase())
             .small()
-            .strong()
+            .bold()
             .color(pal.secondary),
     );
     ui.add_space(3.0);
@@ -150,7 +151,7 @@ fn modal_primary(
     let b = egui::Button::new(
         RichText::new(text)
             .size(12.5)
-            .strong()
+            .bold()
             .color(if enabled { pal.on_accent } else { pal.secondary }),
     )
     .min_size(egui::vec2(width, 26.0))
@@ -174,7 +175,7 @@ pub fn new_chat_dialog(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("New chat").strong().size(15.0));
+        ui.label(RichText::new("New chat").bold().size(15.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(

@@ -9,6 +9,7 @@ use base64::Engine as _;
 use egui::{RichText, Ui};
 use serde_json::Value;
 use std::collections::HashMap;
+use crate::theme::RichTextBold;
 
 /// Find the Adaptive Card payload in a message's raw HTML and decode its
 /// JSON. Two wire shapes occur: `b64,<payload>` inside a param value and
@@ -198,17 +199,21 @@ fn render_element(
                                 continue;
                             }
                             ui.horizontal_wrapped(|ui| {
+                                // Tight piece spacing like the chat path —
+                                // the default 8px read as a triple space at
+                                // every piece boundary carrying a space.
+                                ui.spacing_mut().item_spacing.x = 2.0;
                                 for piece in crate::ui::widgets::split_markdown_links(text) {
                                     match piece {
                                         crate::ui::widgets::Piece::Plain(t) => {
                                             let mut rt = RichText::new(t).size(size).color(color);
                                             if weight {
-                                                rt = rt.strong();
+                                                rt = rt.bold();
                                             }
                                             ui.label(rt);
                                         }
                                         crate::ui::widgets::Piece::Bold(t) => {
-                                            ui.label(RichText::new(t).size(size).color(color).strong());
+                                            ui.label(RichText::new(t).size(size).color(color).bold());
                                         }
                                         crate::ui::widgets::Piece::Italic(t) => {
                                             ui.label(RichText::new(t).size(size).color(color).italics());
@@ -237,7 +242,7 @@ fn render_element(
             } else {
                 let mut rt = RichText::new(text).size(size).color(color);
                 if weight {
-                    rt = rt.strong();
+                    rt = rt.bold();
                 }
                 ui.label(rt);
             }

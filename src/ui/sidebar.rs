@@ -7,6 +7,7 @@ use crate::ui::conversation::Action;
 use crate::ui::widgets::avatar;
 use egui::{RichText, ScrollArea, Ui};
 use ost::api::{ChatInfo, TeamInfo};
+use crate::theme::RichTextBold;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum SideView {
@@ -119,7 +120,7 @@ pub fn sidebar(
             // Header rhythm matches the section panels: heading + subtitle +
             // right-aligned action, then the separator.
             ui.horizontal(|ui| {
-                ui.heading(RichText::new("Teams").strong().size(17.0));
+                ui.heading(RichText::new("Teams").bold().size(17.0));
                 ui.label(RichText::new("Your teams & channels").small().weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if crate::ui::widgets::btn::ghost(
@@ -327,7 +328,7 @@ fn chat_row(
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(&label)
-                                        .strong()
+                                        .bold()
                                         .color(if unread.0 {
                                             ctx.pal.text
                                         } else {
@@ -565,7 +566,7 @@ mod tests {
             notify_levels: &std::collections::HashMap::new(),
         };
 
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let mut row_rect: Option<egui::Rect> = None;
         let actions_out = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Action>::new()));
         let actions_capture = actions_out.clone();
@@ -648,7 +649,7 @@ mod tests {
             muted: &std::collections::HashSet::new(),
             notify_levels: &std::collections::HashMap::new(),
         };
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -691,7 +692,7 @@ mod tests {
             muted: &std::collections::HashSet::new(),
             notify_levels: &std::collections::HashMap::new(),
         };
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,

@@ -16,6 +16,7 @@ use crate::ui::widgets::{avatar, parse_html, parse_html_cached, render_segments}
 use egui::{Color32, CornerRadius, Frame, RichText, ScrollArea, Sense, Stroke};
 use ost::api::MessageInfo;
 use std::collections::{HashMap, HashSet};
+use crate::theme::RichTextBold;
 
 const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 
@@ -235,7 +236,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         ui.add_space(4.0);
         avatar(ui, &ctx.chat_name, 32.0);
         ui.add_space(2.0);
-        ui.heading(RichText::new(&ctx.chat_name).strong().size(17.0));
+        ui.heading(RichText::new(&ctx.chat_name).bold().size(17.0));
         // Pinned messages menu.
         if !ctx.pinned.is_empty() {
             ui.menu_button(
@@ -569,7 +570,7 @@ pub fn conversation_composer(
             .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Replying to {who}")).small().strong());
+                    ui.label(RichText::new(format!("Replying to {who}")).small().bold());
                     ui.add(egui::Label::new(RichText::new(snippet).small().weak()).truncate());
                     if ui.small_button("✕").clicked() {
                         ctx.actions.push(Action::CancelEditReply);
@@ -585,7 +586,7 @@ pub fn conversation_composer(
             .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Editing").small().strong());
+                    ui.label(RichText::new("Editing").small().bold());
                     ui.add(egui::Label::new(RichText::new(current).small().weak()).truncate());
                     if ui.small_button("✕").clicked() {
                         ctx.actions.push(Action::CancelEditReply);
@@ -847,7 +848,7 @@ fn message_row(
                     if ui
                         .add(
                             egui::Label::new(
-                                RichText::new(&name).small().strong().color(ctx.pal.secondary),
+                                RichText::new(&name).small().bold().color(ctx.pal.secondary),
                             )
                             .selectable(false),
                         )
@@ -1391,7 +1392,7 @@ fn connector_card(ui: &mut egui::Ui, pal: &Palette) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("🧩").size(16.0));
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("Connector card").small().strong());
+                    ui.label(RichText::new("Connector card").small().bold());
                     ui.label(
                         RichText::new("Open in Teams to view the card content.")
                             .small()
@@ -1638,7 +1639,7 @@ mod tests {
         let mut pending_images: HashSet<String> = HashSet::new();
         let mut emoji_textures: HashMap<String, egui::TextureHandle> = HashMap::new();
 
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let draw = |egui_ctx: &egui::Context,
                     input: egui::RawInput,
                     emoji_textures: &mut HashMap<String, egui::TextureHandle>,
@@ -1831,7 +1832,7 @@ mod tests {
         let blank = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
 
         // Frame 1: paint once so the composer records its field id.
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let mut draft = "hello".to_string();
         let (field_id, _) =
             draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
@@ -1851,7 +1852,7 @@ mod tests {
         assert!(draft.is_empty());
 
         // Fresh context: Shift+Tab breaks the line, cursor lands after it.
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let mut draft = "hello".to_string();
         let (field_id, _) =
             draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
@@ -1873,7 +1874,7 @@ mod tests {
         assert_eq!(draft, "hello\nx", "cursor must sit after the break");
 
         // Shift+Enter breaks too.
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let mut draft = "hello".to_string();
         let (field_id, _) =
             draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
@@ -1888,7 +1889,7 @@ mod tests {
         assert!(actions.is_empty(), "{actions:?}");
 
         // Unfocused combos leak nowhere: no send, no break.
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let mut draft = "hello".to_string();
         let _ = draw_composer_frame(&egui_ctx, blank.clone(), &mut draft, None);
         let (_, actions) = draw_composer_frame(

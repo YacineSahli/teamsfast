@@ -7,6 +7,7 @@ use crate::ui::conversation::Action;
 use egui::{RichText, ScrollArea, Ui};
 use ost::api::{MeetingInfo, SharedFile, TodoListInfo, TodoTaskInfo};
 use std::collections::HashMap;
+use crate::theme::RichTextBold;
 
 // ----------------------------------------------------------------- calendar
 
@@ -101,7 +102,7 @@ pub fn calendar_panel(
     fetched: Option<(u64, u64)>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(RichText::new("Calendar").strong().size(17.0));
+        ui.heading(RichText::new("Calendar").bold().size(17.0));
         // Range label per view.
         let label = match view {
             CalView::List => {
@@ -967,7 +968,7 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let time_txt = RichText::new(time).small().strong();
+                let time_txt = RichText::new(time).small().bold();
                 ui.label(if dead {
                     time_txt.weak()
                 } else {
@@ -978,7 +979,7 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                 } else {
                     &m.subject
                 })
-                .strong();
+                .bold();
                 ui.label(if dead { title.weak().strikethrough() } else { title });
                 if dead {
                     // Bordered chip — the plain small label read like body
@@ -1066,7 +1067,7 @@ pub fn files_panel(
         ui.separator();
     } else {
         ui.horizontal(|ui| {
-            ui.heading(RichText::new("Files").strong().size(17.0));
+            ui.heading(RichText::new("Files").bold().size(17.0));
             ui.label(RichText::new("Recent in OneDrive").small().weak());
             if loading {
                 ui.spinner();
@@ -1163,7 +1164,7 @@ fn file_row(ui: &mut Ui, f: &SharedFile, pal: &Palette, actions: &mut Vec<Action
                 // as broken — draw the name alone, nudged toward the row's
                 // optical center, and keep the row height (rhythm intact).
                 ui.add(
-                    egui::Label::new(RichText::new(&f.name).strong())
+                    egui::Label::new(RichText::new(&f.name).bold())
                         .truncate()
                         .selectable(false),
                 );
@@ -1257,7 +1258,7 @@ pub fn chat_files_panel(
         };
         ui.heading(
             RichText::new(format!("Files · {chat_label}"))
-                .strong()
+                .bold()
                 .size(15.0),
         );
         if loading {
@@ -1319,7 +1320,7 @@ pub fn todo_panel(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(RichText::new("To Do").strong().size(17.0));
+        ui.heading(RichText::new("To Do").bold().size(17.0));
         ui.label(RichText::new("Lists & tasks").small().weak());
         if loading {
             ui.spinner();
@@ -1371,7 +1372,7 @@ pub fn todo_panel(
                             .fit_to_exact_size(egui::Vec2::splat(14.0)),
                         );
                         if ui
-                            .selectable_label(sel, RichText::new(&l.name).strong())
+                            .selectable_label(sel, RichText::new(&l.name).bold())
                             .clicked()
                         {
                             st.selected_list = Some(l.id.clone());
@@ -1521,7 +1522,7 @@ pub fn activity_panel(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(RichText::new("Activity").strong().size(17.0));
+        ui.heading(RichText::new("Activity").bold().size(17.0));
         ui.label(RichText::new("Mentions, reactions, replies").small().weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -1591,7 +1592,7 @@ pub fn activity_panel(
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(&e.chat_name)
-                                        .strong()
+                                        .bold()
                                         .color(pal.text),
                                 )
                                 .selectable(false),
@@ -1658,7 +1659,7 @@ pub fn planner_panel(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(RichText::new("Planner").strong().size(17.0));
+        ui.heading(RichText::new("Planner").bold().size(17.0));
         ui.label(RichText::new("Boards from your teams").small().weak());
         if loading {
             ui.spinner();
@@ -1783,7 +1784,7 @@ pub fn shifts_panel(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(RichText::new("Shifts").strong().size(17.0));
+        ui.heading(RichText::new("Shifts").bold().size(17.0));
         ui.label(RichText::new("This week").small().weak());
         if loading {
             ui.spinner();
@@ -1816,7 +1817,7 @@ pub fn shifts_panel(
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(&sh.display_name).strong());
+                            ui.label(RichText::new(&sh.display_name).bold());
                             if sh.is_draft {
                                 ui.label(
                                     RichText::new("draft").small().weak(),
@@ -1896,7 +1897,7 @@ pub fn notes_panel(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(RichText::new("OneNote").strong().size(17.0));
+        ui.heading(RichText::new("OneNote").bold().size(17.0));
         ui.label(RichText::new("notebooks & pages").small().weak());
         if loading {
             ui.spinner();
@@ -2039,7 +2040,7 @@ mod tests {
     type Actions = std::rc::Rc<std::cell::RefCell<Vec<Action>>>;
 
     fn run(actions: &Actions, events: Vec<egui::Event>, mut body: impl FnMut(&mut Ui)) {
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let out = egui_ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -2162,7 +2163,7 @@ mod tests {
         let cell_w = ((900.0_f32 - 8.0) / 7.0).max(96.0);
         let center = egui::pos2(4.0 + (cell_w - 8.0) / 2.0, 18.0 + 20.0 + 8.0);
 
-        let egui_ctx = egui::Context::default();
+        let egui_ctx = crate::theme::test_ctx();
         let screen = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,

@@ -4,6 +4,7 @@ use crate::model::{avatar_color, initials};
 use crate::theme::Palette;
 use egui::{Color32, CornerRadius, FontId, Frame, RichText, Stroke, TextFormat, Ui, epaint};
 use std::collections::HashMap;
+use crate::theme::RichTextBold;
 
 // ---------------------------------------------------------------- buttons
 
@@ -565,7 +566,7 @@ pub fn render_pipe_table(ui: &mut Ui, pal: &crate::theme::Palette, tbl: &PipeTab
         .spacing(egui::vec2(12.0, 4.0))
         .show(ui, |ui| {
             for h in &tbl.header {
-                ui.label(RichText::new(h).size(size).strong());
+                ui.label(RichText::new(h).size(size).bold());
             }
             if !tbl.header.is_empty() {
                 ui.end_row();
@@ -1007,7 +1008,7 @@ pub fn render_segments(
                                     ui.label(RichText::new(text));
                                 }
                                 Piece::Bold(text) => {
-                                    ui.label(RichText::new(text).strong());
+                                    ui.label(RichText::new(text).bold());
                                 }
                                 Piece::Italic(text) => {
                                     ui.label(RichText::new(text).italics());
@@ -1031,7 +1032,7 @@ pub fn render_segments(
                     }
                 }
                 Seg::Bold(t) => {
-                    ui.label(RichText::new(t).strong());
+                    ui.label(RichText::new(t).bold());
                     row_has_content = true;
                 }
                 Seg::Italic(t) => {

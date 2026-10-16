@@ -453,6 +453,34 @@ pub fn apply_style(ctx: &egui::Context) {
     });
 }
 
+/// Real bold on the fastframe Inter stack.
+///
+/// egui 0.36's `RichText::strong()` is a COLOR bump ("stronger color"),
+/// not a weight change — with the variable-font setup the text renders
+/// at the same 400 weight (measured: identical strokes; the inter-bold
+/// family is wght 700). This swaps in the registered `inter-bold` family
+/// while keeping the size/color chain intact. Use wherever bold WEIGHT
+/// is meant; `.bold()` remains available for its color-only meaning.
+pub trait RichTextBold {
+    fn bold(self) -> Self;
+}
+
+impl RichTextBold for egui::RichText {
+    fn bold(self) -> Self {
+        self.family(fastframe_fonts::Weight::Bold.family())
+    }
+}
+
+/// A test Context with the APP's fonts installed — render tests on a
+/// stock `Context::default()` panic as soon as `.bold()` draws, because
+/// the inter-bold family isn't bound there.
+#[cfg(test)]
+pub fn test_ctx() -> egui::Context {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(fastframe_fonts::FontSetup::default().definitions());
+    ctx
+}
+
 /// Opaque `fg`-over-`base` blend at `alpha` (0.0–1.0). Panel-frame fills
 /// with `Color32::from_rgba_unmultiplied` render as opaque dark slabs on
 /// this egui build (the light ring banner was near-black), so tinted
