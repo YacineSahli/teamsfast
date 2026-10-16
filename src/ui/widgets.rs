@@ -910,7 +910,10 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
                     out.push(' ');
                 }
                 out.push_str(name);
-                out.push('\u{2009}');
+                // Full-width trailing space: the thin space (U+2009) read
+                // as fused with the next word in one-line previews
+                // ("TimmermansIt seems…").
+                out.push(' ');
             }
             Seg::Link { text, .. } => out.push_str(text),
             Seg::Quote(t) => out.push_str(t),
