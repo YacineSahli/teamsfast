@@ -470,6 +470,11 @@ pub struct TeamsFastApp {
     trouter_on: bool,
     pending_open_refresh: bool,
     last_open_refresh: Instant,
+    /// A debounced RefreshChat is on the worker and its Messages reply
+    /// hasn't landed. While set, further debounced refreshes hold off —
+    /// bursts re-arm the flag instead of queueing one fetch per message
+    /// (the worker is serial; each queued page-fetch delays sends).
+    refresh_in_flight: bool,
     typing: Option<(String, Instant)>,
     offline: Option<String>,
     last_offline_retry: Instant,
@@ -1004,6 +1009,7 @@ impl TeamsFastApp {
             trouter_on: false,
             pending_open_refresh: false,
             last_open_refresh: Instant::now() - Duration::from_secs(10),
+            refresh_in_flight: false,
             chat_mem: HashMap::new(),
             marked_read: HashMap::new(),
             last_receipts: HashMap::new(),
@@ -1552,6 +1558,9 @@ impl TeamsFastApp {
                     if self.selected.as_deref() != Some(chat_id.as_str()) {
                         continue;
                     }
+                    // A reply for the open chat means any in-flight
+                    // debounced refresh has landed.
+                    self.refresh_in_flight = false;
                     // Reconcile own pending sends: once the server shows the
                     // message (by clientmessageid) the bubble is real.
                     let cmids: std::collections::HashSet<&str> = messages
@@ -1794,7 +1803,12 @@ impl TeamsFastApp {
                 Event::TodoTasks { list_id, tasks } => {
                     self.todo_tasks.insert(list_id, tasks);
                 }
-                Event::Error(e) => self.error = Some(e),
+                Event::Error(e) => {
+                    // A failed worker op also un-wedges the debounced
+                    // refresh guard (a hung fetch must not stop refreshes).
+                    self.refresh_in_flight = false;
+                    self.error = Some(e);
+                }
             }
         }
         // Image → texture conversion needs the egui context; do parked ones now.
@@ -1853,11 +1867,24 @@ impl TeamsFastApp {
         // Debounced open-chat refresh on live activity — history only; the
         // view never blanks (the full open_chat re-run it replaced also
         // refetched the roster on every incoming message).
+        // 400ms debounce (was 900): the merge-capable page fetch makes the
+        // visible-bubble latency mostly debounce + one RTT; bursts re-arm
+        // instead of queueing (see refresh_in_flight).
+        // A fetch that dies without an event (transport error paths in the
+        // worker) must not wedge the guard — self-heal after 5s.
+        if self.refresh_in_flight && self.last_open_refresh.elapsed() >= Duration::from_secs(5)
+        {
+            self.refresh_in_flight = false;
+        }
         if self.pending_open_refresh
-            && self.last_open_refresh.elapsed() >= Duration::from_millis(900)
+            && !self.refresh_in_flight
+            && self.last_open_refresh.elapsed() >= Duration::from_millis(400)
         {
             self.pending_open_refresh = false;
+            let waited = self.last_open_refresh.elapsed();
             self.last_open_refresh = Instant::now();
+            self.refresh_in_flight = true;
+            log::debug!("open-chat refresh: firing after {}ms of activity", waited.as_millis());
             self.refresh_chat();
         }
     }

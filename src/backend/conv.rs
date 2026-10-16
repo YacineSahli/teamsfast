@@ -416,9 +416,11 @@ pub(crate) async fn refetch(ses: &Session, tx: &Sender<Event>, chat_id: &str) {
     let Some(c) = client(ses) else {
         return;
     };
+    let t0 = std::time::Instant::now();
     // Full replace: the live-activity refresh (RefreshChat) must also heal
     // deletions made by other clients, which a merged slice cannot see.
     if let Ok(page) = read_messages_page(c, chat_id, 50, None).await {
+        log::debug!("refresh page fetch: {}ms", t0.elapsed().as_millis());
         if let Some(archive) = ses.archive.as_ref()
             && let Err(e) = archive.save_messages(chat_id, &page.messages)
         {
