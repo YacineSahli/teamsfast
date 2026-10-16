@@ -150,6 +150,13 @@ remaining Phase 2 item.
   `LayoutJob` + `sections[0].format.coords = VariationCoords::new([(b"wght", 700.0)])`
   via `ctx.fonts_mut`. `FontFamily::Name("Bold")` compiles but falls back
   to a non-bold font.
+- `RichText::strong()` is a COLOR-ONLY flag in egui 0.36 ("stronger
+  color") — there is no `TextStyle::Bold`, and on the Inter stack the
+  color bump is invisible: it NEVER changes weight. Real bold =
+  `theme::RichTextBold::bold()` (`.family(inter-bold)`, wght 700); every
+  former `.strong()` site is `.bold()`. Render TESTS must build their
+  Context via `theme::test_ctx()` — a stock `Context::default()` PANICS
+  on the unbound `inter-bold` family the moment bold text draws.
 - `centered_and_justified` centers HORIZONTALLY only — vertical is
   top-anchored. Center empty states with painter text (see body_note /
   the Ready-branch empty state), not layout.
@@ -250,6 +257,12 @@ remaining Phase 2 item.
   bar open or tint one row — ignore in vision QA.
 
 ### Threading & crates
+- `ses.call_stop` is a `CallSlot { stop, done }`: the `done` flag is set
+  by a Drop guard living INSIDE the spawned call task (normal exit AND
+  panic unwind), and `call_slot_free()` reaps finished slots — before
+  run 3, only an explicit HangUp cleared the slot, so any call that ended
+  on its own (remote hang-up, safety cap) wedged "a call is already in
+  progress" forever.
 - Backend = one thread with a current-thread tokio runtime;
   `worker(cmd_rx, tx)` must be driven by `rt.block_on` (a dropped async fn
   future = silent dead backend, "Starting…" forever).
@@ -309,6 +322,16 @@ remaining Phase 2 item.
 - `fastframe_emoji::get()` must be called after `emoji::setup()`.
 
 ### Protocol / ost
+- parse_html (2026-10-16 run 3): `<br>` flushes text AND pushes
+  LineBreak; block opens (`<p>`/`<div>`) FLUSH before pushing their
+  LineBreak. Both were broken from day one (br = flush-only with an
+  unreachable LineBreak arm; block opens never flushed → `<p>a</p><p>b</p>`
+  concatenated to "ab"). `strip_tags` emits a boundary space for BLOCK
+  tags only (quote payloads run `</strong><p>` — plain concat fused
+  "NameAnd…"). Pipe tables (Jira `||h||`/`|c|`) render as striped grids
+  in chat text and card TextBlocks (`split_pipe_tables`/`parse_pipe_run`/
+  `render_pipe_table`, widgets.rs); chat rows arrive `<br>`-separated and
+  are grouped by a lookahead in render_segments.
 - Multi-line sends go out with `<br>` (teams-core `prose_html`, 2026-10-16):
   a literal `\n` inside `<p>` is whitespace per HTML — real clients (and
   our own block-noise collapsing) flatten it to a space. `<pre>` interiors
@@ -399,6 +422,15 @@ remaining Phase 2 item.
   only fills from unread/mentions, which headless runs usually lack.
   `TEAMSFAST_DRAFT="a|b"` seeds the composer draft (`|` = newline) for
   multi-line-composer QA (nothing sends).
+- `TEAMSFAST_TABLE=1` (pair with TEAMSFAST_OPEN) appends two synthetic
+  messages after the chat loads — a chat-HTML pipe table and a card with
+  the real k8s-scan Jira payload; re-seeds after network full-replaces.
+- `TEAMSFAST_CALDUMP=1` logs every calendar meeting's date/start/dur/
+  subject/canceled after fetch (lane/size forensics without a debugger).
+- Light-theme QA: the settings file is `~/.config/teamsfast/settings.json`
+  (NOT the state dir) and egui persists visuals in
+  `~/.local/share/teamsfast/app.ron` — `rm -f` it or the old visuals
+  override the saved theme.
 - `TEAMSFAST_VIDEOCALL=1` + `TEAMSFAST_HANGUP_AFTER=<secs>` place a
   camera-on echo call that hangs up on a timer — bounded headless call
   QA; the run's stdout carries the call summary
