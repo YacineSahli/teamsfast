@@ -1004,14 +1004,22 @@ fn bubble_parts(
 
     if open {
         let clip = ui.clip_rect();
-        // Emoji row (6 x 32) + separator + Reply/Edit/Delete/Copy.
-        const BAR_W: f32 = 396.0;
+        // Emoji row (6 x 30) + separator + Reply/Forward/Pin/Copy (+ Edit/
+        // Delete on own). First-frame sizes are the MEASURED settle sizes
+        // (LAYOUT_DEBUG, 1100x760) — the old 396x48 guess snapped the bar
+        // ~20px sideways and 12px up one frame after opening.
+        const BAR_H: f32 = 36.0;
+        const BAR_W_INCOMING: f32 = 417.0;
+        const BAR_W_OWN: f32 = 481.0;
         // Measured bar size from the previous frame (content-sized and
-        // stable); BAR_W/48 cover the first frame. Anchoring with the real
-        // width keeps the bar's right edge aligned to the bubble's.
+        // stable). Anchoring with the real width keeps the bar's right
+        // edge aligned to the bubble's.
         let (bar_w, bar_h) = bar_rect_prev
             .map(|r| (r.width(), r.height()))
-            .unwrap_or((BAR_W, 48.0));
+            .unwrap_or((
+                if own { BAR_W_OWN } else { BAR_W_INCOMING },
+                BAR_H,
+            ));
         // Right edge aligned to the bubble's; for INCOMING bubbles the bar
         // must not extend left into the avatar gutter (it read as
         // misaligned with the message).
