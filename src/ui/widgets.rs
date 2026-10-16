@@ -368,6 +368,259 @@ fn scan_emphasis(s: &str) -> Vec<Piece> {
     out
 }
 
+/// One parsed pipe table from connector text. This tenant's k8s capacity
+/// scans post Jira-wiki tables (`||header||` first row, `|cell|` data
+/// rows) inside card TextBlocks; markdown-shaped tables (`|h|h|` +
+/// `|---|---|` + rows) are accepted too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipeTable {
+    pub header: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+/// Width/length caps: a pasted bomb degrades to truncated cells/rows
+/// instead of a pathological layout pass.
+pub const TABLE_MAX_COLS: usize = 12;
+const TABLE_MAX_ROWS: usize = 60;
+
+/// A line belongs to a table when it starts with `|` after optional
+/// spaces. Wireshark filters, Jira attachment markup and SQL pastes all
+/// start with other characters, so this alone is conservative.
+fn table_line(l: &str) -> bool {
+    l.trim_start().starts_with('|')
+}
+
+/// Markdown separator row: pipe-separated runs of dashes/colons/spaces
+/// only (`| --- | :---: |`).
+fn is_sep_row(line: &str) -> bool {
+    let t = line.trim();
+    let inner = t.strip_prefix('|').unwrap_or(t);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    !inner.trim().is_empty()
+        && inner.split('|').all(|seg| {
+            !seg.trim().is_empty()
+                && seg.trim().chars().all(|c| c == '-' || c == ':' || c == ' ' || c == '\t')
+        })
+}
+
+/// Split one table line into cells. `\|` is a literal pipe; the leading
+/// and trailing delimiters are dropped, so a source-truncated row (no
+/// trailing `|`) still parses. Jira headers delimit with `||`.
+fn split_cells(line: &str, jira_header: bool) -> Vec<String> {
+    let t = line.trim();
+    let delim = if jira_header { "||" } else { "|" };
+    let body = t.strip_prefix(delim).unwrap_or(t);
+    let body = body.strip_suffix(delim).unwrap_or(body);
+    let mut cells: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                cur.push('|');
+                chars.next();
+            }
+            '|' => {
+                if !jira_header || chars.peek() == Some(&'|') {
+                    cells.push(cur.trim().to_string());
+                    cur.clear();
+                    if jira_header {
+                        chars.next();
+                    }
+                } else {
+                    // lone '|' inside a header line is data
+                    cur.push('|');
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() || !cells.is_empty() {
+        cells.push(cur.trim().to_string());
+    }
+    cells
+}
+
+/// Parse a run of table lines (caller guarantees ≥2 via `table_line`).
+fn parse_pipe_run(run: &[&str]) -> PipeTable {
+    let mut header: Vec<String> = Vec::new();
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let first = run[0].trim();
+    if first.starts_with("||") {
+        header = split_cells(first, true);
+    }
+    for (k, line) in run.iter().enumerate() {
+        if k == 0 && !header.is_empty() {
+            continue;
+        }
+        if is_sep_row(line) {
+            // markdown separator directly after the first line: that line
+            // was the header, not a data row
+            if k == 1 && header.is_empty() && !rows.is_empty() {
+                header = rows.remove(0);
+            }
+            continue;
+        }
+        let cells = split_cells(line, false);
+        if !cells.is_empty() {
+            rows.push(cells);
+        }
+    }
+    // Normalize to a bounded rectangle.
+    let cols = header
+        .len()
+        .max(rows.iter().map(|r| r.len()).max().unwrap_or(0))
+        .clamp(1, TABLE_MAX_COLS);
+    header.truncate(cols);
+    for r in &mut rows {
+        if r.len() > cols {
+            // keep overflow data visible inside the last kept cell
+            let rest = r.split_off(cols);
+            let joined = rest.join(" | ");
+            if let Some(last) = r.last_mut() {
+                if last.is_empty() {
+                    *last = joined;
+                } else {
+                    last.push_str(" | ");
+                    last.push_str(&joined);
+                }
+            }
+        }
+        r.resize(cols, String::new());
+    }
+    if rows.len() > TABLE_MAX_ROWS {
+        let extra = rows.len() - TABLE_MAX_ROWS;
+        rows.truncate(TABLE_MAX_ROWS);
+        let mut note = vec![format!("… +{extra} more rows")];
+        note.resize(cols, String::new());
+        rows.push(note);
+    }
+    PipeTable { header, rows }
+}
+
+/// Alternating prose/table decomposition of one text.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextChunk {
+    Prose(String),
+    Table(PipeTable),
+}
+
+/// Split text into prose paragraphs and pipe tables. A table is a run of
+/// ≥2 consecutive lines that each start with `|` (after trim); shorter
+/// runs — and pipe-free text — pass through as prose with every `\n`
+/// kept. Used by the card TextBlock path; the chat path groups segments
+/// first (strip_block_noise collapses raw newlines) and calls
+/// `parse_pipe_run` directly.
+pub fn split_pipe_tables(text: &str) -> Vec<TextChunk> {
+    if !text.contains('|') {
+        return vec![TextChunk::Prose(text.to_string())];
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<TextChunk> = Vec::new();
+    let mut prose: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if table_line(lines[i]) {
+            let mut j = i;
+            while j < lines.len() && table_line(lines[j]) {
+                j += 1;
+            }
+            if j - i >= 2 {
+                if !prose.is_empty() {
+                    out.push(TextChunk::Prose(prose.join("\n")));
+                    prose.clear();
+                }
+                out.push(TextChunk::Table(parse_pipe_run(&lines[i..j])));
+                i = j;
+                continue;
+            }
+        }
+        prose.push(lines[i]);
+        i += 1;
+    }
+    if !prose.is_empty() {
+        out.push(TextChunk::Prose(prose.join("\n")));
+    }
+    if out.is_empty() {
+        out.push(TextChunk::Prose(String::new()));
+    }
+    out
+}
+
+/// Render a parsed pipe table as a striped grid. `id` must be stable
+/// across frames (Grid persists column widths under it) and unique per
+/// table position in the view.
+pub fn render_pipe_table(ui: &mut Ui, pal: &crate::theme::Palette, tbl: &PipeTable, id: egui::Id, size: f32) {
+    let cols = tbl
+        .header
+        .len()
+        .max(tbl.rows.iter().map(|r| r.len()).max().unwrap_or(0));
+    if cols == 0 || (tbl.header.is_empty() && tbl.rows.is_empty()) {
+        return;
+    }
+    egui::Grid::new(id)
+        .striped(true)
+        .num_columns(cols)
+        .min_col_width(24.0)
+        .spacing(egui::vec2(12.0, 4.0))
+        .show(ui, |ui| {
+            for h in &tbl.header {
+                ui.label(RichText::new(h).size(size).strong());
+            }
+            if !tbl.header.is_empty() {
+                ui.end_row();
+            }
+            for row in &tbl.rows {
+                for c in row {
+                    render_table_cell(ui, pal, c, size);
+                }
+                ui.end_row();
+            }
+        });
+}
+
+/// One grid cell. Cells keep emphasis/links (`*Increase*` action cells are
+/// real payloads), but grid cells don't wrap — long values ellipsize
+/// (char-safe) with the full text on hover.
+fn render_table_cell(ui: &mut Ui, pal: &crate::theme::Palette, text: &str, size: f32) {
+    const CAP: usize = 36;
+    let shown: String = if text.chars().count() > CAP {
+        let mut s: String = text.chars().take(CAP - 1).collect();
+        s.push('…');
+        s
+    } else {
+        text.to_string()
+    };
+    let truncated = shown.len() < text.len();
+    if !shown.contains('*') && !shown.contains('_') && !shown.contains("](") {
+        let rt = ui.label(RichText::new(&shown).size(size));
+        if truncated {
+            rt.on_hover_text(text);
+        }
+        return;
+    }
+    let rt = ui
+        .horizontal(|ui| {
+            for piece in split_markdown_links(&shown) {
+                match piece {
+                    Piece::Plain(t) | Piece::Bold(t) | Piece::Italic(t) => {
+                        ui.label(RichText::new(t).size(size));
+                    }
+                    Piece::MdLink { text: lt, url } => {
+                        ui.hyperlink_to(
+                            RichText::new(shorten_link_text(&lt)).size(size).underline().color(pal.link),
+                            url,
+                        );
+                    }
+                }
+            }
+        })
+        .response;
+    if truncated {
+        rt.on_hover_text(text);
+    }
+}
+
 /// Minimal Teams-HTML walker into segments. Unknown tags are unwrapped,
 /// their text kept; scripts/styles dropped. Good enough for chat content.
 pub fn parse_html(raw: &str) -> Vec<Seg> {
@@ -695,7 +948,44 @@ pub fn render_segments(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let mut row_has_content = false;
-        for seg in segs {
+        let mut idx = 0;
+        while idx < segs.len() {
+            // Pipe-table run: `<br>`-separated rows arrive as Text segs
+            // split by LineBreak segs (strip_block_noise collapses raw
+            // newlines, so multi-line text only takes this shape). Group
+            // ≥2 leading-pipe rows and render as a grid before the
+            // per-segment match; a lone pipe line falls through as text.
+            if let Seg::Text(t) = &segs[idx]
+                && t.trim_start().starts_with('|')
+                && idx + 2 < segs.len()
+            {
+                let mut lines: Vec<&str> = vec![t.as_str()];
+                let mut j = idx + 1;
+                while j + 1 < segs.len() {
+                    if matches!(segs[j], Seg::LineBreak)
+                        && let Seg::Text(t2) = &segs[j + 1]
+                        && t2.trim_start().starts_with('|')
+                    {
+                        lines.push(t2.as_str());
+                        j += 2;
+                    } else {
+                        break;
+                    }
+                }
+                if lines.len() >= 2 {
+                    if row_has_content {
+                        ui.end_row();
+                    }
+                    let tbl = parse_pipe_run(&lines);
+                    let id = ui.id().with(("pipe-table", idx, lines.len()));
+                    render_pipe_table(ui, pal, &tbl, id, 13.0);
+                    ui.end_row();
+                    row_has_content = false;
+                    idx = j;
+                    continue;
+                }
+            }
+            let seg = &segs[idx];
             match seg {
                 Seg::Text(t) => {
                     row_has_content = true;
@@ -882,6 +1172,7 @@ pub fn render_segments(
                     }
                 }
             }
+            idx += 1;
         }
     });
     let _ = (TextFormat::default(), epaint::Shadow::NONE);
@@ -1269,5 +1560,146 @@ mod br_tests {
         let segs = parse_html("a<br><br>b");
         let breaks = segs.iter().filter(|s| matches!(s, Seg::LineBreak)).count();
         assert_eq!(breaks, 1, "Teams renders blank lines as a single gap");
+    }
+}
+
+#[cfg(test)]
+mod pipe_table_tests {
+    use super::{parse_html, render_pipe_table, split_pipe_tables, TextChunk};
+
+    /// The real k8s-capacity TextBlock shape: Jira `||header||` row, pipe
+    /// data rows, and a row truncated mid-cell by the connector (the
+    /// source caps comment length — "ast..." ends the payload).
+    #[test]
+    fn jira_shape_parses_with_truncated_tail() {
+        let text = concat!(
+            " Resource request findings\n",
+            "\n",
+            "||Workload||Container||CPU req → suggested||Mem req → suggested||Action||\n",
+            "|qa-default|api|0.500 → 0.20|512Mi → 384Mi|Reduce|\n",
+            "|qa-default|management-api|0.200 → 0.05|500Mi → 384Mi|Reduce|\n",
+            "|qa-default|ast..."
+        );
+        let chunks = split_pipe_tables(text);
+        assert_eq!(chunks.len(), 2, "prose + one table");
+        assert!(matches!(&chunks[0], TextChunk::Prose(p) if p.contains("Resource request")));
+        let TextChunk::Table(t) = &chunks[1] else {
+            panic!("second chunk must be the table");
+        };
+        assert_eq!(
+            t.header,
+            vec![
+                "Workload".to_string(),
+                "Container".to_string(),
+                "CPU req → suggested".to_string(),
+                "Mem req → suggested".to_string(),
+                "Action".to_string(),
+            ]
+        );
+        assert_eq!(t.rows.len(), 3);
+        assert_eq!(t.rows[0][0], "qa-default");
+        assert_eq!(t.rows[0][4], "Reduce");
+        // truncated row keeps its cells, padded to the header width
+        assert_eq!(t.rows[2][0], "qa-default");
+        assert_eq!(t.rows[2][1], "ast...");
+        assert_eq!(t.rows[2].len(), 5);
+    }
+
+    #[test]
+    fn markdown_shape_separator_makes_header() {
+        let chunks = split_pipe_tables("|H1|H2|\n|---|---|\n|a|b|");
+        let TextChunk::Table(t) = &chunks[0] else {
+            panic!("must be a table");
+        };
+        assert_eq!(t.header, vec!["H1".to_string(), "H2".to_string()]);
+        assert_eq!(t.rows, vec![vec!["a".to_string(), "b".to_string()]]);
+    }
+
+    /// Lone pipe lines (SQL pastes, Wireshark `||` filters, `a | b`
+    /// prose) never trigger a table: two CONSECUTIVE pipe-starting lines
+    /// are required.
+    #[test]
+    fn single_pipe_lines_stay_prose() {
+        let text = "| d143a72db18de646 | 1 | 0 |";
+        assert!(matches!(split_pipe_tables(text).as_slice(), [TextChunk::Prose(p)] if p == text));
+        let wireshark = "{noformat}sip.Call-ID == \"x\" || sip.Call-ID == \"y\"{noformat}";
+        assert!(matches!(split_pipe_tables(wireshark).as_slice(), [TextChunk::Prose(p)] if p == wireshark));
+    }
+
+    #[test]
+    fn escaped_pipe_is_literal() {
+        let chunks = split_pipe_tables("|a\\|b|c|\n|d|e|f|");
+        let TextChunk::Table(t) = &chunks[0] else {
+            panic!("must be a table");
+        };
+        assert_eq!(t.rows[0][0], "a|b");
+        assert_eq!(t.rows[0][1], "c");
+    }
+
+    #[test]
+    fn wide_and_long_runs_cap() {
+        let mut wide = String::from("||h0||h1||h2");
+        for i in 3..18 {
+            wide.push_str(&format!("||h{i}"));
+        }
+        wide.push_str("||\n");
+        wide.push_str(&"|c0|c1|c2|c3|c4|c5|c6|c7|c8|c9|c10|c11|c12|c13|c14");
+        let chunks = split_pipe_tables(&wide);
+        let TextChunk::Table(t) = &chunks[0] else {
+            panic!("must be a table");
+        };
+        assert_eq!(t.header.len(), super::TABLE_MAX_COLS);
+        assert!(t.rows[0].len() == super::TABLE_MAX_COLS);
+        assert!(t.rows[0].last().unwrap().contains("c11"));
+        assert!(t.rows[0].last().unwrap().contains("c14"), "overflow merges into the last cell");
+
+        let mut long = String::from("|a|\n|b|");
+        for i in 0..70 {
+            long.push_str(&format!("\n|r{i}|"));
+        }
+        let chunks = split_pipe_tables(&long);
+        let TextChunk::Table(t) = &chunks[0] else {
+            panic!("must be a table");
+        };
+        assert_eq!(t.rows.len(), super::TABLE_MAX_ROWS + 1);
+        assert!(t.rows.last().unwrap()[0].contains("+12 more rows"));
+    }
+
+    /// `<br>`-separated chat rows produce exactly the Text/LineBreak/Text
+    /// segment shape the render_segments lookahead groups.
+    #[test]
+    fn chat_rows_arrive_as_linebreak_split_segs() {
+        let segs = parse_html("|a|b|<br>|c|d|<br>|e|f|");
+        let shape: Vec<&str> = segs
+            .iter()
+            .map(|s| match s {
+                super::Seg::Text(t) if t.trim_start().starts_with('|') => "T",
+                super::Seg::LineBreak => "L",
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(shape, vec!["T", "L", "T", "L", "T"]);
+    }
+
+    /// Render smoke test: tables render without panicking and two grids
+    /// in one frame get distinct ids (the "Second use of Grid ID" trap).
+    #[test]
+    fn render_two_tables_smoke() {
+        crate::emoji::setup();
+        let ctx = egui::Context::default();
+        let pal = crate::theme::Palette::dark();
+        let t1 = super::parse_pipe_run(&["||A||B||", "|1|2|", "|3|4|"]);
+        let t2 = super::parse_pipe_run(&["||C||D||", "|x|y|"]);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                super::render_pipe_table(ui, &pal, &t1, egui::Id::new("tbl-a"), 13.0);
+                super::render_pipe_table(ui, &pal, &t2, egui::Id::new("tbl-b"), 13.0);
+                let segs = parse_html("|a|b|<br>|c|d|");
+                super::render_segments(ui, &segs, &pal, |_, _| false, |_, _, _| {}, |_, _, _| {});
+            });
+            out.textures_delta.clear();
+        }
     }
 }

@@ -179,38 +179,61 @@ fn render_element(
                 "accent" => pal.accent,
                 _ => pal.text,
             };
-            // Connector card text (Jira etc.) carries markdown links and
-            // literal */_ markers — render link-shaped spans as links and
-            // emphasis as styled text, the rest plain with the card's
-            // size/weight/color. horizontal_wrapped keeps the pieces INLINE
+            // Connector card text (Jira etc.) carries markdown links,
+            // literal */_ markers AND pipe tables (the k8s capacity scans
+            // post Jira-wiki `||header||` tables) — render link-shaped
+            // spans as links, emphasis as styled text, table runs as a
+            // striped grid. horizontal_wrapped keeps the pieces INLINE
             // (a label per piece in the vertical layout tore multi-piece
             // text one fragment per line).
-            if text.contains("](") || text.contains('*') || text.contains('_') {
-                ui.horizontal_wrapped(|ui| {
-                    for piece in crate::ui::widgets::split_markdown_links(text) {
-                        match piece {
-                            crate::ui::widgets::Piece::Plain(t) => {
-                                let mut rt = RichText::new(t).size(size).color(color);
-                                if weight {
-                                    rt = rt.strong();
+            let markdown = text.contains("](") || text.contains('*') || text.contains('_');
+            let tableish = text.contains('|');
+            if markdown || tableish {
+                let mut tbl_idx = 0usize;
+                for chunk in crate::ui::widgets::split_pipe_tables(text) {
+                    match chunk {
+                        crate::ui::widgets::TextChunk::Prose(p) => {
+                            let text = p.as_str();
+                            if text.trim().is_empty() {
+                                continue;
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                for piece in crate::ui::widgets::split_markdown_links(text) {
+                                    match piece {
+                                        crate::ui::widgets::Piece::Plain(t) => {
+                                            let mut rt = RichText::new(t).size(size).color(color);
+                                            if weight {
+                                                rt = rt.strong();
+                                            }
+                                            ui.label(rt);
+                                        }
+                                        crate::ui::widgets::Piece::Bold(t) => {
+                                            ui.label(RichText::new(t).size(size).color(color).strong());
+                                        }
+                                        crate::ui::widgets::Piece::Italic(t) => {
+                                            ui.label(RichText::new(t).size(size).color(color).italics());
+                                        }
+                                        crate::ui::widgets::Piece::MdLink { text: lt, url } => {
+                                            ui.hyperlink_to(
+                                                RichText::new(lt).size(size).underline().color(pal.link),
+                                                url,
+                                            );
+                                        }
+                                    }
                                 }
-                                ui.label(rt);
-                            }
-                            crate::ui::widgets::Piece::Bold(t) => {
-                                ui.label(RichText::new(t).size(size).color(color).strong());
-                            }
-                            crate::ui::widgets::Piece::Italic(t) => {
-                                ui.label(RichText::new(t).size(size).color(color).italics());
-                            }
-                            crate::ui::widgets::Piece::MdLink { text: lt, url } => {
-                                ui.hyperlink_to(
-                                    RichText::new(lt).size(size).underline().color(pal.link),
-                                    url,
-                                );
-                            }
+                            });
+                        }
+                        crate::ui::widgets::TextChunk::Table(t) => {
+                            ui.add_space(2.0);
+                            // salt (card content hash) + table index: stable
+                            // across frames, unique per table in the card.
+                            let id = egui::Id::new((salt, tbl_idx));
+                            crate::ui::widgets::render_pipe_table(ui, pal, &t, id, size);
+                            ui.add_space(3.0);
+                            tbl_idx += 1;
                         }
                     }
-                });
+                }
             } else {
                 let mut rt = RichText::new(text).size(size).color(color);
                 if weight {
