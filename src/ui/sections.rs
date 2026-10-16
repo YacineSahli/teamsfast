@@ -530,17 +530,20 @@ fn meeting_pill(
     };
     let text_w = rect.width() - 10.0;
     if compact || rect.height() < 30.0 {
-        let subj_e = ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0));
-        // Lane too narrow for "time title" — a title fragment still says
-        // more than a bare time; never render "14:00 …" (time + nothing).
-        // An EMPTY subject renders the time alone (the old empty line left
-        // a stroke-only pill that read as a stray glyph in month cells).
+        // Lane too narrow for "time title": keep the TIME whenever the
+        // fragment says anything — a pure-ellipsis fragment falls back to
+        // the title at full width ("14:00 …" says nothing). An EMPTY
+        // subject renders the time alone (an empty line left a stroke-only
+        // pill that read as a stray glyph in month cells).
         let line = if subject.trim().is_empty() {
             time.clone()
-        } else if subj_e.chars().count() <= 2 {
-            ellipsize(ui, &subject, 10.0, text_w.max(8.0))
         } else {
-            format!("{time} {subj_e}")
+            let frag = ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0));
+            if frag.chars().all(|c| c == '…' || c.is_whitespace()) {
+                format!("{time} {}", ellipsize(ui, &subject, 10.0, text_w.max(8.0)))
+            } else {
+                format!("{time} {frag}")
+            }
         };
         let r = p.text(
             rect.left_center() + egui::vec2(5.0, 0.0),
