@@ -12,7 +12,9 @@ pub async fn fetch_image(ses: &Session, tx: &Sender<Event>, url: &str) {
         let _ = tx.send(Event::ImageFailed(url.to_string()));
         return;
     };
-    let client = c.clone();
+    // c is already an owned-enough handle (the old .clone() cloned the
+    // reference — a no-op the compiler flags).
+    let client = c;
     let url_owned = url.to_string();
     let tx2 = tx.clone();
     let url_for_decode = url_owned.clone();

@@ -51,6 +51,8 @@ pub enum Action {
         remove: bool,
     },
     LoadOlder,
+    /// Mark-read rides with OpenChat today; kept for explicit calls.
+    #[allow(dead_code)]
     MarkRead(String),
     Attach,
     FetchImage(String),
@@ -790,7 +792,7 @@ fn bubble_parts(
     ctx: &mut ConvCtx<'_>,
     m: &MessageInfo,
     own: bool,
-    grouped: bool,
+    _grouped: bool,
     last_of_group: bool,
 ) {
 

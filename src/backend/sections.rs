@@ -569,7 +569,6 @@ pub async fn load_shifts(ses: &Session, tx: &Sender<Event>) {
             }
         }
     }
-    let _ = tx.send(Event::Shifts(Vec::new()));
 }
 
 fn dirs_downloads() -> std::path::PathBuf {

@@ -137,7 +137,10 @@ impl Archive {
         Ok(())
     }
 
-    /// Our last recorded read position for a chat, if any.
+    /// Our last recorded read position for a chat, if any. Horizons live
+    /// server-side in the common path; this is the offline fallback (kept,
+    /// see AGENTS.md read-state notes).
+    #[allow(dead_code)]
     pub fn read_horizon(&self, chat_id: &str) -> Result<Option<u64>> {
         let ms: Option<i64> = self.conn.query_row(
             "SELECT last_read_ms FROM read_state WHERE chat_id = ?1",
@@ -380,6 +383,9 @@ impl Archive {
     }
 
     /// One older page strictly before `before_ts`, oldest first.
+    /// Offline history paging — wired when offline mode grows older-page
+    /// loading (see AGENTS.md "Local archive").
+    #[allow(dead_code)]
     pub fn load_older(
         &self,
         chat_id: &str,

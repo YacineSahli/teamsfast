@@ -224,7 +224,9 @@ pub const DESKTOP_THEMES: fastframe_theme::DesktopThemes = fastframe_theme::Desk
     presets: true,
 };
 
-/// The shared palettes, as TeamsFast reads them.
+/// The shared palettes, as TeamsFast reads them. Unused in-app today
+/// (themes load through the Catalog); kept as the palette bridge API.
+#[allow(dead_code)]
 pub fn presets() -> impl Iterator<Item = fastframe_theme::CustomTheme<Palette>> {
     fastframe_theme::presets::themes::<Palette>()
 }
@@ -246,6 +248,7 @@ pub fn themes_dir() -> std::path::PathBuf {
 pub use fastframe_theme::display_name;
 
 pub type Catalog = fastframe_theme::Catalog<Palette>;
+#[allow(dead_code)]
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
 
 /// Persisted app settings. Every field defaults so older settings files

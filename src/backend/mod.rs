@@ -22,7 +22,7 @@ use anyhow::Result;
 use ost::api::client::TeamsClient;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use ost::api::{list_chats_data, ChatInfo, TeamInfo};
@@ -93,6 +93,8 @@ pub enum Command {
     /// Fetch who-read-what for a chat (consumption horizons).
     ReadReceipts(String),
     // ---- sections ----
+    /// Section loaders off the rail (product call) — kept for the return.
+    #[allow(dead_code)]
     LoadCalendar,
     /// Meetings for an arbitrary window (week/month navigation).
     LoadCalendarRange { start_unix: u64, days: u64 },
@@ -148,7 +150,8 @@ pub enum Command {
     },
     /// Recent files shared in one chat.
     ChatFiles(String),
-    // ---- onenote ----
+    // ---- onenote ---- (off the rail; kept for the return)
+    #[allow(dead_code)]
     LoadNotes,
     ReadNotePage { page_id: String },
     AppendNote { page_id: String, text: String },
@@ -170,6 +173,8 @@ pub enum MsgAction {
     Deleted,
     Reacted,
     Replied,
+    /// Read-state events arrive via the server horizon today.
+    #[allow(dead_code)]
     MarkedRead,
 }
 
@@ -211,8 +216,14 @@ pub enum Event {
         older_link: Option<String>,
     },
     /// An action (edit/delete/react/reply/mark-read) succeeded; refetch.
-    ActionOk { chat_id: String, action: MsgAction },
+    /// chat_id rides along for future per-chat scoping; unread today.
+    ActionOk {
+        #[allow(dead_code)]
+        chat_id: String,
+        action: MsgAction,
+    },
     SearchResults {
+        #[allow(dead_code)]
         query: String,
         hits: Vec<ost::api::SearchHitInfo>,
         more: bool,
@@ -228,13 +239,22 @@ pub enum Event {
     /// An image failed to load (show a broken-image glyph).
     ImageFailed(String),
     UploadProgress {
+        #[allow(dead_code)]
         chat_id: String,
         name: String,
         sent: u64,
         total: u64,
     },
-    UploadDone { chat_id: String, name: String },
-    DownloadDone { name: String, path: PathBuf },
+    UploadDone {
+        chat_id: String,
+        #[allow(dead_code)]
+        name: String,
+    },
+    DownloadDone {
+        #[allow(dead_code)]
+        name: String,
+        path: PathBuf,
+    },
     TrouterConnected,
     /// Message search refused by Graph on this tenant (token lacks Chat.Read).
     SearchUnavailable(String),

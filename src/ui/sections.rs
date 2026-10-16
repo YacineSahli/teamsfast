@@ -115,9 +115,9 @@ pub fn calendar_panel(
                 format!(
                     "{} {} – {} {}",
                     monday.day(),
-                    MONTH_ABBR(monday.month()),
+                    month_abbr(monday.month()),
                     sunday.day(),
-                    MONTH_ABBR(sunday.month()),
+                    month_abbr(sunday.month()),
                 )
             }
             CalView::Month => {
@@ -125,7 +125,7 @@ pub fn calendar_panel(
                     .first_of_month()
                     .checked_add(jiff::ToSpan::months(i64::from(*month_offset)))
                     .unwrap_or_else(|_| today_date().first_of_month());
-                format!("{} {}", MONTH_ABBR(first.month()), first.year())
+                format!("{} {}", month_abbr(first.month()), first.year())
             }
         };
         ui.label(RichText::new(label).small().weak());
@@ -249,7 +249,7 @@ pub fn calendar_panel(
     }
 }
 
-fn MONTH_ABBR(month: i8) -> &'static str {
+fn month_abbr(month: i8) -> &'static str {
     const M: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -300,7 +300,7 @@ fn month_window(offset: i32) -> (u64, u64) {
 /// every frame until the reply lands queues another identical command (a
 /// Graph round-trip is ~1s ≈ 60 frames of duplicates).
 fn ensure_fetched(
-    ui: &mut Ui,
+    _ui: &mut Ui,
     actions: &mut Vec<Action>,
     fetched: Option<(u64, u64)>,
     window: (u64, u64),
@@ -1515,6 +1515,7 @@ pub fn activity_panel(
 
 /// One planner board: a plan's buckets and tasks.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct PlannerBoard {
     pub team: String,
     pub plan: String,
@@ -1523,6 +1524,7 @@ pub struct PlannerBoard {
 }
 
 /// Planner boards grouped by bucket columns.
+#[allow(dead_code)]
 pub fn planner_panel(
     ui: &mut Ui,
     boards: &[PlannerBoard],
@@ -1647,6 +1649,7 @@ pub fn planner_panel(
 // ----------------------------------------------------------------- shifts
 
 /// This week's shifts, grouped per person.
+#[allow(dead_code)]
 pub fn shifts_panel(
     ui: &mut Ui,
     shifts: &[ost::api::ShiftInfo],
@@ -1732,13 +1735,17 @@ pub fn shifts_panel(
 
 /// Notebook → sections → pages tree (app-side; core returns flat pieces).
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct NotebookTree {
+    #[allow(dead_code)]
     pub name: String,
     pub sections: Vec<ost::api::SectionInfo>,
 }
 
 pub struct NotesPanelState {
+    #[allow(dead_code)]
     pub open_page: Option<(String, String)>, // (page_id, title)
+    #[allow(dead_code)]
     pub append_text: String,
 }
 
@@ -1753,6 +1760,7 @@ impl Default for NotesPanelState {
 
 /// OneNote browser: notebooks → sections → pages; a selected page renders
 /// its text with an append box.
+#[allow(dead_code)]
 pub fn notes_panel(
     ui: &mut Ui,
     notebooks: &[NotebookTree],

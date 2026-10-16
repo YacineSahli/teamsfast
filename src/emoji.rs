@@ -12,15 +12,3 @@ pub fn setup() {
             .install();
     });
 }
-
-/// Find + map the emoji fonts off the UI thread before the first frame.
-pub fn warm_up() {
-    setup();
-    fastframe_emoji::warm_up();
-}
-
-/// The egui plugin that colours emoji in every text egui draws.
-pub fn plugin() -> fastframe_emoji::EmojiPlugin {
-    setup();
-    fastframe_emoji::EmojiPlugin::default()
-}

@@ -21,8 +21,10 @@ enum State {
     Ready,
 }
 
-/// The active section (left icon rail).
+/// The active section (left icon rail). The Planner/Shifts/Notes arms are
+/// deliberately kept — the rail removal was a product call, not a cleanup.
 #[derive(PartialEq, Clone, Copy)]
+#[allow(dead_code)]
 enum MainView {
     Chat,
     Teams,
@@ -66,6 +68,9 @@ const CHAT_MEM_CAP: usize = 12;
 #[derive(Clone)]
 pub struct IncomingRing {
     pub name: String,
+    /// Part of the ring payload for the incoming-call capture work; no
+    /// reader yet (see "incoming-call ringing hardening" in AGENTS.md).
+    #[allow(dead_code)]
     pub mri: String,
     pub has_video: bool,
     pub raw: String,
@@ -288,6 +293,8 @@ pub fn qa_incoming_ring() -> IncomingRing {    let raw = serde_json::json!({
 /// One update-flow message from the update thread.
 #[derive(Debug, Clone)]
 pub enum UpdateEvent {
+    /// Some updater paths emit an explicit in-progress beat.
+    #[allow(dead_code)]
     Checking,
     /// A newer release exists (version, release page URL).
     Available { version: String, url: String },
@@ -324,6 +331,8 @@ pub struct UpdateDialog {
 pub enum UpdateDialogKind {
     Progress(u8),
     Ready,
+    /// Kept for updater paths that surface failure as a state.
+    #[allow(dead_code)]
     Failed(String),
     Unsupported(String),
 }
@@ -565,9 +574,13 @@ pub struct TeamsFastApp {
     chat_files_loading: bool,
     /// Rename-channel dialog (team, channel, current name).
     channel_rename: Option<(String, String, String)>,
-    /// OneNote state.
+    /// OneNote state (section off the rail by product decision; kept for
+    /// a future return — the dead_code is intent, not neglect).
+    #[allow(dead_code)]
     notebooks: Vec<crate::ui::sections::NotebookTree>,
+    #[allow(dead_code)]
     notes_page: Option<ost::api::NotePage>,
+    #[allow(dead_code)]
     notes: crate::ui::sections::NotesPanelState,
     notes_loading: bool,
     shifts: Vec<ost::api::ShiftInfo>,
@@ -1630,11 +1643,6 @@ impl TeamsFastApp {
                     self.searching = false;
                     self.search_open = true;
                 }
-                Event::SearchUnavailable(note) => {
-                    self.search_note = Some(note);
-                    self.searching = false;
-                    self.search_open = true;
-                }
                 Event::Teams(teams) => {
                     self.teams = teams;
                     self.loading_teams = false;
@@ -1687,7 +1695,7 @@ impl TeamsFastApp {
                         .map(|(u, (w, h))| (u, [w, h]))
                         .collect();
                 }
-                Event::ImageFailed(url) => {
+                Event::ImageFailed(_url) => {
                     // Keep the url in pending_images: no infinite refetch
                     // loop for URLs that never decode.
                 }
@@ -3177,7 +3185,7 @@ impl eframe::App for TeamsFastApp {
                             ),
                         )),
                 )
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
                         ui.label(RichText::new("⚠").color(self.palette.warning));
@@ -3397,7 +3405,7 @@ impl eframe::App for TeamsFastApp {
                             ),
                         )),
                 )
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     let phase = self
                         .call_media
                         .as_ref()
@@ -3594,7 +3602,7 @@ impl eframe::App for TeamsFastApp {
                     // exact: default_size collapsed to ~142px on this egui
                     // in some frames, squeezing the tile text.
                     .exact_size(340.0)
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.add_space(8.0);
@@ -3975,12 +3983,12 @@ impl eframe::App for TeamsFastApp {
                     || self.team_dialog.open,
                 actions: &mut actions,
             };
-            egui::Panel::bottom("composer").show_inside(ui, |ui| {
+            egui::Panel::bottom("composer").show(ui, |ui| {
                 conversation::conversation_composer(ui, &mut ctx, &mut self.draft);
             });
             let bench = std::env::var("TEAMSFAST_SCROLLBENCH").as_deref() == Ok("1");
             let t_bench = (bench).then(std::time::Instant::now);
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 conversation::conversation_messages(ui, &mut ctx);
             });
             if let Some(t0) = t_bench {
@@ -3991,7 +3999,7 @@ impl eframe::App for TeamsFastApp {
                 self.apply(a);
             }
         } else if chat_family {
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
                         ui.add_space(24.0);
@@ -4163,7 +4171,7 @@ impl eframe::App for TeamsFastApp {
             });
         } else {
             // Section views own the whole central area.
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let mut actions: Vec<Action> = Vec::new();
                 match self.main_view {
                     MainView::Calendar => crate::ui::sections::calendar_panel(

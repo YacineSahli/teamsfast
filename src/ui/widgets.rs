@@ -131,12 +131,7 @@ fn paint_icon_centered(
 }
 
 /// A quiet text button (ghost style).
-pub fn ghost_button(ui: &mut Ui, text: &str, tip: &str) -> egui::Response {
-    let btn = egui::Button::new(RichText::new(text).small())
-        .fill(Color32::TRANSPARENT)
-        .min_size(egui::vec2(28.0, 28.0));
-    ui.add(btn).on_hover_text(tip)
-}
+
 
 /// One avatar circle with initials.
 pub fn avatar(ui: &mut Ui, name: &str, size: f32) {

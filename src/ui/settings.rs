@@ -586,7 +586,7 @@ fn storage(
     }
 }
 
-fn about(ui: &mut Ui, pal: &crate::theme::Palette) {
+fn about(ui: &mut Ui, _pal: &crate::theme::Palette) {
     ui.strong(format!("TeamsFast {VERSION}"));
     ui.label("A native Microsoft Teams client for Linux.");
     ui.label(RichText::new("Rust + egui on the fastframe stack and the teams-core protocol library — no browser engine anywhere.").small().weak());
