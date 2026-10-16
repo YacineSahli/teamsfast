@@ -134,10 +134,26 @@ fn day_label_from(y: i64, m: i64, d: i64) -> String {
     } else if yesterday {
         "Yesterday".into()
     } else if y == ny {
-        format!("{} {}", d, MONTHS[(m - 1) as usize % 12])
+        format!("{} {} {}", weekday_abbr(y, m, d), d, MONTHS[(m - 1) as usize % 12])
     } else {
-        format!("{} {} {}", d, MONTHS[(m - 1) as usize % 12], y)
+        format!(
+            "{} {} {} {}",
+            weekday_abbr(y, m, d),
+            d,
+            MONTHS[(m - 1) as usize % 12],
+            y
+        )
     }
+}
+
+/// "Sat" for a civil date — the calendar list (and chat day separators)
+/// use the weekday as the primary orientation cue in multi-day spans.
+fn weekday_abbr(y: i64, m: i64, d: i64) -> &'static str {
+    const WD: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let idx = jiff::civil::date(y as i16, m as i8, d as i8)
+        .weekday()
+        .to_monday_zero_offset();
+    WD[idx as usize % 7]
 }
 
 /// Normalize a Teams timestamp (epoch-ms string or ISO-8601) to epoch

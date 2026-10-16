@@ -18,10 +18,9 @@ use std::collections::HashMap;
 pub fn body_note(ui: &mut Ui, spinner: bool, pal: &Palette, text: &str) {
     let _ = spinner;
     let rect = ui.max_rect();
-    let center = egui::pos2(
-        rect.center().x,
-        rect.top() + (rect.height() * 0.45).max(90.0),
-    );
+    // TRUE center: the old 45% optical lift landed at a different height
+    // on every surface (the rect at call time isn't always the full pane).
+    let center = egui::pos2(rect.center().x, rect.center().y.max(rect.top() + 90.0));
     ui.painter().text(
         center,
         egui::Align2::CENTER_CENTER,
@@ -137,13 +136,13 @@ pub fn calendar_panel(
             if crate::ui::widgets::btn::ghost(ui, pal, "Refresh").clicked() {
                 actions.push(Action::ReloadSection);
             }
-            if crate::ui::widgets::btn::ghost(ui, pal, "Join link…")
+            if crate::ui::widgets::btn::ghost(ui, pal, "Join link")
                 .on_hover_text("Paste a Teams meeting link or ID")
                 .clicked()
             {
                 actions.push(Action::ShowJoinDialog);
             }
-            if crate::ui::widgets::btn::secondary(ui, pal, "Meet now")
+            if crate::ui::widgets::btn::primary(ui, pal, "Meet now")
                 .on_hover_text("Create an instant meeting and join it")
                 .clicked()
             {
@@ -441,7 +440,15 @@ fn meeting_pill(
     };
     // No "Canceled:" prefix — the dim + strikethrough carry the state
     // (native Teams shows the plain subject).
-    let subject = m.subject.clone();
+    // A URL pasted as the subject fills the pill with scheme noise —
+    // display it scheme-less; join/click paths keep the full text.
+    let subject = {
+        let s = m.subject.trim();
+        s.strip_prefix("https://")
+            .or_else(|| s.strip_prefix("http://"))
+            .unwrap_or(s)
+            .to_string()
+    };
     let text_w = rect.width() - 10.0;
     if compact || rect.height() < 30.0 {
         let subj_e = ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0));
@@ -512,8 +519,13 @@ fn week_grid(
     let col_w = ((avail_w - gutter) / 7.0).max(96.0);
     let (h0, h1) = WEEK_HOURS;
     let rows = (h1 - h0) as f32;
-    let header_h = 22.0;
-    let body_h = rows * HOUR_PX;
+    // Hour height fits the viewport when it can (the old fixed 48px pushed
+    // 21:00 below the fold at 1100x760 with no visible affordance); below
+    // the 30px floor the ScrollArea takes over.
+    let header_h = 34.0;
+    let hour_px = (((ui.available_height() - header_h - 8.0) / rows).floor())
+        .clamp(30.0, HOUR_PX);
+    let body_h = rows * hour_px;
     let total_w = gutter + col_w * 7.0;
 
     let today = today_date();
@@ -537,7 +549,7 @@ fn week_grid(
                 let is_today = day == today;
                 let cx = x + col_w / 2.0;
                 ui.painter().text(
-                    egui::pos2(cx, top + 8.0),
+                    egui::pos2(cx, top + 9.0),
                     egui::Align2::CENTER_CENTER,
                     name,
                     egui::FontId::proportional(10.0),
@@ -545,7 +557,7 @@ fn week_grid(
                 );
                 if is_today {
                     let drect = egui::Rect::from_center_size(
-                        egui::pos2(cx, top + 22.0),
+                        egui::pos2(cx, top + 23.5),
                         egui::vec2(19.0, 19.0),
                     );
                     ui.painter()
@@ -572,7 +584,7 @@ fn week_grid(
                     );
                 } else {
                     ui.painter().text(
-                        egui::pos2(cx, top + 22.0),
+                        egui::pos2(cx, top + 23.5),
                         egui::Align2::CENTER_CENTER,
                         day.day().to_string(),
                         egui::FontId::proportional(11.5),
@@ -584,13 +596,22 @@ fn week_grid(
                     egui::Stroke::new(1.0, pal.outline),
                 );
             }
+            // Header band underline: separates the date row from the grid
+            // (the first hour line used to slice through the today disc).
+            ui.painter().line_segment(
+                [
+                    egui::pos2(rect.left(), top + header_h),
+                    egui::pos2(rect.left() + gutter + col_w * 7.0, top + header_h),
+                ],
+                egui::Stroke::new(1.0, pal.outline),
+            );
 
             // Hour gutter lines + labels. Hour lines are the QUIETER rule
             // (day columns carry the stronger one); labels sit centered ON
             // their line with a background knockout so the line reads as
             // interrupted, not as an underline.
             for h in h0..=h1 {
-                let y = top + header_h + (h - h0) as f32 * HOUR_PX;
+                let y = top + header_h + (h - h0) as f32 * hour_px;
                 ui.painter().line_segment(
                     [
                         egui::pos2(rect.left() + gutter, y),
@@ -629,7 +650,7 @@ fn week_grid(
                 let day_idx = (today - monday).get_days() as f32;
                 let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
                 if mins >= h0 * 60 && mins <= h1 * 60 {
-                    let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * HOUR_PX;
+                    let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px;
                     let x0 = rect.left() + gutter + col_w * day_idx;
                     // The now-line spans the WHOLE grid (shared time
                     // reference, not a per-day decoration) with a leading
@@ -656,29 +677,44 @@ fn week_grid(
                 }
             }
             for (idx, list) in by_day {
-                // Sort by start; greedy lanes: a block takes the first lane
-                // whose last block ends at or before its start.
+                // Sort by start, then split into overlap CLUSTERS (events
+                // connected directly or transitively through an overlap).
+                // Lanes are computed per cluster: a day with ONE overlap
+                // used to squeeze every block that day to 1/N width, even
+                // the 08:00 ones that overlap nothing.
                 let mut spans: Vec<(&&MeetingInfo, i32, i32)> = list
                     .iter()
                     .filter_map(|m| meeting_span(m).map(|(_, s, d)| (m, s, d)))
                     .collect();
                 spans.sort_by_key(|(_, s, _)| *s);
+                let mut geo: Vec<(usize, usize)> = vec![(0, 1); spans.len()]; // (lane, lane_count)
+                let mut cluster: Vec<usize> = Vec::new();
                 let mut lanes: Vec<i32> = Vec::new(); // lane -> end minute
-                let mut lane_of: Vec<usize> = Vec::new();
-                for (_, s, d) in &spans {
-                    let mut lane = lanes.iter().position(|end| *end <= *s);
-                    match lane {
-                        Some(i) => lanes[i] = s + d,
-                        None => {
-                            lanes.push(s + d);
-                            lane = Some(lanes.len() - 1);
+                let mut cluster_end = i32::MIN;
+                for (i, (_, s, d)) in spans.iter().enumerate() {
+                    if !cluster.is_empty() && *s >= cluster_end {
+                        // New cluster: finalize lane widths of the last one.
+                        let n = lanes.len().max(1);
+                        for &ci in &cluster {
+                            geo[ci].1 = n;
                         }
+                        cluster.clear();
+                        lanes.clear();
                     }
-                    lane_of.push(lane.unwrap());
+                    match lanes.iter().position(|end| *end <= *s) {
+                        Some(li) => lanes[li] = s + d,
+                        None => lanes.push(s + d),
+                    }
+                    geo[i].0 = lanes.len() - 1;
+                    cluster.push(i);
+                    cluster_end = cluster_end.max(s + d);
                 }
-                let total_lanes = lanes.len().max(1);
+                let n = lanes.len().max(1);
+                for &ci in &cluster {
+                    geo[ci].1 = n;
+                }
                 for (i, (m, s, d)) in spans.iter().enumerate() {
-                    let lane = lane_of[i];
+                    let (lane, total_lanes) = geo[i];
                     let lane_w = col_w / total_lanes as f32;
                     let x = rect.left() + gutter + col_w * idx as f32 + lane_w * lane as f32 + 1.0;
                     // Blocks starting before the visible window clamp their
@@ -686,8 +722,8 @@ fn week_grid(
                     // duration (a 06:00-10:10 meeting drew until 11:10).
                     let vis_start = (*s).max(h0 * 60);
                     let y =
-                        top + header_h + (vis_start - h0 * 60) as f32 / 60.0 * HOUR_PX;
-                    let h = ((s + d - vis_start) as f32 / 60.0 * HOUR_PX)
+                        top + header_h + (vis_start - h0 * 60) as f32 / 60.0 * hour_px;
+                    let h = ((s + d - vis_start) as f32 / 60.0 * hour_px)
                         .clamp(16.0, (top + header_h + body_h - y).max(16.0));
                     let block = egui::Rect::from_min_size(
                         egui::pos2(x, y),
@@ -722,8 +758,13 @@ fn month_grid(
     let cell_w = (avail_w / 7.0).max(96.0);
     // Stretch rows to the viewport (Teams behavior): ~90px rows fit four
     // pills + "+N"; the old fixed 64px left a third of the window empty.
+    // The row ui.horizontal containers add item_spacing.y BETWEEN rows —
+    // ignoring it left the bottom row + its border below the fold.
     let rows = (((lead + days as i64 + 6) / 7) as f32).max(1.0);
-    let cell_h = ((ui.available_height() - 26.0) / rows).clamp(64.0, 130.0);
+    let row_gap = ui.spacing().item_spacing.y;
+    // Header row + one gap after it + gaps between every row pair + 2px.
+    let cell_h = (((ui.available_height() - 18.0 - 2.0) - row_gap * rows) / rows)
+        .clamp(64.0, 130.0);
 
     // Meeting index by civil date.
     let mut by_date: std::collections::HashMap<jiff::civil::Date, Vec<&MeetingInfo>> =
@@ -906,11 +947,15 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                 // Reserve the action-button height so cards without a join
                 // URL stay the same height as carded ones.
                 ui.set_min_height(20.0);
+                let mut meta: Vec<String> = Vec::new();
                 if let Some(who) = &m.organizer {
-                    ui.label(RichText::new(format!("by {who}")).small().weak());
+                    meta.push(format!("by {who}"));
                 }
                 if m.is_organizer {
-                    ui.label(RichText::new("organizer").small().weak());
+                    meta.push("organizer".into());
+                }
+                if !meta.is_empty() {
+                    ui.label(RichText::new(meta.join(" · ")).small().weak());
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(url) = &m.join_url {
@@ -1153,7 +1198,13 @@ pub fn chat_files_panel(
         .max_height(260.0)
         .show(ui, |ui| {
             if files.is_empty() && !loading {
-                ui.label(RichText::new("No files shared in this conversation.").weak());
+                // Say what the EMPTY list means before the general OneDrive
+                // list below — a bare "No files…" directly over another
+                // file list read as contradictory scopes.
+                ui.label(
+                    RichText::new("Nothing shared in this conversation yet.")
+                        .weak(),
+                );
             }
             for f in files {
                 file_row(ui, f, pal, actions);
@@ -1277,7 +1328,16 @@ pub fn todo_panel(
                 // Add rests disabled until there's text (a clickable no-op
                 // invites a dead click).
                 let armed = !st.quick_add.trim().is_empty();
-                let add = ui.add_enabled(armed, egui::Button::new("Add")).clicked()
+                // Sized to the field (24px) and to the row's right rail
+                // (56+8 spacing = the 64px inset above) — the default
+                // button hung 4px below the input and 5px short of the
+                // global right margin.
+                let add = ui
+                    .add_enabled(
+                        armed,
+                        egui::Button::new("Add").min_size(egui::vec2(56.0, 24.0)),
+                    )
+                    .clicked()
                     || (armed
                         && field.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter)));
