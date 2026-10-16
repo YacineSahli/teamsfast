@@ -179,27 +179,38 @@ fn render_element(
                 "accent" => pal.accent,
                 _ => pal.text,
             };
-            // Connector card text (Jira etc.) carries markdown links —
-            // render link-shaped spans as links, the rest as plain text
-            // with the card's size/weight/color.
-            if text.contains("](") {
-                for piece in crate::ui::widgets::split_markdown_links(text) {
-                    match piece {
-                        crate::ui::widgets::Piece::Plain(t) => {
-                            let mut rt = RichText::new(t).size(size).color(color);
-                            if weight {
-                                rt = rt.strong();
+            // Connector card text (Jira etc.) carries markdown links and
+            // literal */_ markers — render link-shaped spans as links and
+            // emphasis as styled text, the rest plain with the card's
+            // size/weight/color. horizontal_wrapped keeps the pieces INLINE
+            // (a label per piece in the vertical layout tore multi-piece
+            // text one fragment per line).
+            if text.contains("](") || text.contains('*') || text.contains('_') {
+                ui.horizontal_wrapped(|ui| {
+                    for piece in crate::ui::widgets::split_markdown_links(text) {
+                        match piece {
+                            crate::ui::widgets::Piece::Plain(t) => {
+                                let mut rt = RichText::new(t).size(size).color(color);
+                                if weight {
+                                    rt = rt.strong();
+                                }
+                                ui.label(rt);
                             }
-                            ui.label(rt);
-                        }
-                        crate::ui::widgets::Piece::MdLink { text: lt, url } => {
-                            ui.hyperlink_to(
-                                RichText::new(lt).size(size).underline().color(pal.link),
-                                url,
-                            );
+                            crate::ui::widgets::Piece::Bold(t) => {
+                                ui.label(RichText::new(t).size(size).color(color).strong());
+                            }
+                            crate::ui::widgets::Piece::Italic(t) => {
+                                ui.label(RichText::new(t).size(size).color(color).italics());
+                            }
+                            crate::ui::widgets::Piece::MdLink { text: lt, url } => {
+                                ui.hyperlink_to(
+                                    RichText::new(lt).size(size).underline().color(pal.link),
+                                    url,
+                                );
+                            }
                         }
                     }
-                }
+                });
             } else {
                 let mut rt = RichText::new(text).size(size).color(color);
                 if weight {

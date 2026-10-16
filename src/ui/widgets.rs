@@ -186,6 +186,8 @@ pub enum Seg {
 /// One piece of a markdown-split text span.
 pub enum Piece {
     Plain(String),
+    Bold(String),
+    Italic(String),
     MdLink { text: String, url: String },
 }
 
@@ -223,7 +225,7 @@ pub fn split_markdown_links(t: &str) -> Vec<Piece> {
                 continue;
             }
             if open > plain_start {
-                out.push(Piece::Plain(t[plain_start..open].to_string()));
+                out.extend(scan_emphasis(&t[plain_start..open]));
             }
             out.push(Piece::MdLink {
                 text: t[open + 1..i].to_string(),
@@ -236,7 +238,132 @@ pub fn split_markdown_links(t: &str) -> Vec<Piece> {
         }
     }
     if plain_start < t.len() {
-        out.push(Piece::Plain(t[plain_start..].to_string()));
+        out.extend(scan_emphasis(&t[plain_start..]));
+    }
+    out
+}
+
+/// Conservative `**bold**` / `_italic_` pass over a plain (link-free)
+/// segment — connector cards (Jira) post these markers literally. Rules
+/// keep false positives out: no newlines inside, no `***` runs, and `_`
+/// never applies intraword (`file_name_here` stays literal, markdown's
+/// own intraword rule). Char-indexed — byte slicing on multi-byte input
+/// panics.
+fn scan_emphasis(s: &str) -> Vec<Piece> {
+    if !s.contains('*') && !s.contains('_') {
+        return vec![Piece::Plain(s.to_string())];
+    }
+    let ch: Vec<char> = s.chars().collect();
+    let mut out: Vec<Piece> = Vec::new();
+    let mut plain = String::new();
+    let mut i = 0;
+    while i < ch.len() {
+        // **bold**: opening needs a non-*, non-space char after it; the
+        // closing ** must not continue a run and needs a non-space before.
+        if ch[i] == '*'
+            && i + 3 < ch.len()
+            && ch[i + 1] == '*'
+            && ch[i + 2] != '*'
+            && !ch[i + 2].is_whitespace()
+        {
+            let mut j = i + 3;
+            let mut close = None;
+            while j + 1 < ch.len() {
+                if ch[j] == '*' && ch[j + 1] == '*' && ch[j - 1] != '*' && !ch[j - 1].is_whitespace()
+                {
+                    close = Some(j);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(j) = close {
+                let inner: String = ch[i + 2..j].iter().collect();
+                if !inner.contains('\n') {
+                    if !plain.is_empty() {
+                        out.push(Piece::Plain(std::mem::take(&mut plain)));
+                    }
+                    out.push(Piece::Bold(inner));
+                    i = j + 2;
+                    continue;
+                }
+            }
+        }
+        // _italic_: markdown's intraword rule — the opening _ must not sit
+        // between alphanumerics, the content must not start with space,
+        // the closing _ must not follow space or end inside a word.
+        if ch[i] == '_'
+            && (i == 0 || !ch[i - 1].is_alphanumeric())
+            && i + 2 < ch.len()
+            && !ch[i + 1].is_whitespace()
+            && ch[i + 1] != '_'
+        {
+            let mut j = i + 2;
+            let mut close = None;
+            while j < ch.len() {
+                if ch[j] == '_'
+                    && !ch[j - 1].is_whitespace()
+                    && (j + 1 == ch.len() || !ch[j + 1].is_alphanumeric())
+                {
+                    close = Some(j);
+                    break;
+                }
+                if ch[j] == '\n' {
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(j) = close {
+                let inner: String = ch[i + 1..j].iter().collect();
+                if !plain.is_empty() {
+                    out.push(Piece::Plain(std::mem::take(&mut plain)));
+                }
+                out.push(Piece::Italic(inner));
+                i = j + 1;
+                continue;
+            }
+        }
+        // *bold* (Jira wiki, what this tenant's connectors actually post):
+        // same boundary discipline as `_` — the opener must not sit
+        // intraword or next to another asterisk, content must not start
+        // with space (kills "* bullet" lists and "2 * 3" arithmetic).
+        if ch[i] == '*'
+            && i + 1 < ch.len()
+            && ch[i + 1] != '*'
+            && (i == 0 || (ch[i - 1] != '*' && !ch[i - 1].is_alphanumeric()))
+            && !ch[i + 1].is_whitespace()
+        {
+            let mut j = i + 2;
+            let mut close = None;
+            while j < ch.len() {
+                if ch[j] == '*'
+                    && ch[j - 1] != '*'
+                    && !ch[j - 1].is_whitespace()
+                    && (j + 1 == ch.len()
+                        || (!ch[j + 1].is_alphanumeric() && ch[j + 1] != '*'))
+                {
+                    close = Some(j);
+                    break;
+                }
+                if ch[j] == '\n' {
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(j) = close {
+                let inner: String = ch[i + 1..j].iter().collect();
+                if !plain.is_empty() {
+                    out.push(Piece::Plain(std::mem::take(&mut plain)));
+                }
+                out.push(Piece::Bold(inner));
+                i = j + 1;
+                continue;
+            }
+        }
+        plain.push(ch[i]);
+        i += 1;
+    }
+    if !plain.is_empty() {
+        out.push(Piece::Plain(plain));
     }
     out
 }
@@ -570,11 +697,17 @@ pub fn render_segments(
                     // "[text](url)" bracket soup. Render link-shaped spans
                     // as links (conservative: only ](http…) counts — any
                     // other bracket text is untouched).
-                    if t.contains("](") {
+                    if t.contains("](") || t.contains('*') || t.contains('_') {
                         for piece in split_markdown_links(t) {
                             match piece {
                                 Piece::Plain(text) => {
                                     ui.label(RichText::new(text));
+                                }
+                                Piece::Bold(text) => {
+                                    ui.label(RichText::new(text).strong());
+                                }
+                                Piece::Italic(text) => {
+                                    ui.label(RichText::new(text).italics());
                                 }
                                 Piece::MdLink { text, url } => {
                                     if text.is_empty() {
@@ -831,10 +964,90 @@ mod markdown_link_tests {
         split_markdown_links(t)
             .into_iter()
             .map(|p| match p {
-                Piece::Plain(s) => (s, None),
+                Piece::Plain(s) | Piece::Bold(s) | Piece::Italic(s) => (s, None),
                 Piece::MdLink { text, url } => (text.clone(), Some((text, url))),
             })
             .collect()
+    }
+
+    fn emph(t: &str) -> Vec<Piece> {
+        split_markdown_links(t)
+    }
+
+    #[test]
+    fn bold_markers_become_bold() {
+        let got = emph("a **b** c");
+        assert_eq!(got.len(), 3);
+        assert!(matches!(&got[0], Piece::Plain(s) if s == "a "));
+        assert!(matches!(&got[1], Piece::Bold(s) if s == "b"));
+        assert!(matches!(&got[2], Piece::Plain(s) if s == " c"));
+    }
+
+    #[test]
+    fn italic_word_boundary_rules() {
+        // Intraword underscores stay literal (markdown's own rule).
+        let got = emph("file_name_here ok");
+        assert_eq!(got.len(), 1);
+        assert!(matches!(&got[0], Piece::Plain(s) if s == "file_name_here ok"));
+        // Real emphasis around word boundaries.
+        let got = emph("see _this note_ end");
+        assert_eq!(got.len(), 3);
+        assert!(matches!(&got[1], Piece::Italic(s) if s == "this note"));
+    }
+
+    #[test]
+    fn emphasis_never_crosses_lines_or_runs() {
+        // A newline inside kills the pair; so does a *** run.
+        for t in ["**a\nb** tail", "**** head", "** no close ** x"] {
+            let got = emph(t);
+            assert_eq!(got.len(), 1, "{t}");
+            assert!(matches!(&got[0], Piece::Plain(_)), "{t}");
+        }
+    }
+
+    #[test]
+    fn multibyte_text_with_emphasis() {
+        let got = emph("á **vérifié** ü");
+        assert_eq!(got.len(), 3);
+        assert!(matches!(&got[1], Piece::Bold(s) if s == "vérifié"));
+    }
+
+    #[test]
+    fn single_asterisk_bold_jira_style() {
+        // The live connector payload shape: *bold* at word boundaries.
+        let got = emph("*Scan of hardcoded values* tail");
+        assert_eq!(got.len(), 2);
+        assert!(matches!(&got[0], Piece::Bold(s) if s == "Scan of hardcoded values"));
+        // Table-cell markers convert.
+        let got = emph("|scp|*170*|");
+        assert!(matches!(&got[1], Piece::Bold(s) if s == "170"));
+    }
+
+    #[test]
+    fn single_asterisk_false_positives_stay_literal() {
+        // Bullets, arithmetic, intraword: none may become bold.
+        for t in [
+            "* bullet item",
+            "2 * 3 = 6",
+            "a*b*c",
+            "unpaired * star",
+            "trailing star*",
+        ] {
+            let got = emph(t);
+            assert_eq!(got.len(), 1, "{t}");
+            assert!(matches!(&got[0], Piece::Plain(_)), "{t}");
+        }
+    }
+
+    #[test]
+    fn jira_style_emphasis_with_link() {
+        // Link extraction wins; emphasis fills the plain tails.
+        let got = emph("**Failed:** see [SCP-1](https://x.io) _now_");
+        assert!(matches!(&got[0], Piece::Bold(s) if s == "Failed:"));
+        assert!(matches!(&got[1], Piece::Plain(s) if s == " see "));
+        assert!(matches!(&got[2], Piece::MdLink { text, .. } if text == "SCP-1"));
+        assert!(matches!(&got[3], Piece::Plain(s) if s == " "));
+        assert!(matches!(&got[4], Piece::Italic(s) if s == "now"));
     }
 
     #[test]
