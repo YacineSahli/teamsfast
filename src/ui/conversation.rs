@@ -1364,7 +1364,7 @@ fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
             Frame::default()
                 .fill(Color32::from_black_alpha(16))
                 .corner_radius(CornerRadius::same(4))
-                .inner_margin(egui::Margin::symmetric(6, 2))
+                .inner_margin(egui::Margin::symmetric(8, 3))
                 .show(ui, |ui| {
                     ui.label(
                         RichText::new(format!(
@@ -1375,7 +1375,7 @@ fn quote_preview(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
                                 .next()
                                 .unwrap_or("")
                         ))
-                        .small()
+                        .size(13.0)
                         .weak(),
                     );
                 });
