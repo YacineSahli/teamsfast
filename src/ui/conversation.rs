@@ -345,6 +345,26 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // is verified rendering again, see bisect in git history.)
     let mut area = ScrollArea::vertical().auto_shrink(false);
     area = area.stick_to_bottom(true);
+    // QA hook: drive a synthetic scroll through the loaded history (a few
+    // thousand px per frame downward from the bottom) and let the caller
+    // time the frame — TEAMSFAST_SCROLLBENCH=1 + the SCROLLBENCH log lines.
+    if std::env::var("TEAMSFAST_SCROLLBENCH").as_deref() == Ok("1") {
+        static BENCH_FRAME: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let f = BENCH_FRAME
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            as f32;
+        // 300 settle frames at the bottom, then a steady upward scroll
+        // through the loaded history (~150px/frame; the offset clamps at
+        // the content top and stays there).
+        let off = (f - 300.0).max(0.0) * 150.0;
+        if f > 300.0 {
+            area = area.vertical_scroll_offset((30_000.0 - off).max(0.0));
+        }
+        // The event-driven loop only paints on events — the bench must
+        // keep the frames coming (QA hook only).
+        ui.ctx().request_repaint();
+    }
     area.show(ui, |ui| {
         if ctx.older_link.is_some() {
             ui.vertical_centered(|ui| {
@@ -364,8 +384,11 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // height places them fully outside the view ± margin get a cheap
         // placeholder allocation instead — same flow, same scroll extent
         // (sizes self-heal when a row scrolls into view and renders).
+        // 600 (SCROLLBENCH, 50-msg page): p95 1.84ms vs 2.82ms at 240 —
+        // more rows pre-rendered = fewer in-view height corrections, and
+        // the per-frame cost stays ~1ms median.
         let clip = ui.clip_rect();
-        const CULL_MARGIN: f32 = 240.0;
+        const CULL_MARGIN: f32 = 600.0;
         let mut last_day = String::new();
         for (i, m) in ctx.messages.iter().enumerate() {
             // Day label is content-cached (a jiff parse per row per frame

@@ -3978,9 +3978,14 @@ impl eframe::App for TeamsFastApp {
             egui::Panel::bottom("composer").show_inside(ui, |ui| {
                 conversation::conversation_composer(ui, &mut ctx, &mut self.draft);
             });
+            let bench = std::env::var("TEAMSFAST_SCROLLBENCH").as_deref() == Ok("1");
+            let t_bench = (bench).then(std::time::Instant::now);
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 conversation::conversation_messages(ui, &mut ctx);
             });
+            if let Some(t0) = t_bench {
+                log::info!("SCROLLBENCH frame build: {}us", t0.elapsed().as_micros());
+            }
             drop(ctx);
             for a in actions {
                 self.apply(a);
