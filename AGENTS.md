@@ -246,6 +246,21 @@ remaining Phase 2 item.
   (history-only), never a full re-open. Hot render paths use
   `parse_html_cached`/`plain_cached` (per-frame re-parses of multi-KB
   message HTML were 2-3 parses/bubble/frame).
+- Frame loop is EVENT-DRIVEN since the second perf pass (2026-10-16,
+  40306ee): backend events wake the UI via the event-wake thread; the
+  old unconditional 500ms repaint is GONE. Time-based logic must declare
+  itself in the tick gate at the end of `App::ui` (call/ring/typing/
+  offline/refresh/uploads) or it silently stops updating when idle.
+- Message-list row culling (offscreen rows → placeholder allocations
+  sized by previous-frame height) is load-bearing: new per-row work must
+  tolerate being SKIPPED for offscreen rows, and the day-label advance
+  must stay OUTSIDE the cull (else separators repeat). Sidebar rows use
+  `show_rows` (uniform 44px) — don't add variable-height content there.
+- Serial network loops on the worker are the other classic stall:
+  planner/notes/shifts/teams-channels fan-outs are concurrent
+  (`join_all`, chunks of 8), the chat-list endpoint winner is sticky
+  per process, roster names cache 5 min per chat. New multi-item
+  fetches must not be `for { x().await }`.
 - fastframe-tray `Tray::spawn` must run on a thread with NO ambient tokio
   runtime (ksni nested block_on panics) — see `spawn_tray` in app.rs;
   returns via mpsc with 3s timeout.
