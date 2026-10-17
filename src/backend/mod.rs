@@ -200,6 +200,10 @@ pub enum Event {
     Offline(String),
     NeedLogin(String),
     Chats(Vec<ChatInfo>),
+    /// Cache fallback for the chat list — the UI merges it only when it
+    /// has nothing fresher (startup / offline), never clobbering a
+    /// live-updated list with a stale archive snapshot.
+    ChatsCached(Vec<ChatInfo>),
     Messages {
         chat_id: String,
         messages: Vec<MessageInfo>,
@@ -483,7 +487,7 @@ impl Session {
 /// Offline fallback: deliver the CACHED chat list (so the sidebar
 /// paints instead of sitting empty) plus the offline banner. Returns
 /// true when cached content was delivered.
-fn send_cached_chats(ses: &Session, tx: &Sender<Event>, why: &str) -> bool {
+fn send_cached_chats(ses: &Session, tx: &Sender<Event>, why: &str, banner: bool) -> bool {
     let Some(archive) = ses.archive.as_ref() else {
         return false;
     };
@@ -494,17 +498,26 @@ fn send_cached_chats(ses: &Session, tx: &Sender<Event>, why: &str) -> bool {
         return false;
     }
     sort_chats(&mut chats);
-    let _ = tx.send(Event::Chats(chats));
-    let _ = tx.send(Event::Offline(format!(
-        "Offline — showing cached data ({why})"
-    )));
+    let _ = tx.send(Event::ChatsCached(chats));
+    if banner {
+        let _ = tx.send(Event::Offline(format!(
+            "Offline — showing cached data ({why})"
+        )));
+    } else {
+        // Mid-session endpoint failure: a status note, not the offline
+        // banner — the banner drives a 20s CheckReady retry loop meant
+        // for real offline, and it used to latch (nothing cleared it).
+        let _ = tx.send(Event::Status(format!(
+            "chat list unreachable — showing cached ({why})"
+        )));
+    }
     true
 }
 
 /// Token/session setup failed. With cached content that is an OFFLINE
 /// situation (stay usable), not a sign-in demand.
 fn offline_or_login(ses: &Session, tx: &Sender<Event>, error: String) {
-    if !send_cached_chats(ses, tx, &error) {
+    if !send_cached_chats(ses, tx, &error, true) {
         let _ = tx.send(Event::NeedLogin(error));
     }
 }
@@ -655,7 +668,7 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                         // Offline (or the endpoint chain failed): the
                         // cached list keeps the sidebar alive; the raw
                         // error string only when there is nothing cached.
-                        if !send_cached_chats(&ses, &tx, "chat list fetch failed") {
+                        if !send_cached_chats(&ses, &tx, "chat list fetch failed", false) {
                             send!(Event::Error(format!("chat list: {e:#}")));
                         }
                     }

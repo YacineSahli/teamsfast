@@ -1552,6 +1552,15 @@ impl TeamsFastApp {
                     }
                     self.sort_chats();
                 }
+                Event::ChatsCached(chats) => {
+                    // Cache fallback merges only when the current list is
+                    // empty or we are offline — never clobber live-updated
+                    // chats with the archive snapshot (stale by however
+                    // long since the last save).
+                    if self.chats.is_empty() || self.offline.is_some() {
+                        self.chats = chats;
+                    }
+                }
                 Event::Chats(mut chats) => {
                     // Keep roster-resolved names from this session.
                     let known: Vec<(String, String)> = self
