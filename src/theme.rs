@@ -297,6 +297,9 @@ pub struct Settings {
     /// Launch with the window hidden to the tray.
     #[serde(default)]
     pub start_in_tray: bool,
+    /// Start automatically at login (~/.config/autostart entry).
+    #[serde(default)]
+    pub autostart: bool,
     /// The window close button hides to the tray instead of quitting.
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
@@ -350,6 +353,7 @@ impl Default for Settings {
             skip_focused: true,
             zoom: 1.0,
             start_in_tray: false,
+            autostart: false,
             close_to_tray: true,
             unread_badges: true,
             pinned_chats: Vec::new(),

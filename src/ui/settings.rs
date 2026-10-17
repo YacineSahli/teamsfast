@@ -282,6 +282,20 @@ fn general(
     if toggle(ui, pal, "Start hidden in the system tray", &mut settings.start_in_tray) {
         theme::save_settings(settings);
     }
+    {
+        // Reflect the DESKTOP file's real state (a user may have removed
+        // it by hand); flipping writes/removes it.
+        let mut autostart = crate::autostart::enabled();
+        if toggle(ui, pal, "Start automatically at login", &mut autostart) {
+            match crate::autostart::set(autostart) {
+                Ok(()) => {
+                    settings.autostart = autostart;
+                    theme::save_settings(settings);
+                }
+                Err(e) => log::warn!("autostart: {e:#}"),
+            }
+        }
+    }
     if toggle(ui, pal, "Check for updates automatically", &mut settings.update_checks) {
         theme::save_settings(settings);
     }

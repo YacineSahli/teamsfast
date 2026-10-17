@@ -1,4 +1,5 @@
 mod app;
+pub mod autostart;
 mod backend;
 mod debug;
 mod emoji;
