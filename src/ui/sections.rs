@@ -868,7 +868,6 @@ fn week_grid(
             // Now line — painted AFTER the blocks: chips covered it wherever
             // they crossed, reading as broken dashes (native keeps the
             // current-time line continuous above events).
-            // Now line.
             let now = jiff::Zoned::now();
             if today >= monday
                 && today
