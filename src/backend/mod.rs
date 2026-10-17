@@ -1032,7 +1032,14 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 }
             }
             Command::JoinPreviewStop => {
-                ses.join_cam = None; // chain unwinds via the UI rx drop
+                // The chain unwinds via the UI rx drop (forwarder → capture
+                // thread), but that is asynchronous: a join-with-camera
+                // sent right after can race the still-held /dev/video0 and
+                // open its own camera into failure. Hold the worker a beat
+                // ONLY when a capture actually existed.
+                if ses.join_cam.take().is_some() {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
             }
             Command::AcceptIncoming(raw) => {
                 accept_incoming(&mut ses, &tx, raw).await;

@@ -513,6 +513,11 @@ pub struct TeamsFastApp {
     /// False on audio legs: the camera button then starts a mid-call
     /// capture through the CameraSlot instead of only gating the lens.
     call_has_camera: bool,
+    /// One camera-source swap attempt per call: the first ON-toggle tries
+    /// the mid-call capture even when the call was placed with camera —
+    /// a failed pre-spawn open (busy device) is thereby recoverable; a
+    /// healthy pre-spawn just fails the second open on the busy device.
+    call_camera_swap_attempted: bool,
     /// Join/lobby machine over the active meeting call
     /// (joining → lobby → admitted; pure transitions from teams-core).
     lobby: ost::api::LobbyState,
@@ -1134,6 +1139,7 @@ impl TeamsFastApp {
             ringer: None,
             call_is_meeting: false,
             call_has_camera: false,
+            call_camera_swap_attempted: false,
             lobby: ost::api::LobbyState::Idle,
             lobby_placed_at: None,
             incoming: None,
@@ -1489,6 +1495,7 @@ impl TeamsFastApp {
                 }
                 Event::CallEnded(summary) => {
                     self.call_has_camera = false;
+                    self.call_camera_swap_attempted = false;
                     self.play_end_beep();
                     self.stop_screen_share();
                     self.call = None;
@@ -1503,6 +1510,8 @@ impl TeamsFastApp {
                     self.status = summary;
                 }
                 Event::CallFailed(e) => {
+                    self.call_has_camera = false;
+                    self.call_camera_swap_attempted = false;
                     self.play_end_beep();
                     self.stop_screen_share();
                     self.call = None;
@@ -1995,6 +2004,8 @@ impl TeamsFastApp {
                                 m.subject.clone()
                             });
                             self.call_label_hint = label;
+                            self.join_open = false;
+                            self.stop_join_preview();
                             self.cmd.send(Command::JoinMeeting {
                                 source: url,
                                 camera: false,
@@ -4103,7 +4114,7 @@ impl eframe::App for TeamsFastApp {
                                             // no frames to un-black — start
                                             // a mid-call capture into the
                                             // CameraSlot.
-                                            if !cam_on && !self.call_has_camera {
+                                            if !cam_on && !self.call_camera_swap_attempted {
                                                 late_camera_clicked = true;
                                             }
                                         }
@@ -4175,6 +4186,7 @@ impl eframe::App for TeamsFastApp {
             }
         }
         if late_camera_clicked {
+            self.call_camera_swap_attempted = true;
             self.call_has_camera = true;
             self.begin_call_camera();
         }
