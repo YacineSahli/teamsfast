@@ -230,9 +230,12 @@ fn render_element(
                         }
                         crate::ui::widgets::TextChunk::Table(t) => {
                             ui.add_space(2.0);
-                            // salt (card content hash) + table index: stable
-                            // across frames, unique per table in the card.
-                            let id = egui::Id::new((salt, tbl_idx));
+                            // ui.id() (unique per bubble) + content salt +
+                            // table index: the same card JSON rendered
+                            // twice in view (bot resends, forwards) would
+                            // collide on a pure content hash and share
+                            // column-width memory.
+                            let id = ui.id().with((salt, tbl_idx));
                             crate::ui::widgets::render_pipe_table(ui, pal, &t, id, size);
                             ui.add_space(3.0);
                             tbl_idx += 1;
