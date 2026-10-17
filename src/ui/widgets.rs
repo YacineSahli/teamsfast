@@ -604,8 +604,16 @@ fn render_table_cell(ui: &mut Ui, pal: &crate::theme::Palette, text: &str, size:
         .horizontal(|ui| {
             for piece in split_markdown_links(&shown) {
                 match piece {
-                    Piece::Plain(t) | Piece::Bold(t) | Piece::Italic(t) => {
+                    Piece::Plain(t) => {
                         ui.label(RichText::new(t).size(size));
+                    }
+                    // Cells keep their emphasis: the Jira payload's
+                    // "*Increase*" action column must render bold.
+                    Piece::Bold(t) => {
+                        ui.label(RichText::new(t).size(size).bold());
+                    }
+                    Piece::Italic(t) => {
+                        ui.label(RichText::new(t).size(size).italics());
                     }
                     Piece::MdLink { text: lt, url } => {
                         ui.hyperlink_to(
