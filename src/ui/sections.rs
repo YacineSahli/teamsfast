@@ -720,220 +720,241 @@ fn week_grid(
 
     let today = today_date();
 
-    ScrollArea::both()
+    // Fixed hour gutter: the time labels stay put while the day grid
+    // scrolls horizontally (wide-lane weeks exceed the viewport). The old
+    // single both-axis ScrollArea scrolled the time axis away with the
+    // content — Monday/Tue pills rendered clipped at the pane edge with
+    // no hour labels in sight (battery round-5 critics, CALGEOM-verified:
+    // 7×180px columns vs ~1030px pane).
+    ScrollArea::vertical()
         .id_salt("calendar_week")
         .auto_shrink(false)
         .show(ui, |ui| {
-            ui.set_min_width(total_w);
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(total_w, header_h + body_h), egui::Sense::hover());
-            let top = rect.top();
-
-            // Header row + column separators. Today = accent date disc
-            // (same treatment as the month grid, so "today" reads the same
-            // in both views); weekday name stays quiet above it.
-            for (i, name) in DAY_HEADERS.iter().enumerate() {
-                let day = monday.checked_add(jiff::ToSpan::days(i as i64)).unwrap_or(monday);
-                let x = rect.left() + gutter + col_w * i as f32;
-                let is_today = day == today;
-                let cx = x + col_w / 2.0;
-                ui.painter().text(
-                    egui::pos2(cx, top + 9.0),
-                    egui::Align2::CENTER_CENTER,
-                    name,
-                    egui::FontId::proportional(10.0),
-                    pal.secondary,
+            ui.horizontal(|ui| {
+                // Gutter column: header spacer + hour labels on their lines.
+                let (grect, _) = ui.allocate_exact_size(
+                    egui::vec2(gutter, header_h + body_h),
+                    egui::Sense::hover(),
                 );
-                if is_today {
-                    let drect = egui::Rect::from_center_size(
-                        egui::pos2(cx, top + 23.5),
-                        egui::vec2(19.0, 19.0),
-                    );
-                    ui.painter()
-                        .circle_filled(drect.center(), 9.5, pal.accent);
-                    ui.painter().text(
-                        drect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        day.day().to_string(),
-                        egui::FontId::proportional(10.5),
-                        pal.on_accent,
-                    );
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(x + 1.0, top + header_h),
-                            egui::vec2(col_w - 2.0, body_h),
-                        ),
-                        0.0,
-                        egui::Color32::from_rgba_unmultiplied(
-                            pal.accent.r(),
-                            pal.accent.g(),
-                            pal.accent.b(),
-                            16,
-                        ),
-                    );
-                } else {
-                    ui.painter().text(
-                        egui::pos2(cx, top + 23.5),
-                        egui::Align2::CENTER_CENTER,
-                        day.day().to_string(),
-                        egui::FontId::proportional(11.5),
-                        pal.text,
-                    );
-                }
-                ui.painter().line_segment(
-                    [egui::pos2(x, top), egui::pos2(x, top + header_h + body_h)],
-                    egui::Stroke::new(1.0, pal.outline),
-                );
-            }
-            // Header band underline: separates the date row from the grid
-            // (the first hour line used to slice through the today disc).
-            ui.painter().line_segment(
-                [
-                    egui::pos2(rect.left(), top + header_h),
-                    egui::pos2(rect.left() + gutter + col_w * 7.0, top + header_h),
-                ],
-                egui::Stroke::new(1.0, pal.outline),
-            );
-
-            // Hour gutter lines + labels. Hour lines are the QUIETER rule
-            // (day columns carry the stronger one); labels sit centered ON
-            // their line with a background knockout so the line reads as
-            // interrupted, not as an underline.
-            for h in h0..=h1 {
-                let y = top + header_h + (h - h0) as f32 * hour_px;
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(rect.left() + gutter, y),
-                        egui::pos2(rect.left() + gutter + col_w * 7.0, y),
-                    ],
-                    egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.4)),
-                );
-                if h < h1 {
-                    let label = format!("{h:02}:00");
-                    let gal = ui.painter().layout_no_wrap(
-                        label.clone(),
-                        egui::FontId::proportional(9.5),
-                        pal.dim,
-                    );
-                    let lx = rect.left() + 6.0;
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(lx - 2.0, y - gal.size().y / 2.0 - 1.0),
-                            gal.size() + egui::vec2(4.0, 2.0),
-                        ),
-                        2.0,
-                        pal.panel,
-                    );
-                    ui.painter().galley(egui::pos2(lx, y - gal.size().y / 2.0), gal, pal.dim);
-                }
-            }
-
-            // Meeting blocks: concurrent events lane side-by-side within
-            // their day column instead of overlapping. Spans + lane
-            // geometry were precomputed above (they size the grid too).
-            for (idx, spans, geo) in &by_day {
-                for (i, (m, s, d)) in spans.iter().enumerate() {
-                    let (lane, total_lanes) = geo[i];
-                    let lane_w = col_w / total_lanes as f32;
-                    let x = rect.left() + gutter + col_w * *idx as f32 + lane_w * lane as f32 + 1.0;
-                    // Blocks starting before the visible window clamp their
-                    // TOP; the height must run to the REAL end, not the full
-                    // duration (a 06:00-10:10 meeting drew until 11:10).
-                    let vis_start = (*s).max(h0 * 60);
-                    let y =
-                        top + header_h + (vis_start - h0 * 60) as f32 / 60.0 * hour_px;
-                    let h = ((s + d - vis_start) as f32 / 60.0 * hour_px)
-                        .clamp(16.0, (top + header_h + body_h - y).max(16.0));
-                    let block = egui::Rect::from_min_size(
-                        egui::pos2(x, y),
-                        egui::vec2(lane_w - 2.0, h),
-                    );
-                    // QA hook: TEAMSFAST_CALGEOM=1 — per-block lane/x/y dump
-                    // for grid forensics (run-4 overlap investigation).
-                    if std::env::var("TEAMSFAST_CALGEOM").as_deref() == Ok("1") {
-                        log::info!(
-                            "CALGEOM day={idx} subj={:?} lane={lane}/{total_lanes} lane_w={lane_w:.0} x={x:.0} y={y:.0} h={h:.0} col_w={col_w:.0} hour_px={hour_px:.0} top={top:.0}",
-                            m.subject
+                for h in h0..=h1 {
+                    let y = grect.top() + header_h + (h - h0) as f32 * hour_px;
+                    if h < h1 {
+                        let label = format!("{h:02}:00");
+                        let gal = ui.painter().layout_no_wrap(
+                            label,
+                            egui::FontId::proportional(9.5),
+                            pal.dim,
                         );
-                    }
-                    // Narrow overlap lanes drop to the compact single-line
-                    // pill (time + ellipsized title) instead of two crushed
-                    // rows of clipped text.
-                    if meeting_pill(ui, block, m, pal, lane_w < 52.0, false) {
-                        meeting_click(m, actions);
+                        let lx = grect.left() + 6.0;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(lx - 2.0, y - gal.size().y / 2.0 - 1.0),
+                                gal.size() + egui::vec2(4.0, 2.0),
+                            ),
+                            2.0,
+                            pal.panel,
+                        );
+                        ui.painter()
+                            .galley(egui::pos2(lx, y - gal.size().y / 2.0), gal, pal.dim);
                     }
                 }
-            }
+                ScrollArea::horizontal()
+                    .id_salt("calendar_week_days")
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.set_min_width(col_w * 7.0);
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(col_w * 7.0, header_h + body_h),
+                            egui::Sense::hover(),
+                        );
+                        let top = rect.top();
 
-            // Now line — painted AFTER the blocks: chips covered it wherever
-            // they crossed, reading as broken dashes (native keeps the
-            // current-time line continuous above events).
-            let now = jiff::Zoned::now();
-            if today >= monday
-                && today
-                    < monday
-                        .checked_add(jiff::ToSpan::days(7))
-                        .unwrap_or(monday)
-            {
-                let day_idx = (today - monday).get_days() as f32;
-                let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
-                if mins >= h0 * 60 && mins <= h1 * 60 {
-                    let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px;
-                    // The now-line spans the WHOLE grid from the shared time
-                    // axis (a line starting at today's column read as a
-                    // decoration of the days after it); the dot marks the
-                    // current column.
-                    let x_dot = rect.left() + gutter + col_w * day_idx;
-                    let x_end = rect.left() + gutter + col_w * 7.0;
-                    ui.painter().line_segment(
-                        [egui::pos2(rect.left() + gutter, y), egui::pos2(x_end, y)],
-                        egui::Stroke::new(1.5, pal.danger),
-                    );
-                    ui.painter()
-                        .circle_filled(egui::pos2(x_dot, y), 3.0, pal.danger);
-                }
-            }
+                        // Header row + column separators. Today = accent date
+                        // disc (same treatment as the month grid); weekday
+                        // name stays quiet above it.
+                        for (i, name) in DAY_HEADERS.iter().enumerate() {
+                            let day = monday
+                                .checked_add(jiff::ToSpan::days(i as i64))
+                                .unwrap_or(monday);
+                            let x = rect.left() + col_w * i as f32;
+                            let is_today = day == today;
+                            let cx = x + col_w / 2.0;
+                            ui.painter().text(
+                                egui::pos2(cx, top + 9.0),
+                                egui::Align2::CENTER_CENTER,
+                                name,
+                                egui::FontId::proportional(10.0),
+                                pal.secondary,
+                            );
+                            if is_today {
+                                let drect = egui::Rect::from_center_size(
+                                    egui::pos2(cx, top + 23.5),
+                                    egui::vec2(19.0, 19.0),
+                                );
+                                ui.painter()
+                                    .circle_filled(drect.center(), 9.5, pal.accent);
+                                ui.painter().text(
+                                    drect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    day.day().to_string(),
+                                    egui::FontId::proportional(10.5),
+                                    pal.on_accent,
+                                );
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(x + 1.0, top + header_h),
+                                        egui::vec2(col_w - 2.0, body_h),
+                                    ),
+                                    0.0,
+                                    egui::Color32::from_rgba_unmultiplied(
+                                        pal.accent.r(),
+                                        pal.accent.g(),
+                                        pal.accent.b(),
+                                        16,
+                                    ),
+                                );
+                            } else {
+                                ui.painter().text(
+                                    egui::pos2(cx, top + 23.5),
+                                    egui::Align2::CENTER_CENTER,
+                                    day.day().to_string(),
+                                    egui::FontId::proportional(11.5),
+                                    pal.text,
+                                );
+                            }
+                            ui.painter().line_segment(
+                                [egui::pos2(x, top), egui::pos2(x, top + header_h + body_h)],
+                                egui::Stroke::new(1.0, pal.outline),
+                            );
+                        }
+                        // Header band underline: separates the date row from
+                        // the grid (the first hour line used to slice through
+                        // the today disc).
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(rect.left(), top + header_h),
+                                egui::pos2(rect.right(), top + header_h),
+                            ],
+                            egui::Stroke::new(1.0, pal.outline),
+                        );
 
-            // Open the week at today/now: with wide-lane columns the day
-            // columns exceed the viewport and today starts off-screen to
-            // the right; native opens scrolled to the current time.
-            let scroll_id = ui.id().with(("week-scroll-to-now", offset));
-            let has_data = !by_day.is_empty();
-            if has_data
-                && !ui
-                    .data_mut(|d| d.get_temp::<bool>(scroll_id).unwrap_or(false))
-            {
-                ui.data_mut(|d| d.insert_temp(scroll_id, true));
-                // The scroll target queued mid-content is consumed by the
-                // ScrollArea on the NEXT frame — the event-driven loop must
-                // be promised one or the request dies with the pass state.
-                ui.ctx().request_repaint();
-                let end_of_week = monday
-                    .checked_add(jiff::ToSpan::days(7))
-                    .unwrap_or(monday);
-                let today_idx = if today >= monday && today < end_of_week {
-                    (today - monday).get_days().clamp(0, 6) as f32
-                } else {
-                    0.0
-                };
-                let mx = rect.left() + gutter + col_w * (today_idx + 0.5);
-                let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
-                let my = if today >= monday
-                    && today < end_of_week
-                    && mins >= h0 * 60
-                    && mins <= h1 * 60
-                {
-                    top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px
-                } else {
-                    top + header_h
-                };
-                let marker = egui::Rect::from_center_size(
-                    egui::pos2(mx, my),
-                    egui::vec2(1.0, 1.0),
-                );
-                ui.allocate_rect(marker, egui::Sense::hover())
-                    .scroll_to_me(Some(egui::Align::Center));
-            }
+                        // Hour lines across the day grid (labels live in the
+                        // fixed gutter; the QUIETER rule here).
+                        for h in h0..=h1 {
+                            let y = top + header_h + (h - h0) as f32 * hour_px;
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(rect.left(), y),
+                                    egui::pos2(rect.right(), y),
+                                ],
+                                egui::Stroke::new(1.0, pal.outline.gamma_multiply(0.4)),
+                            );
+                        }
+
+                        // Meeting blocks: concurrent events lane side-by-side
+                        // within their day column. Spans + lane geometry were
+                        // precomputed above (they size the grid too).
+                        for (idx, spans, geo) in &by_day {
+                            for (i, (m, s, d)) in spans.iter().enumerate() {
+                                let (lane, total_lanes) = geo[i];
+                                let lane_w = col_w / total_lanes as f32;
+                                let x = rect.left()
+                                    + col_w * *idx as f32
+                                    + lane_w * lane as f32
+                                    + 1.0;
+                                // Blocks starting before the visible window
+                                // clamp their TOP; the height must run to the
+                                // REAL end, not the full duration.
+                                let vis_start = (*s).max(h0 * 60);
+                                let y = top
+                                    + header_h
+                                    + (vis_start - h0 * 60) as f32 / 60.0 * hour_px;
+                                let h = ((s + d - vis_start) as f32 / 60.0 * hour_px)
+                                    .clamp(16.0, (top + header_h + body_h - y).max(16.0));
+                                let block = egui::Rect::from_min_size(
+                                    egui::pos2(x, y),
+                                    egui::vec2(lane_w - 2.0, h),
+                                );
+                                if std::env::var("TEAMSFAST_CALGEOM").as_deref() == Ok("1") {
+                                    log::info!(
+                                        "CALGEOM day={idx} subj={:?} lane={lane}/{total_lanes} lane_w={lane_w:.0} x={x:.0} y={y:.0} h={h:.0} col_w={col_w:.0} hour_px={hour_px:.0} top={top:.0}",
+                                        m.subject
+                                    );
+                                }
+                                if meeting_pill(ui, block, m, pal, lane_w < 52.0, false) {
+                                    meeting_click(m, actions);
+                                }
+                            }
+                        }
+
+                        // Now line — painted AFTER the blocks (native keeps
+                        // the current-time line continuous above events).
+                        let now = jiff::Zoned::now();
+                        if today >= monday
+                            && today
+                                < monday
+                                    .checked_add(jiff::ToSpan::days(7))
+                                    .unwrap_or(monday)
+                        {
+                            let day_idx = (today - monday).get_days() as f32;
+                            let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
+                            if mins >= h0 * 60 && mins <= h1 * 60 {
+                                let y = top
+                                    + header_h
+                                    + (mins - h0 * 60) as f32 / 60.0 * hour_px;
+                                let x_dot = rect.left() + col_w * day_idx;
+                                ui.painter().line_segment(
+                                    [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                                    egui::Stroke::new(1.5, pal.danger),
+                                );
+                                ui.painter()
+                                    .circle_filled(egui::pos2(x_dot, y), 3.0, pal.danger);
+                            }
+                        }
+
+                        // Open the week at today/now: with wide-lane columns
+                        // the day columns exceed the viewport; native opens
+                        // scrolled to the current time.
+                        let scroll_id = ui.id().with(("week-scroll-to-now", offset));
+                        let has_data = !by_day.is_empty();
+                        if has_data
+                            && !ui
+                                .data_mut(|d| d.get_temp::<bool>(scroll_id).unwrap_or(false))
+                        {
+                            ui.data_mut(|d| d.insert_temp(scroll_id, true));
+                            // The scroll target queued mid-content is consumed
+                            // by the ScrollArea on the NEXT frame — the
+                            // event-driven loop must be promised one or the
+                            // request dies with the pass state.
+                            ui.ctx().request_repaint();
+                            let end_of_week = monday
+                                .checked_add(jiff::ToSpan::days(7))
+                                .unwrap_or(monday);
+                            let today_idx = if today >= monday && today < end_of_week {
+                                (today - monday).get_days().clamp(0, 6) as f32
+                            } else {
+                                0.0
+                            };
+                            let mx = rect.left() + col_w * (today_idx + 0.5);
+                            let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
+                            let my = if today >= monday
+                                && today < end_of_week
+                                && mins >= h0 * 60
+                                && mins <= h1 * 60
+                            {
+                                top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px
+                            } else {
+                                top + header_h
+                            };
+                            let marker = egui::Rect::from_center_size(
+                                egui::pos2(mx, my),
+                                egui::vec2(1.0, 1.0),
+                            );
+                            ui.allocate_rect(marker, egui::Sense::hover())
+                                .scroll_to_me(Some(egui::Align::Center));
+                        }
+                    });
+            });
         });
 }
 
