@@ -881,6 +881,23 @@ fn teams_dialog(
 /// verification (this harness cannot click the stage button).
 static LATECAM_QA: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// QA env flags read once (they fire inside hot event handlers).
+fn qa_flag(key: &str) -> bool {
+    static FLAGS: std::sync::OnceLock<std::collections::HashMap<&'static str, bool>> =
+        std::sync::OnceLock::new();
+    FLAGS
+        .get_or_init(|| {
+            let mut m = std::collections::HashMap::new();
+            for k in ["TEAMSFAST_TABLE", "TEAMSFAST_CALDUMP", "TEAMSFAST_FAILSEND"] {
+                m.insert(k, std::env::var(k).as_deref() == Ok("1"));
+            }
+            m
+        })
+        .get(key)
+        .copied()
+        .unwrap_or(false)
+}
+
 impl TeamsFastApp {
     /// End the pre-join camera preview. Dropping the receiver unwinds the
     /// forwarder and the capture thread (each exits when its channel peer
@@ -1737,7 +1754,7 @@ impl TeamsFastApp {
                     // OFFLINE (bwrap) to exercise the pending→failed→
                     // retry bubble path; online it posts the draft for
                     // real.
-                    if std::env::var("TEAMSFAST_FAILSEND").as_deref() == Ok("1")
+                    if qa_flag("TEAMSFAST_FAILSEND")
                         && !self.pending_sends.iter().any(|p| p.chat_id == chat_id)
                     {
                         let text = self.draft.trim().to_string();
@@ -1789,7 +1806,7 @@ impl TeamsFastApp {
                     // refreshes full-replace the list, so re-append
                     // whenever the seed is missing (checked by id, not a
                     // one-shot flag).
-                    if std::env::var("TEAMSFAST_TABLE").as_deref() == Ok("1")
+                    if qa_flag("TEAMSFAST_TABLE")
                         && !self.messages.is_empty()
                         && !self.messages.iter().any(|m| m.id == "qa-table-card")
                     {
@@ -2001,7 +2018,7 @@ impl TeamsFastApp {
                 Event::Calendar(meetings) => {
                     // QA hook: TEAMSFAST_CALDUMP=1 logs every meeting's
                     // span triple — lane/size forensics without a debugger.
-                    if std::env::var("TEAMSFAST_CALDUMP").as_deref() == Ok("1") {
+                    if qa_flag("TEAMSFAST_CALDUMP") {
                         for m in &meetings {
                             let (d, s, dur) = crate::ui::sections::meeting_span_pub(m);
                             log::info!("CALDUMP date={d} start_min={s} dur_min={dur} subject={:?} start={:?} canceled={}", m.subject, m.start, m.canceled);

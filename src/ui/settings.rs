@@ -161,6 +161,7 @@ pub fn settings_window(
                 st.tab = tab;
                 ui.add_space(14.0);
                 egui::ScrollArea::vertical()
+                    .id_salt("settings_content")
                     .auto_shrink(false)
                     // Cap below the popup area's full height: an uncapped
                     // scroll expands to the modal's max and the last row
