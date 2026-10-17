@@ -474,95 +474,83 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
 /// Own message bubble for a send that hasn't been confirmed by the server
 /// yet (translucent) or that failed (danger border + Retry / Discard).
 fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
-    ui.horizontal(|ui| {
+    // Own sends: translucent bubble right-aligned; on error the status +
+    // Retry/Discard render UNDER it — beside the bubble (right-to-left)
+    // a wide bubble pushed them off the pane's left edge entirely (the
+    // run-4 error-path QA caught Retry invisible, "not sent" clipped to
+    // "nt").
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
         ui.add_space(6.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            ui.vertical(|ui| {
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::TOP),
-                    |ui| {
-                        let (fill, stroke) = match &p.error {
-                            None => (
-                                ctx.pal.bubble_out,
-                                egui::Stroke::NONE,
-                            ),
-                            Some(_) => (
-                                ctx.pal.bubble_out,
-                                egui::Stroke::new(1.0, ctx.pal.danger),
-                            ),
-                        };
-                        egui::Frame::default()
-                            .fill({
-                                // 55% alpha while pending.
-                                let [r, g, b, _] = fill.to_srgba_unmultiplied();
-                                Color32::from_rgba_unmultiplied(r, g, b, 140)
-                            })
-                            .stroke(stroke)
-                            .corner_radius(egui::CornerRadius {
-                                nw: 12,
-                                ne: 12,
-                                sw: 12,
-                                se: 3,
-                            })
-                            .inner_margin(egui::Margin::symmetric(12, 7))
-                            .show(ui, |ui| {
-                                ui.with_layout(
-                                    egui::Layout::left_to_right(egui::Align::TOP),
-                                    |ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(&p.text).color(ctx.pal.text),
-                                            )
-                                            .selectable(false),
-                                        );
-                                    },
-                                );
-                            });
-                        match &p.error {
-                            None => {
-                                ui.label(
-                                    RichText::new("sending…")
-                                        .small()
-                                        .weak(),
-                                );
-                            }
-                            Some(err) => {
-                                ui.label(
-                                    RichText::new("not sent")
-                                        .small()
-                                        .color(ctx.pal.danger),
-                                )
-                                .on_hover_text(err);
-                                if ui
-                                    .add(
-                                        egui::Button::new(RichText::new("Retry").small())
-                                            .fill(ctx.pal.accent)
-                                            .corner_radius(egui::CornerRadius::same(8)),
-                                    )
-                                    .clicked()
-                                {
-                                    ctx.actions.push(Action::RetrySend(p.cmid.clone()));
-                                }
-                                if ui
-                                    .add(
-                                        egui::Button::new(RichText::new("Discard").small())
-                                            .fill(Color32::TRANSPARENT),
-                                    )
-                                    .clicked()
-                                {
-                                    ctx.actions
-                                        .push(Action::DismissSend(p.cmid.clone()));
-                                }
-                            }
-                        }
-                    },
+        ui.vertical(|ui| {
+            let (fill, stroke) = match &p.error {
+                None => (ctx.pal.bubble_out, egui::Stroke::NONE),
+                Some(_) => (ctx.pal.bubble_out, egui::Stroke::new(1.0, ctx.pal.danger)),
+            };
+            let mut frame = egui::Frame::default()
+                .fill({
+                    // 55% alpha while pending.
+                    let [r, g, b, _] = fill.to_srgba_unmultiplied();
+                    Color32::from_rgba_unmultiplied(r, g, b, 140)
+                })
+                .stroke(stroke)
+                .corner_radius(egui::CornerRadius {
+                    nw: 12,
+                    ne: 12,
+                    sw: 12,
+                    se: 3,
+                })
+                .inner_margin(egui::Margin::symmetric(12, 7));
+            frame.show(ui, |ui| {
+                // Cap the pending bubble at 70% width like the own-message
+                // slot — an uncapped multi-line draft rendered full-width.
+                ui.set_max_width(ui.available_width().max(40.0) * 0.70);
+                ui.set_min_width(24.0);
+                ui.add(
+                    egui::Label::new(RichText::new(&p.text).color(ctx.pal.text))
+                        .selectable(false),
                 );
             });
-            ui.add_space(6.0);
-            avatar(ui, ctx.self_name, 32.0);
+            // Status/actions row under the bubble, right-aligned.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                match &p.error {
+                    None => {
+                        ui.label(RichText::new("sending…").small().weak());
+                    }
+                    Some(err) => {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Retry").small())
+                                    .fill(ctx.pal.accent)
+                                    .corner_radius(egui::CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            ctx.actions.push(Action::RetrySend(p.cmid.clone()));
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Discard").small().color(ctx.pal.secondary),
+                                )
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            ctx.actions.push(Action::DismissSend(p.cmid.clone()));
+                        }
+                        ui.label(
+                            RichText::new("not sent")
+                                .small()
+                                .color(ctx.pal.danger),
+                        )
+                        .on_hover_text(err);
+                    }
+                }
+            });
+            ui.add_space(4.0);
         });
     });
-    ui.add_space(9.0);
 }
 
 /// Composer + banners (the bottom panel).

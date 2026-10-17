@@ -1732,6 +1732,20 @@ impl TeamsFastApp {
                     if self.selected.as_deref() != Some(chat_id.as_str()) {
                         continue;
                     }
+                    // QA hook: TEAMSFAST_FAILSEND=1 submits the seeded
+                    // TEAMSFAST_DRAFT once the chat paints — run it
+                    // OFFLINE (bwrap) to exercise the pending→failed→
+                    // retry bubble path; online it posts the draft for
+                    // real.
+                    if std::env::var("TEAMSFAST_FAILSEND").as_deref() == Ok("1")
+                        && !self.pending_sends.iter().any(|p| p.chat_id == chat_id)
+                    {
+                        let text = self.draft.trim().to_string();
+                        if !text.is_empty() {
+                            self.draft.clear();
+                            self.apply(Action::Send(text));
+                        }
+                    }
                     // A reply for the open chat means any in-flight
                     // debounced refresh has landed.
                     self.refresh_in_flight = false;
