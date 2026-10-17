@@ -480,20 +480,31 @@ impl Session {
     }
 }
 
+/// Offline fallback: deliver the CACHED chat list (so the sidebar
+/// paints instead of sitting empty) plus the offline banner. Returns
+/// true when cached content was delivered.
+fn send_cached_chats(ses: &Session, tx: &Sender<Event>, why: &str) -> bool {
+    let Some(archive) = ses.archive.as_ref() else {
+        return false;
+    };
+    let Ok(mut chats) = archive.load_chats() else {
+        return false;
+    };
+    if chats.is_empty() {
+        return false;
+    }
+    sort_chats(&mut chats);
+    let _ = tx.send(Event::Chats(chats));
+    let _ = tx.send(Event::Offline(format!(
+        "Offline — showing cached data ({why})"
+    )));
+    true
+}
+
 /// Token/session setup failed. With cached content that is an OFFLINE
 /// situation (stay usable), not a sign-in demand.
 fn offline_or_login(ses: &Session, tx: &Sender<Event>, error: String) {
-    let has_cache = ses
-        .archive
-        .as_ref()
-        .and_then(|a| a.load_chats().ok())
-        .map(|c| !c.is_empty())
-        .unwrap_or(false);
-    if has_cache {
-        let _ = tx.send(Event::Offline(format!(
-            "Offline — showing cached data ({error})"
-        )));
-    } else {
+    if !send_cached_chats(ses, tx, &error) {
         let _ = tx.send(Event::NeedLogin(error));
     }
 }
@@ -640,7 +651,14 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                         send!(Event::Chats(chats));
                         send!(Event::Unread(unread));
                     }
-                    Err(e) => send!(Event::Error(format!("chat list: {e:#}"))),
+                    Err(e) => {
+                        // Offline (or the endpoint chain failed): the
+                        // cached list keeps the sidebar alive; the raw
+                        // error string only when there is nothing cached.
+                        if !send_cached_chats(&ses, &tx, "chat list fetch failed") {
+                            send!(Event::Error(format!("chat list: {e:#}")));
+                        }
+                    }
                 }
             }
             Command::OpenChat(chat_id) => {
