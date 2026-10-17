@@ -610,11 +610,22 @@ fn lane_geometry(spans: &[(i32, i32)]) -> Vec<(usize, usize)> {
             cluster.clear();
             lanes.clear();
         }
-        match lanes.iter().position(|end| *end <= *s) {
-            Some(li) => lanes[li] = s + d,
-            None => lanes.push(s + d),
-        }
-        geo[i].0 = lanes.len() - 1;
+        // Lane index is the lane this span LANDED IN — the matched/reused
+        // lane `li`, not `lanes.len()-1` (the count is only right for
+        // spans that PUSH a new lane; a span reusing a freed lane rendered
+        // on top of the newest lane's occupant — the run-4 overlapping-
+        // chips bug: a 09:00–09:45 meeting stacked onto the 09:30 lane).
+        let lane = match lanes.iter().position(|end| *end <= *s) {
+            Some(li) => {
+                lanes[li] = s + d;
+                li
+            }
+            None => {
+                lanes.push(s + d);
+                lanes.len() - 1
+            }
+        };
+        geo[i].0 = lane;
         cluster.push(i);
         cluster_end = cluster_end.max(s + d);
     }
@@ -848,6 +859,14 @@ fn week_grid(
                         egui::pos2(x, y),
                         egui::vec2(lane_w - 2.0, h),
                     );
+                    // QA hook: TEAMSFAST_CALGEOM=1 — per-block lane/x/y dump
+                    // for grid forensics (run-4 overlap investigation).
+                    if std::env::var("TEAMSFAST_CALGEOM").as_deref() == Ok("1") {
+                        log::info!(
+                            "CALGEOM day={idx} subj={:?} lane={lane}/{total_lanes} lane_w={lane_w:.0} x={x:.0} y={y:.0} h={h:.0} col_w={col_w:.0} hour_px={hour_px:.0} top={top:.0}",
+                            m.subject
+                        );
+                    }
                     // Narrow overlap lanes drop to the compact single-line
                     // pill (time + ellipsized title) instead of two crushed
                     // rows of clipped text.
@@ -2345,5 +2364,33 @@ mod tests {
             }
             other => panic!("unexpected action: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::lane_geometry;
+
+    // Real Wednesday shapes from CALDUMP (2026-10-14) that pixel forensics
+    // showed rendering overlapped (run-4): two clusters where the runtime
+    // placed overlapping events in the same lane.
+    #[test]
+    fn morning_cluster_tiles() {
+        // 08:15–09:00, 08:30–09:00, 09:00–09:45, 09:30–10:00
+        let geo = lane_geometry(&[(495, 45), (510, 30), (540, 45), (570, 30)]);
+        assert_eq!(geo, vec![(0, 2), (1, 2), (0, 2), (1, 2)]);
+    }
+
+    #[test]
+    fn afternoon_chain_cluster_tiles() {
+        // 13:30–14:00, 13:40–14:40, 14:00–15:00, 14:00–15:00 (chain overlap)
+        let geo = lane_geometry(&[(810, 30), (820, 60), (840, 60), (840, 60)]);
+        assert_eq!(geo, vec![(0, 3), (1, 3), (0, 3), (2, 3)]);
+    }
+
+    #[test]
+    fn touching_shares_lane() {
+        let geo = lane_geometry(&[(540, 60), (600, 30)]);
+        assert_eq!(geo, vec![(0, 1), (0, 1)]);
     }
 }
