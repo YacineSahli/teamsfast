@@ -646,7 +646,14 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
         rest = &after[gt_rel + 1..];
         let lower = tag.to_ascii_lowercase();
         let name = lower.split(|c: char| c == ' ' || c == '\t').next().unwrap_or("");
-        match name {
+        // Normalize the tag name before matching: the first token of
+        // `<br/>` is "br/" and of `</div>` is "/div" — neither matched
+        // any arm, so self-closing tags were dropped entirely (`<p>a
+        // <br/>b</p>` fused to "ab") and closing block tags never broke
+        // the line ("x</div>y" concatenated).
+        let base = name.trim_matches('/');
+        let closing = name.starts_with('/');
+        match base {
             // `<br>` must BOTH flush pending text and break the line. A
             // long-lived bug kept only the flush (the LineBreak push sat
             // in an unreachable inner arm), so multi-line messages —
@@ -658,99 +665,108 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
             }
             "b" | "strong" | "i" | "em" | "u" | "pre" | "code" | "a" | "at" | "img" | "blockquote"
             | "span" | "div" | "p" | "ol" | "ul" | "li" | "h1" | "h2" | "h3" => {
-                // closing?
-                if lower.starts_with('/') || name.starts_with('/') {
-                    // closing tag — nothing to do, styles applied inline below
-                }
-                let self_closing = tag.ends_with('/');
-                let attr = |key: &str| -> Option<String> {
-                    let low = lower.as_str();
-                    let pat = format!("{}=\"", key);
-                    let p = low.find(&pat)? + pat.len();
-                    let e = low[p..].find('"')? + p;
-                    Some(low[p..e].to_string())
-                };
-                match name {
-                    "b" | "strong" => {
-                        let (inner, next) = take_until(rest, &format!("</{}", name));
-                        flush(&mut text, &mut segs);
-                        segs.push(Seg::Bold(decode_entities(&strip_tags(&inner))));
-                        rest = next;
-                    }
-                    "i" | "em" => {
-                        let (inner, next) = take_until(rest, &format!("</{}", name));
-                        flush(&mut text, &mut segs);
-                        segs.push(Seg::Italic(decode_entities(&strip_tags(&inner))));
-                        rest = next;
-                    }
-                    "pre" | "code" => {
-                        let (inner, next) = take_until(rest, &format!("</{}", name));
-                        flush(&mut text, &mut segs);
-                        segs.push(Seg::Code(decode_entities(&strip_tags(&inner))));
-                        rest = next;
-                    }
-                    "a" => {
-                        let (inner, next) = take_until(rest, "</a>");
-                        let url = attr("href").unwrap_or_default();
-                        flush(&mut text, &mut segs);
-                        segs.push(Seg::Link {
-                            text: decode_entities(&strip_tags(&inner)),
-                            url,
-                        });
-                        rest = next;
-                    }
-                    "at" => {
-                        let (inner, next) = take_until(rest, "</at>");
-                        flush(&mut text, &mut segs);
-                        segs.push(Seg::Mention {
-                            name: decode_entities(&strip_tags(&inner)),
-                            // Real MRIs contain ':' ("8:orgid:…"); a bare
-                            // index like itemid="0" is not an mri.
-                            mri: attr("id").filter(|id| id.contains(':')),
-                        });
-                        rest = next;
-                    }
-                    "img" => {
-                        if let Some(url) = attr("src").or_else(|| attr("data-src")) {
-                            flush(&mut text, &mut segs);
-                            segs.push(Seg::Image { url });
-                        }
-                        if self_closing {
-                            // already consumed
-                        }
-                    }
-                    "span" => {
-                        if lower.contains("schema.skype.com/mention") {
-                            let (inner, next) = take_until(rest, "</span>");
-                            flush(&mut text, &mut segs);
-                            segs.push(Seg::Mention {
-                                name: decode_entities(&strip_tags(&inner)),
-                                mri: None,
-                            });
-                            rest = next;
-                        }
-                        // other spans: unwrap, text flows
-                    }
-                    "blockquote" => {
-                        let (inner, next) = take_until(rest, "</blockquote>");
-                        flush(&mut text, &mut segs);
-                        segs.push(Seg::Quote(decode_entities(&strip_tags(&inner))));
-                        rest = next;
-                    }
-                    "div" | "p" | "h1" | "h2" | "h3" | "li" => {
-                        // Block open breaks the line — and must FLUSH the
-                        // pending text first: without the flush, "a</p><p>b"
-                        // stayed in one text buffer and the paragraphs
-                        // concatenated ("ab") while the LineBreaks piled up
-                        // at the front (strip_block_noise then dropped them).
+                if closing {
+                    // Closing block tags break the line like their opens
+                    // (the open's break fires BEFORE its text, so without
+                    // this the close of "x</div>y" fused the neighbors).
+                    // Inline closings are no-ops: their content was
+                    // consumed at the open tag. Consecutive breaks
+                    // collapse in strip_block_noise.
+                    if matches!(base, "div" | "p" | "h1" | "h2" | "h3" | "li" | "ol" | "ul") {
                         flush(&mut text, &mut segs);
                         segs.push(Seg::LineBreak);
                     }
-                    _ => {}
+                } else {
+                    let self_closing = tag.ends_with('/');
+                    let attr = |key: &str| -> Option<String> {
+                        let low = lower.as_str();
+                        let pat = format!("{}=\"", key);
+                        let p = low.find(&pat)? + pat.len();
+                        let e = low[p..].find('"')? + p;
+                        Some(low[p..e].to_string())
+                    };
+                    match base {
+                        "b" | "strong" => {
+                            let (inner, next) = take_until(rest, &format!("</{}>", base));
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Bold(decode_entities(&strip_tags(&inner))));
+                            rest = next;
+                        }
+                        "i" | "em" => {
+                            let (inner, next) = take_until(rest, &format!("</{}>", base));
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Italic(decode_entities(&strip_tags(&inner))));
+                            rest = next;
+                        }
+                        "pre" | "code" => {
+                            let (inner, next) = take_until(rest, &format!("</{}>", base));
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Code(decode_entities(&strip_tags(&inner))));
+                            rest = next;
+                        }
+                        "a" => {
+                            let (inner, next) = take_until(rest, "</a>");
+                            let url = attr("href").unwrap_or_default();
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Link {
+                                text: decode_entities(&strip_tags(&inner)),
+                                url,
+                            });
+                            rest = next;
+                        }
+                        "at" => {
+                            let (inner, next) = take_until(rest, "</at>");
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Mention {
+                                name: decode_entities(&strip_tags(&inner)),
+                                // Real MRIs contain ':' ("8:orgid:…"); a bare
+                                // index like itemid="0" is not an mri.
+                                mri: attr("id").filter(|id| id.contains(':')),
+                            });
+                            rest = next;
+                        }
+                        "img" => {
+                            if let Some(url) = attr("src").or_else(|| attr("data-src")) {
+                                flush(&mut text, &mut segs);
+                                segs.push(Seg::Image { url });
+                            }
+                            if self_closing {
+                                // already consumed
+                            }
+                        }
+                        "span" => {
+                            if lower.contains("schema.skype.com/mention") {
+                                let (inner, next) = take_until(rest, "</span>");
+                                flush(&mut text, &mut segs);
+                                segs.push(Seg::Mention {
+                                    name: decode_entities(&strip_tags(&inner)),
+                                    mri: None,
+                                });
+                                rest = next;
+                            }
+                            // other spans: unwrap, text flows
+                        }
+                        "blockquote" => {
+                            let (inner, next) = take_until(rest, "</blockquote>");
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Quote(decode_entities(&strip_tags(&inner))));
+                            rest = next;
+                        }
+                        "div" | "p" | "h1" | "h2" | "h3" | "li" => {
+                            // Block open breaks the line — and must FLUSH the
+                            // pending text first: without the flush, "a</p><p>b"
+                            // stayed in one text buffer and the paragraphs
+                            // concatenated ("ab") while the LineBreaks piled up
+                            // at the front (strip_block_noise then dropped them).
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::LineBreak);
+                        }
+                        _ => {}
+                    }
                 }
             }
             "script" | "style" => {
-                let (_, next) = take_until(rest, &format!("</{}", name));
+                let (_, next) = take_until(rest, &format!("</{}>", base));
                 rest = next;
             }
             _ => {}
@@ -844,7 +860,7 @@ fn strip_tags(s: &str) -> String {
         };
         let tag = &after[1..gt_rel];
         let name = tag
-            .trim_start_matches('/')
+            .trim_matches('/')
             .split(|c: char| c == ' ' || c == '\t')
             .next()
             .unwrap_or("")
@@ -863,6 +879,12 @@ fn strip_tags(s: &str) -> String {
         rest = &after[gt_rel + 1..];
     }
     out.push_str(rest);
+    // Closing block tags append a boundary space even at the very end
+    // ("<strong>A<p>B</p></strong>" -> "A B "); previews read better
+    // without the trailing one.
+    while out.ends_with(' ') {
+        out.pop();
+    }
     out
 }
 
@@ -1594,6 +1616,75 @@ mod br_tests {
         let segs = parse_html("a<br><br>b");
         let breaks = segs.iter().filter(|s| matches!(s, Seg::LineBreak)).count();
         assert_eq!(breaks, 1, "Teams renders blank lines as a single gap");
+    }
+
+    fn shape(segs: &[Seg]) -> Vec<&str> {
+        segs.iter()
+            .map(|s| match s {
+                Seg::Text(t) => t.as_str(),
+                Seg::LineBreak => "\n",
+                _ => "?",
+            })
+            .collect()
+    }
+
+    // Self-closing `<br/>` (no space before the slash): the first name
+    // token was "br/", which matched no arm, so the tag vanished —
+    // "<p>a<br/>b</p>" rendered as one fused line "ab".
+    #[test]
+    fn self_closing_br_breaks() {
+        assert_eq!(
+            shape(&parse_html("<p>a<br/>b</p>")),
+            vec!["a", "\n", "b"]
+        );
+    }
+
+    // Closing block tags must break like their opens: "x</div>y"
+    // concatenated to "xy" because "/div" matched nothing.
+    #[test]
+    fn closing_block_tag_breaks() {
+        assert_eq!(shape(&parse_html("<div>x</div>y")), vec!["x", "\n", "y"]);
+        assert_eq!(shape(&parse_html("<p>a</p>b")), vec!["a", "\n", "b"]);
+    }
+
+    // The run-3 fix must survive the closing-tag break: consecutive
+    // breaks (close + reopen) collapse to one gap.
+    #[test]
+    fn p_p_still_two_lines_with_closing_breaks() {
+        assert_eq!(
+            shape(&parse_html("<p>a</p><p>b</p>")),
+            vec!["a", "\n", "b"]
+        );
+    }
+
+    // Close-pattern precision: searching for "</b" (no closing bracket)
+    // matched inside "</blockquote>", truncating bold content early and
+    // leaking the remainder as plain text.
+    #[test]
+    fn bold_close_does_not_match_blockquote_close() {
+        let segs = parse_html("<b>a<blockquote>q</blockquote>b</b>");
+        match &segs[0] {
+            Seg::Bold(t) => assert_eq!(t, "a q b"),
+            other => panic!("expected Bold, got {other:?}"),
+        }
+        assert_eq!(segs.len(), 1, "nothing may leak past the bold close");
+    }
+}
+
+#[cfg(test)]
+mod strip_tags_tests {
+    use super::strip_tags;
+
+    #[test]
+    fn self_closing_br_gets_block_space() {
+        assert_eq!(strip_tags("a<br/>b"), "a b");
+        assert_eq!(strip_tags("a<br />b"), "a b");
+    }
+
+    #[test]
+    fn closing_block_space_but_no_trailing() {
+        assert_eq!(strip_tags("<strong>A<p>B</p></strong>"), "A B");
+        assert_eq!(strip_tags("x<div>y</div>"), "x y");
     }
 }
 
