@@ -261,7 +261,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // screen — the wrap width then differed between paints and rows
         // re-wrapped (run-5 layout-shift forensics). The budget keeps
         // room for the trailing header controls.
-        let name_w = (ui.available_width() - 170.0).clamp(24.0, ui.available_width());
+        let name_w = (ui.available_width() - 250.0).clamp(24.0, ui.available_width());
         ui.add_sized(
             [name_w, 20.0],
             egui::Label::new(RichText::new(&ctx.chat_name).bold().size(17.0))
@@ -365,11 +365,17 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             }
         }
         if let Some(user) = ctx.typing_user {
+            // Truncate to what's left of the header row: with the call/
+            // files/latest controls present, a long name overflowed ON TOP
+            // of them and clipped at the pane edge (battery P1).
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{user} is typing…"))
-                        .small()
-                        .color(ctx.pal.link),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("{user} is typing…"))
+                            .small()
+                            .color(ctx.pal.link),
+                    )
+                    .truncate(),
                 );
             });
         }
@@ -1536,7 +1542,8 @@ fn reaction_strip(
     // column — clip the strip to its reserved rect (width-capped chips +
     // this clip are the two guards; red-team P1-1).
     strip.set_clip_rect(anchor);
-    strip.spacing_mut().item_spacing.x = 3.0;
+    // 8px: 3px read as one glued clump between timestamp and chips.
+    strip.spacing_mut().item_spacing.x = 8.0;
     if own {
         // Right-to-left: chips rightmost against the bubble edge, then
         // seen-by / timestamp / pin flowing left (the old meta order).
@@ -1556,7 +1563,7 @@ fn reaction_strip(
             strip.with_layout(
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.spacing_mut().item_spacing.x = 8.0;
                     reaction_chips(ui, ctx, m, own);
                 },
             );
@@ -1635,6 +1642,13 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
     } else {
         ctx.pal.bubble_in
     };
+    // Light theme: the 0.09 tint over white was a ~3 RGB delta — chips
+    // read as smudges. Strengthen fill+stroke there.
+    let (fill_a, stroke_a) = if ctx.pal.is_light() {
+        (0.14, 0.75)
+    } else {
+        (0.09, 0.5)
+    };
     for (i, r) in m.reactions.iter().enumerate() {
         if i >= shown {
             if hidden > 0 {
@@ -1672,16 +1686,24 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
             format!("{} by {}", r.emoji, names.join(", "))
         };
         let chip = Frame::default()
-            .fill(crate::theme::tint_over(base, ctx.pal.text, 0.09))
-            .stroke(Stroke::new(1.0, ctx.pal.outline.gamma_multiply(0.5)))
+            .fill(crate::theme::tint_over(base, ctx.pal.text, fill_a))
+            .stroke(Stroke::new(1.0, ctx.pal.outline.gamma_multiply(stroke_a)))
             .corner_radius(CornerRadius::same(9))
             // Sized to fit inside REACT_STRIP_H (unit-tested) — the strip's
             // reserved height must never grow when chips render.
             .inner_margin(egui::Margin::symmetric(5, 1))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    emoji_widget(ui, ctx, &r.emoji, 13.0);
-                    ui.label(RichText::new(r.count.to_string()).small());
+                    if own {
+                        // The strip is right-to-left on own rows; adding
+                        // the count first keeps the visual order
+                        // emoji-then-count on both sides.
+                        ui.label(RichText::new(r.count.to_string()).small());
+                        emoji_widget(ui, ctx, &r.emoji, 13.0);
+                    } else {
+                        emoji_widget(ui, ctx, &r.emoji, 13.0);
+                        ui.label(RichText::new(r.count.to_string()).small());
+                    }
                 });
             })
             .response;
