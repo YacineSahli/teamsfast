@@ -620,9 +620,9 @@ pub struct TeamsFastApp {
     update_receipt: Option<fastframe_update::Receipt>,
     launch_error: Option<String>,
     /// Notification clicks: chat ids delivered by notify threads.
-    notif_clicks: Receiver<String>,
+    notif_clicks: Receiver<(String, bool)>,
     /// The sender side cloned into every notification thread.
-    notif_tx: Sender<String>,
+    notif_tx: Sender<(String, bool)>,
 
     textures: HashMap<String, (egui::TextureHandle, [usize; 2])>,
     emoji_textures: HashMap<String, egui::TextureHandle>,
@@ -1068,7 +1068,7 @@ impl TeamsFastApp {
         }
         // Interface zoom from settings.
         cc.egui_ctx.set_zoom_factor(settings_load.zoom);
-        let (notif_tx, notif_rx) = std::sync::mpsc::channel::<String>();
+        let (notif_tx, notif_rx) = std::sync::mpsc::channel::<(String, bool)>();
         let mut app = Self {
             state: State::Boot,
             status: "Starting…".into(),
@@ -2214,6 +2214,10 @@ impl TeamsFastApp {
                     .summary(&title)
                     .body(&body)
                     .action("default", "Open")
+                    // Inline reply needs server support notify-rust 4
+                    // cannot express; the explicit Reply button opens the
+                    // chat with the composer FOCUSED — one keystroke away.
+                    .action("reply", "Reply")
                     .timeout(6000)
                     .show();
                 if let Ok(handle) = shown {
@@ -2221,7 +2225,9 @@ impl TeamsFastApp {
                     // "default" = body click on every freedesktop server.
                     handle.wait_for_action(|action| {
                         if action == "default" {
-                            let _ = click_tx.send(chat_id);
+                            let _ = click_tx.send((chat_id, false));
+                        } else if action == "reply" {
+                            let _ = click_tx.send((chat_id, true));
                         }
                     });
                 }
@@ -3381,16 +3387,27 @@ impl eframe::App for TeamsFastApp {
         }
 
         // Notification clicks: open that conversation and raise the window.
-        let mut clicked: Option<String> = None;
-        while let Ok(id) = self.notif_clicks.try_recv() {
-            clicked = Some(id);
+        // A "Reply" action click additionally focuses the composer.
+        let mut clicked: Option<(String, bool)> = None;
+        while let Ok(click) = self.notif_clicks.try_recv() {
+            clicked = Some(click);
         }
-        if let Some(id) = clicked {
+        if let Some((id, reply)) = clicked {
             self.apply(Action::OpenChat(id));
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
             self.window_hidden = false;
+            if reply {
+                // The composer field publishes its egui id under the fixed
+                // context key (it lives inside the ScrollArea, so its id
+                // can't be derived before the chat renders) — focus that.
+                if let Some(field_id) = ui.ctx().data_mut(|d| {
+                    d.get_temp::<egui::Id>(egui::Id::new("teamsfast_composer_field"))
+                }) {
+                    ui.ctx().memory_mut(|m| m.request_focus(field_id));
+                }
+            }
         }
 
         // Theme catalog: poll for scans/edits; re-apply the selected palette.
