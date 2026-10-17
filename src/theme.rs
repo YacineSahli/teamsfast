@@ -77,6 +77,13 @@ impl Palette {
         }
     }
 
+    /// Light-base palettes (window is bright) — theme-aware tinting
+    /// directions (recess toward white, not black).
+    pub fn is_light(&self) -> bool {
+        let [r, g, b, _] = self.window.to_srgba_unmultiplied();
+        u16::from(r) + u16::from(g) + u16::from(b) > 384
+    }
+
     /// Paint the palette onto egui's visuals.
     pub fn apply_visuals(&self, ctx: &egui::Context) {
         let mut v = Visuals::dark();

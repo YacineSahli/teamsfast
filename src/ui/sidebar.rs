@@ -75,22 +75,30 @@ pub fn sidebar(
                         egui::TextEdit::singleline(search)
                             .hint_text("Search")
                             .font(egui::TextStyle::Small)
-                            // Recessed well: the default raised field fill
-                            // read as a button next to the flat header.
-                            .frame(
-                                egui::Frame::default()
-                                    .fill(crate::theme::tint_over(
-                                        ctx.pal.panel,
-                                        egui::Color32::BLACK,
-                                        0.16,
-                                    ))
-                                    .stroke(egui::Stroke::new(
-                                        1.0,
-                                        ctx.pal.outline.gamma_multiply(0.6),
-                                    ))
-                                    .corner_radius(6)
-                                    .inner_margin(egui::Margin::symmetric(6, 3)),
-                            ),
+                        // Recessed well: the default raised field fill
+                        // read as a button next to the flat header. On
+                        // DARK, recess = darken; on LIGHT the same black
+                        // tint rendered a mid-gray slab — recess toward
+                        // white instead (native light search fields are
+                        // the lightest element, not the darkest).
+                        .frame(
+                            egui::Frame::default()
+                                .fill(crate::theme::tint_over(
+                                    ctx.pal.panel,
+                                    if ctx.pal.is_light() {
+                                        egui::Color32::WHITE
+                                    } else {
+                                        egui::Color32::BLACK
+                                    },
+                                    if ctx.pal.is_light() { 0.75 } else { 0.16 },
+                                ))
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    ctx.pal.outline.gamma_multiply(0.6),
+                                ))
+                                .corner_radius(6)
+                                .inner_margin(egui::Margin::symmetric(6, 3)),
+                        ),
                     );
                     if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         let q = search.trim().to_string();
