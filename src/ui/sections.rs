@@ -2453,3 +2453,50 @@ mod lane_tests {
         assert_eq!(geo, vec![(0, 1), (0, 1)]);
     }
 }
+
+#[cfg(test)]
+mod span_tests {
+    use super::meeting_span;
+    use ost::api::MeetingInfo;
+
+    fn meeting(start: &str, end: &str) -> MeetingInfo {
+        MeetingInfo {
+            id: "e".into(),
+            subject: "s".into(),
+            start: Some(start.into()),
+            end: Some(end.into()),
+            join_url: None,
+            organizer: None,
+            organizer_email: None,
+            is_organizer: false,
+            is_online: false,
+            canceled: false,
+        }
+    }
+
+    // Graph calendar dateTimes are NAIVE — the span parser must take the
+    // wall components, not shift by the local offset.
+    #[test]
+    fn span_uses_wall_components() {
+        let (d, s, dur) = meeting_span(&meeting("2026-10-14T20:00:00.0", "2026-10-15T00:00:00.0"))
+            .expect("parses");
+        assert_eq!(d.to_string(), "2026-10-14");
+        assert_eq!((s, dur), (1200, 240), "20:00 crossing midnight = 240min");
+    }
+
+    // Degenerate shapes clamp instead of producing negative/absurd spans.
+    #[test]
+    fn degenerate_spans_clamp() {
+        // end before start → 15-minute stub, never negative
+        let (_, s, dur) = meeting_span(&meeting("2026-10-14T15:00:00.0", "2026-10-14T14:00:00.0"))
+            .expect("parses");
+        assert_eq!((s, dur), (900, 15));
+        // missing end → 30-minute default
+        let mut m = meeting("2026-10-14T09:00:00.0", "2026-10-14T10:00:00.0");
+        m.end = None;
+        let (_, s, dur) = meeting_span(&m).expect("parses");
+        assert_eq!((s, dur), (540, 30));
+        // unparseable start → the meeting drops out entirely
+        assert!(meeting_span(&meeting("garbage", "2026-10-14T10:00:00.0")).is_none());
+    }
+}

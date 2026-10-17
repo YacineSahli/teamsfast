@@ -2003,3 +2003,37 @@ mod fuzz_corpus {
     }
 }
 
+
+#[cfg(test)]
+mod split_cells_tests {
+    use super::split_cells;
+
+    // Both dialects strip the outer pipes; Jira headers use the same
+    // splitting with leading/trailing || removed.
+    #[test]
+    fn jira_vs_markdown_first_cell() {
+        assert_eq!(
+            split_cells("||A||B||", true),
+            vec!["A".to_string(), "B".to_string()]
+        );
+        assert_eq!(
+            split_cells("|a|b|", false),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn escapes_and_empties() {
+        // escaped pipe becomes a LITERAL pipe inside one cell (the
+        // backslash is consumed)
+        assert_eq!(
+            split_cells(r"|a\|b|c|", false),
+            vec!["a|b".to_string(), "c".to_string()]
+        );
+        // interior empties preserved (column alignment)
+        assert_eq!(
+            split_cells("||x|", false),
+            vec!["".to_string(), "x".to_string()]
+        );
+    }
+}
