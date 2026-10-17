@@ -2115,7 +2115,14 @@ impl TeamsFastApp {
                     self.calendar_loading = false;
                 }
                 Event::Files(files) => {
-                    self.drive_files = files;
+                    // OneDrive "recent" can return the same item twice
+                    // (opened via different parents) — the list rendered
+                    // literal duplicates (battery round-5). Keep the first.
+                    let mut seen = HashSet::new();
+                    self.drive_files = files
+                        .into_iter()
+                        .filter(|f| seen.insert((f.name.clone(), f.web_url.clone())))
+                        .collect();
                     self.files_loading = false;
                 }
                 Event::TodoLists(lists) => {
