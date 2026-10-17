@@ -542,9 +542,17 @@ pub struct TeamsFastApp {
     /// QA auto-share fired for this call (TEAMSFAST_SCREENSHARE=1).
     share_auto_fired: bool,
 
-    /// "Join with link" dialog state.
+    /// "Join with link" dialog state. The pre-join screen adds the
+    /// camera preview + modality toggles (camera defaults OFF for
+    /// meetings, mic ON — native's default).
     join_open: bool,
     join_source: String,
+    join_label: Option<String>,
+    join_camera: bool,
+    join_mic: bool,
+    join_preview: Option<std::sync::mpsc::Receiver<ost::calling::video::VideoFrame>>,
+    join_camera_ok: bool,
+    join_preview_tex: Option<egui::TextureHandle>,
     /// Subject hint for the next meeting join's banner label.
     call_label_hint: Option<String>,
     /// Teams-management dialog (create channel, join/create team).
@@ -860,6 +868,16 @@ fn teams_dialog(
 }
 
 impl TeamsFastApp {
+    /// End the pre-join camera preview. Dropping the receiver unwinds the
+    /// forwarder and the capture thread (each exits when its channel peer
+    /// disappears) — the explicit command is belt-and-braces cleanup.
+    fn stop_join_preview(&mut self) {
+        self.join_preview = None;
+        self.join_camera_ok = false;
+        self.join_preview_tex = None;
+        self.cmd.send(Command::JoinPreviewStop).ok();
+    }
+
     /// Start screen sharing on the live call: portal ScreenCast (feature
     /// build) or the synthetic source (TEAMSFAST_SCREENSHARE=1 QA). The
     /// portal dialog blocks on user interaction, so the start runs on a
@@ -1075,6 +1093,12 @@ impl TeamsFastApp {
             share_auto_fired: false,
             join_open: false,
             join_source: String::new(),
+            join_label: None,
+            join_camera: false,
+            join_mic: true,
+            join_preview: None,
+            join_camera_ok: false,
+            join_preview_tex: None,
             call_label_hint: None,
             team_dialog: TeamDialogState::default(),
             contact: None,
@@ -1300,11 +1324,13 @@ impl TeamsFastApp {
                     self.notes_page = Some(page);
                 }
                 Event::MeetNowReady { join_url } => {
-                    self.status = "meeting created — joining…".into();
-                    self.call_is_meeting = true;
-                    self.lobby = ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Start);
-                    self.call_label_hint = Some("Meet now".into());
-                    self.cmd.send(Command::JoinMeeting(join_url)).ok();
+                    // Meet-now also gets the pre-join screen (camera/mic
+                    // choice) — it joins the moment the user confirms.
+                    self.status = "meeting created".into();
+                    self.apply(Action::PreJoin {
+                        source: join_url,
+                        label: Some("Meet now".into()),
+                    });
                 }
                 Event::ChatFiles { chat_id, files } => {
                     let name = self
@@ -1342,6 +1368,13 @@ impl TeamsFastApp {
                     // shapes are capture-verified (see NOTES).
                     self.incoming = None;
                     self.stop_ringer();
+                }
+                Event::JoinPreview(rx) => {
+                    self.join_preview = Some(rx);
+                    self.join_camera_ok = true;
+                }
+                Event::JoinPreviewUnavailable => {
+                    self.join_camera_ok = false;
                 }
                 Event::CallMedia(handle) => {
                     // Video calls open the stage; voice calls stay on the
@@ -1508,7 +1541,14 @@ impl TeamsFastApp {
                         self.apply(Action::ShowTeamDialog);
                     }
                     if std::env::var("TEAMSFAST_JOINDLG").as_deref() == Ok("1") {
-                        self.join_open = true;
+                        self.apply(Action::ShowJoinDialog);
+                        // TEAMSFAST_JOINCAM=1 pre-arms the camera toggle —
+                        // headless QA can't click the pill (no key/mouse
+                        // injection on this harness).
+                        if std::env::var("TEAMSFAST_JOINCAM").as_deref() == Ok("1") {
+                            self.join_camera = true;
+                            log::info!("QA: join camera armed");
+                        }
                     }
                     // QA hook: TEAMSFAST_VIEW=<chat|teams|calendar|files|todo|activity>
                     if let Ok(v) = std::env::var("TEAMSFAST_VIEW") {
@@ -1883,7 +1923,12 @@ impl TeamsFastApp {
                                 m.subject.clone()
                             });
                             self.call_label_hint = label;
-                            self.cmd.send(Command::JoinMeeting(url)).ok();
+                            self.cmd.send(Command::JoinMeeting {
+                                source: url,
+                                camera: false,
+                                mic: true,
+                            })
+                            .ok();
                         }
                     }
                     self.meetings = meetings;
@@ -2608,15 +2653,43 @@ impl TeamsFastApp {
                     self.cmd.send(Command::DeclineIncoming(ring.raw)).ok();
                 }
             }
-            Action::JoinMeeting { source, label } => {
+            Action::JoinMeeting {
+                source,
+                label,
+                camera,
+                mic,
+            } => {
                 self.join_open = false;
+                self.stop_join_preview();
                 self.status = "Resolving meeting…".into();
                 self.call_is_meeting = true;
                 self.lobby = ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Start);
                 self.call_label_hint = label;
-                self.cmd.send(Command::JoinMeeting(source)).ok();
+                self.cmd.send(Command::JoinMeeting {
+                    source,
+                    camera,
+                    mic,
+                })
+                .ok();
             }
-            Action::ShowJoinDialog => self.join_open = true,
+            Action::PreJoin { source, label } => {
+                // Pre-join: dialog prefilled with the meeting, camera/mic
+                // defaults reset (camera off, mic on — native's meeting
+                // default), preview starts.
+                self.join_source = source;
+                self.join_label = label;
+                self.join_camera = false;
+                self.join_mic = true;
+                self.join_open = true;
+                self.cmd.send(Command::JoinPreviewStart).ok();
+            }
+            Action::ShowJoinDialog => {
+                self.join_label = None;
+                self.join_camera = false;
+                self.join_mic = true;
+                self.join_open = true;
+                self.cmd.send(Command::JoinPreviewStart).ok();
+            }
             Action::Status(text) => self.status = text,
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
@@ -4719,6 +4792,79 @@ impl eframe::App for TeamsFastApp {
                 );
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(10.0);
+                // Pre-join camera preview: live tile when the camera feeds,
+                // a ghost camera-off tile otherwise (toggle off or no
+                // device). Frames drain each repaint; the tick gate keeps
+                // repainting while the dialog is open.
+                let tile_w = ui.available_width();
+                let tile_h = (tile_w * 9.0 / 16.0).round().clamp(120.0, 230.0);
+                let (tile_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(tile_w, tile_h), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    tile_rect,
+                    8,
+                    crate::theme::tint_over(self.palette.panel, self.palette.text, 0.10),
+                );
+                if self.join_camera && self.join_camera_ok {
+                    if let Some(rx) = self.join_preview.as_ref() {
+                        if let Some(frame) = drain_latest(rx) {
+                            self.join_preview_tex = Some(apply_frame(
+                                ui.ctx(),
+                                self.join_preview_tex.clone(),
+                                "join_preview_tex",
+                                &frame,
+                            ));
+                        }
+                    }
+                    match &self.join_preview_tex {
+                        Some(tex) => {
+                            let size = tex.size_vec2();
+                            let scale = (tile_w / size.x).min(tile_h / size.y);
+                            let dw = size.x * scale;
+                            let dh = size.y * scale;
+                            let origin = egui::pos2(
+                                tile_rect.left() + (tile_w - dw) / 2.0,
+                                tile_rect.top() + (tile_h - dh) / 2.0,
+                            );
+                            ui.painter().image(
+                                tex.id(),
+                                egui::Rect::from_min_size(origin, egui::vec2(dw, dh)),
+                                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        None => {
+                            ui.painter().text(
+                                tile_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "starting camera…",
+                                egui::FontId::proportional(12.0),
+                                self.palette.secondary,
+                            );
+                        }
+                    }
+                } else {
+                    ui.painter().text(
+                        tile_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        if self.join_camera {
+                            "camera unavailable"
+                        } else {
+                            "camera is off"
+                        },
+                        egui::FontId::proportional(12.0),
+                        self.palette.secondary,
+                    );
+                }
+                ui.add_space(8.0);
+                // Modality toggles — native pre-join defaults: mic on,
+                // camera off; the user opts INTO video deliberately.
+                ui.horizontal(|ui| {
+                    crate::ui::settings::toggle(ui, &self.palette, "Mic", &mut self.join_mic);
+                    ui.add_space(14.0);
+                    crate::ui::settings::toggle(ui, &self.palette, "Camera", &mut self.join_camera);
+                });
+                ui.add_space(10.0);
                 // Actions right-aligned; primary last. Join stays disabled
                 // until there is something to join — the New-chat dialog's
                 // convention (a saturated button over an empty field read
@@ -4755,9 +4901,20 @@ impl eframe::App for TeamsFastApp {
             if join_now {
                 let src = self.join_source.trim().to_string();
                 if !src.is_empty() {
-                    self.apply(Action::JoinMeeting { source: src, label: None });
+                    let (camera, mic, label) =
+                        (self.join_camera, self.join_mic, self.join_label.take());
+                    self.apply(Action::JoinMeeting {
+                        source: src,
+                        label,
+                        camera,
+                        mic,
+                    });
                 }
                 self.join_source.clear();
+            }
+            if !self.join_open {
+                // Dialog closed without joining — stop the preview capture.
+                self.stop_join_preview();
             }
         }
 
@@ -4801,6 +4958,10 @@ impl eframe::App for TeamsFastApp {
         // theme catalog scans) so nothing goes stale when idle.
         let tick = if self.call.is_some() {
             Some(Duration::from_millis(500))
+        } else if self.join_open && self.join_camera && self.join_camera_ok {
+            // Pre-join preview streams at capture rate — pump repaints
+            // while the tile is live (15fps capture → 66ms).
+            Some(Duration::from_millis(66))
         } else if self.incoming.is_some()
             || self.typing.is_some()
             || self.offline.is_some()

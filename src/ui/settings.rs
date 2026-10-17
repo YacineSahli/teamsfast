@@ -199,7 +199,7 @@ pub fn settings_window(
 /// the earlier square checkbox still read as radio-ish at a glance (the
 /// stock ui.checkbox inherited the global radius 8 — a circle on a ~14px
 /// box — which is why this was hand-drawn in the first place).
-fn toggle(ui: &mut Ui, pal: &crate::theme::Palette, label: &str, value: &mut bool) -> bool {
+pub(crate) fn toggle(ui: &mut Ui, pal: &crate::theme::Palette, label: &str, value: &mut bool) -> bool {
     let (rect, mut resp) = ui.allocate_exact_size(
         egui::vec2(34.0 + 8.0 + ui.painter().layout(
             label.into(),

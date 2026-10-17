@@ -138,7 +138,15 @@ pub enum Action {
     /// Decline the ringing incoming call.
     DeclineIncoming,
     /// Join a meeting (join URL / thread id / meet ID) with a display label.
-    JoinMeeting { source: String, label: Option<String> },
+    /// Open the pre-join dialog (preview + modality toggles) for a
+    /// meeting — calendar/meet-now joins go through it, like native.
+    PreJoin { source: String, label: Option<String> },
+    JoinMeeting {
+        source: String,
+        label: Option<String>,
+        camera: bool,
+        mic: bool,
+    },
     /// Open the "join with link" input.
     ShowJoinDialog,
     /// Per-chat notification level ("all" | "mentions" | "off").

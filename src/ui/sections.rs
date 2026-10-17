@@ -449,7 +449,7 @@ fn hm_only(ts: &str) -> String {
 /// — a silent click read as a dead UI.
 fn meeting_click(m: &MeetingInfo, actions: &mut Vec<Action>) {
     if let Some(url) = m.join_url.clone() {
-        actions.push(Action::JoinMeeting {
+        actions.push(Action::PreJoin {
             source: url,
             label: Some(if m.subject.is_empty() {
                 "Meeting".into()
@@ -1168,7 +1168,7 @@ fn meeting_row(ui: &mut Ui, m: &MeetingInfo, pal: &Palette, actions: &mut Vec<Ac
                             )
                             .on_hover_text("Join this meeting in TeamsFast")
                             .clicked()
-                        {                            actions.push(Action::JoinMeeting {
+                        {                            actions.push(Action::PreJoin {
                                 source: url.clone(),
                                 label: Some(if m.subject.is_empty() {
                                     "Meeting".to_string()
@@ -2265,7 +2265,7 @@ mod tests {
     fn meeting_click_routes_by_joinability() {
         let mut a = Vec::new();
         meeting_click(&meeting(today_date(), Some("https://join".into())), &mut a);
-        assert!(matches!(a[0], Action::JoinMeeting { .. }), "online → join, got {a:?}");
+        assert!(matches!(a[0], Action::PreJoin { .. }), "online → join, got {a:?}");
 
         a.clear();
         meeting_click(&meeting(today_date(), None), &mut a);
@@ -2418,7 +2418,7 @@ mod tests {
             "pill click must route to meeting_click, got {a:?}"
         );
         match &a[0] {
-            Action::JoinMeeting { source, .. } => {
+            Action::PreJoin { source, .. } => {
                 assert_eq!(source, "https://teams.microsoft.com/join")
             }
             other => panic!("unexpected action: {other:?}"),
