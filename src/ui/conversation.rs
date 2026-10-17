@@ -247,7 +247,19 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         ui.add_space(4.0);
         avatar(ui, &ctx.chat_name, 32.0);
         ui.add_space(2.0);
-        ui.heading(RichText::new(&ctx.chat_name).bold().size(17.0));
+        // Truncating, width-budgeted title: a long name (or the raw
+        // thread id before the roster resolves it) previously overflowed
+        // the header row, growing the central panel's min_rect past the
+        // screen — the wrap width then differed between paints and rows
+        // re-wrapped (run-5 layout-shift forensics). The budget keeps
+        // room for the trailing header controls.
+        let name_w = (ui.available_width() - 170.0).max(80.0);
+        ui.add_sized(
+            [name_w, 20.0],
+            egui::Label::new(RichText::new(&ctx.chat_name).bold().size(17.0))
+                .selectable(false)
+                .truncate(),
+        );
         // Pinned messages menu.
         if !ctx.pinned.is_empty() {
             ui.menu_button(
@@ -1000,10 +1012,13 @@ fn bubble_parts(
                                 |ui, name, url| {
                                     if ui
                                         .button(
-                                            RichText::new(format!("📎 {name}"))
-                                                .small(),
+                                            RichText::new(format!(
+                                                "📎 {}",
+                                                crate::ui::widgets::shorten_link_text(name)
+                                            ))
+                                            .small(),
                                         )
-                                        .on_hover_text("Download and open")
+                                        .on_hover_text(format!("Download {name}"))
                                         .clicked()
                                     {
                                         hits2.borrow_mut().push((
@@ -1073,9 +1088,13 @@ fn bubble_parts(
                             |ui, name, url| {
                                 if ui
                                     .button(
-                                        RichText::new(format!("📎 {name}")).small(),
+                                        RichText::new(format!(
+                                            "📎 {}",
+                                            crate::ui::widgets::shorten_link_text(name)
+                                        ))
+                                        .small(),
                                     )
-                                    .on_hover_text("Download and open")
+                                    .on_hover_text(format!("Download {name}"))
                                     .clicked()
                                 {
                                     hits2

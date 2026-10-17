@@ -4419,6 +4419,13 @@ impl eframe::App for TeamsFastApp {
             if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
                 eprintln!("AVAIL after-composer {:?}", ui.available_rect_before_wrap());
             }
+            if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+                eprintln!(
+                    "PRECENTRAL avail={:?} min_rect={:?}",
+                    ui.available_rect_before_wrap(),
+                    ui.min_rect()
+                );
+            }
             let bench = std::env::var("TEAMSFAST_SCROLLBENCH").as_deref() == Ok("1");
             let t_bench = (bench).then(std::time::Instant::now);
             egui::CentralPanel::default().show(ui, |ui| {

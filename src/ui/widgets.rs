@@ -998,6 +998,40 @@ fn strip_block_noise(segs: Vec<Seg>) -> Vec<Seg> {
 /// Render segments inside a wrapped flow. `image` is called for each inline
 /// image URL (the app decides whether it is already loaded / must fetch);
 /// `file` for downloadable file links (name, url).
+/// True when the text contains an unbreakable run too long for a chat
+/// line (URLs, Jira's `name.mp4|width=1219,alt="…"` media params). Such a
+/// token overflows the wrap and grows the central panel's min_rect past
+/// the screen edge; the wider wrap width then differs between the cached
+/// paint and the network settle, and every affected row re-wraps by a
+/// line (run-5 layout-shift forensics).
+fn has_pathological_token(t: &str) -> bool {
+    t.split_whitespace().any(|w| w.chars().count() > 48)
+}
+
+/// Plain label that breaks over-long tokens mid-word instead of
+/// overflowing. egui 0.36's `Label` Wrap mode never sets
+/// `wrap.break_anywhere`; a hand-built LayoutJob is the only access.
+fn label_breaking_long_tokens(ui: &mut Ui, t: &str) -> egui::Response {
+    if has_pathological_token(t) {
+        let font_id = ui
+            .style()
+            .text_styles
+            .get(&egui::TextStyle::Body)
+            .cloned()
+            .unwrap_or_else(|| egui::FontId::proportional(14.0));
+        let mut job = egui::text::LayoutJob::simple(
+            t.to_owned(),
+            font_id,
+            ui.visuals().text_color(),
+            ui.available_width().max(1.0),
+        );
+        job.wrap.break_anywhere = true;
+        ui.add(egui::Label::new(job).selectable(false))
+    } else {
+        ui.label(RichText::new(t))
+    }
+}
+
 pub fn render_segments(
     ui: &mut Ui,
     segs: &[Seg],
@@ -1062,7 +1096,7 @@ pub fn render_segments(
                         for piece in split_markdown_links(t) {
                             match piece {
                                 Piece::Plain(text) => {
-                                    ui.label(RichText::new(text));
+                                    label_breaking_long_tokens(ui, &text);
                                 }
                                 Piece::Bold(text) => {
                                     ui.label(RichText::new(text).bold());
@@ -1085,7 +1119,7 @@ pub fn render_segments(
                             }
                         }
                     } else {
-                        ui.label(RichText::new(t));
+                        label_breaking_long_tokens(ui, t);
                     }
                 }
                 Seg::Bold(t) => {
@@ -1243,7 +1277,7 @@ pub fn render_segments(
 }
 
 /// Long unbreakable tokens (URLs) overflow egui's wrapping; shorten for display.
-fn shorten_link_text(text: &str) -> String {
+pub fn shorten_link_text(text: &str) -> String {
     if text.len() <= 48 {
         return text.to_string();
     }
