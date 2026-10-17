@@ -126,7 +126,15 @@ pub enum Command {
     /// the camera (QA: TEAMSFAST_VIDEOCALL=1).
     TestCall { video: bool },
     /// Join a meeting from a URL / thread id / meet ID.
-    JoinMeeting(String),
+    JoinMeeting {
+        source: String,
+        camera: bool,
+        mic: bool,
+    },
+    /// Open the camera for the pre-join dialog preview.
+    JoinPreviewStart,
+    /// Stop the preview capture (dialog closed).
+    JoinPreviewStop,
     /// Accept the ringing incoming call (raw invitation JSON from
     /// [`Event::IncomingCall`]).
     AcceptIncoming(String),
@@ -326,6 +334,9 @@ pub enum Event {
     /// Live call controls for the call stage UI (mute/camera toggles,
     /// remote + local frame receivers). One per placed call.
     CallMedia(ost::calling::CallControlsHandle),
+    /// Pre-join preview frames (None state = camera unavailable).
+    JoinPreview(std::sync::mpsc::Receiver<ost::calling::video::VideoFrame>),
+    JoinPreviewUnavailable,
     /// The roster resolved a chat's display name that differs from the
     /// chat-list entry (e.g. bot-carrying 1:1s) — sidebar update.
     ChatRenamed { chat_id: String, name: String },
@@ -433,6 +444,10 @@ pub(crate) struct Session {
     /// (remote hang-up, safety-cap timer, crashed task) can be reaped
     /// instead of wedging "a call is already in progress" forever.
     pub call_stop: Option<CallSlot>,
+    /// Pre-join camera capture (join dialog preview). Dropping the UI-side
+    /// receiver unwinds the whole chain: forwarder exits on send-failure,
+    /// drops the camera rx, the capture thread exits on ITS send-failure.
+    pub join_cam: Option<ost::calling::camera::CameraCapture>,
 }
 
 /// The worker-side handle to one running call task.
@@ -480,6 +495,7 @@ impl Session {
             presence_failures: 0,
             presence_last_try: None,
             call_stop: None,
+            join_cam: None,
         }
     }
 }
@@ -882,13 +898,13 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             // ---- calls ----
             Command::StartCall(chat_id) => {
-                start_call(&mut ses, &tx, chat_id, false, false).await;
+                start_call(&mut ses, &tx, chat_id, false, false, true).await;
             }
             Command::StartVideoCall(chat_id) => {
-                start_call(&mut ses, &tx, chat_id, false, true).await;
+                start_call(&mut ses, &tx, chat_id, false, true, true).await;
             }
             Command::TestCall { video } => {
-                start_call(&mut ses, &tx, String::new(), true, video).await;
+                start_call(&mut ses, &tx, String::new(), true, video, true).await;
             }
             Command::CreateChannel { team_id, name } => {
                 sections::create_channel(&ses, &tx, &team_id, &name).await;
@@ -940,11 +956,50 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             } => {
                 sections::planner_set_done(&ses, &tx, &task_id, &etag, done).await;
             }
-            Command::JoinMeeting(source) => {
+            Command::JoinMeeting { source, camera, mic } => {
                 if let Some((thread, label)) = join::resolve_join_target(&ses, &tx, &source).await
                 {
-                    start_call_labelled(&mut ses, &tx, thread, false, label, false).await;
+                    start_call_labelled(&mut ses, &tx, thread, false, label, camera, mic).await;
                 }
+            }
+            Command::JoinPreviewStart => {
+                if ses.join_cam.is_some() {
+                    continue; // already previewing
+                }
+                let started = tokio::task::spawn_blocking(|| {
+                    ost::calling::camera::CameraCapture::start(None, 320, 240, 15)
+                })
+                .await;
+                match started {
+                    Ok(Ok((cap, cam_rx))) => {
+                        ses.join_cam = Some(cap);
+                        let (ui_tx, ui_rx) = std::sync::mpsc::sync_channel(2);
+                        // Forwarder: YUV frames -> VideoFrame for the UI.
+                        // Exits when the UI side drops its receiver.
+                        std::thread::spawn(move || {
+                            while let Ok(f) = cam_rx.recv() {
+                                let vf = ost::calling::video::VideoFrame {
+                                    width: f.width,
+                                    height: f.height,
+                                    data: f.data,
+                                };
+                                if ui_tx.send(vf).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                        send!(Event::JoinPreview(ui_rx));
+                    }
+                    _ => {
+                        // Camera absent/busy: the dialog shows the ghost
+                        // tile; joining can still flip the camera on (the
+                        // call degrades to black frames per teams-core).
+                        send!(Event::JoinPreviewUnavailable);
+                    }
+                }
+            }
+            Command::JoinPreviewStop => {
+                ses.join_cam = None; // chain unwinds via the UI rx drop
             }
             Command::AcceptIncoming(raw) => {
                 accept_incoming(&mut ses, &tx, raw).await;
@@ -973,9 +1028,10 @@ async fn start_call(
     chat_id: String,
     echo: bool,
     video: bool,
+    mic: bool,
 ) {
     let label = if echo { "Echo test".to_string() } else { chat_id.clone() };
-    start_call_labelled(ses, tx, chat_id, echo, label, video).await;
+    start_call_labelled(ses, tx, chat_id, echo, label, video, mic).await;
 }
 
 /// [`start_call`] with a display label (meeting subject, chat name, …).
@@ -986,6 +1042,7 @@ async fn start_call_labelled(
     echo: bool,
     label: String,
     video: bool,
+    mic: bool,
 ) {
     if !call_slot_free(ses) {
         let _ = tx.send(Event::CallFailed("a call is already in progress".into()));
@@ -1009,6 +1066,11 @@ async fn start_call_labelled(
         // Live call controls (mute/camera gates + frame sinks for the
         // stage UI); the handle rides to the UI as an event.
         let (media, media_handle) = ost::calling::call_controls(video);
+        // Pre-join choice: start muted when the user toggled mic off
+        // (the gate is a watch channel created true).
+        if !mic {
+            let _ = media_handle.mic_on.send(false);
+        }
         let _ = tx_evt.send(Event::CallMedia(media_handle));
         // Safety cap ~55 min; hang-up ends it earlier.
         let res = ost::calling::run_call_with_controls(
