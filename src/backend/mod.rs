@@ -599,6 +599,29 @@ fn seed_activity(ses: &mut Session, tx: &Sender<Event>) {
     let _ = tx.send(Event::ActivitySeeded(entries));
 }
 
+/// Commands that must run REGARDLESS of connection state: auth/recovery,
+/// call + preview teardown, cache-backed loads with their own offline
+/// fallback, and local-only archive writes. Everything else hits the
+/// network and is gated by the central offline guard below.
+fn runs_offline(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::StartLogin
+            | Command::CheckReady
+            | Command::LoadChats
+            | Command::StartTrouter
+            | Command::SignOut
+            | Command::ClearArchive
+            | Command::ArchiveStats
+            | Command::HangUp
+            | Command::JoinPreviewStart
+            | Command::JoinPreviewStop
+            | Command::SaveImageSize { .. }
+            // Purely local: zeroes the archive read-horizon (audit find).
+            | Command::MarkUnread(_)
+    )
+}
+
 async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
     let mut ses = Session::new();
     let mut trouter_started = false;
@@ -620,6 +643,16 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
     while let Some(cmd) = rx.recv().await {
         // `.await` on recv parks the root task properly, so spawned tasks
         // (trouter, drainer) run while the queue is idle.
+
+        // Central offline guard: ~40 handlers had a silent
+        // `client(ses) else return` — a click that did NOTHING read as a
+        // dead UI. Network commands now answer with one status note; the
+        // per-handler guards stay as backstops (this `continue` fires
+        // first, so no handler double-reports).
+        if ses.client.is_none() && !runs_offline(&cmd) {
+            send!(Event::Status("offline — needs a connection".into()));
+            continue;
+        }
         match cmd {
             Command::StartLogin => {
                 send!(Event::Status("Requesting a sign-in code…".into()));
@@ -1294,5 +1327,65 @@ mod tests {
         );
         assert_eq!(chat_recency(&chat(None)), 0);
         assert_eq!(chat_recency(&chat(Some("garbage"))), 0);
+    }
+}
+
+#[cfg(test)]
+mod offline_guard_tests {
+    use super::{runs_offline, Command};
+
+    #[test]
+    fn offline_capable_commands_stay_runnable() {
+        // Recovery + teardown + cache-backed + local-only.
+        for cmd in [
+            Command::StartLogin,
+            Command::CheckReady,
+            Command::LoadChats,
+            Command::StartTrouter,
+            Command::SignOut,
+            Command::ClearArchive,
+            Command::ArchiveStats,
+            Command::HangUp,
+            Command::JoinPreviewStart,
+            Command::JoinPreviewStop,
+            Command::SaveImageSize {
+                url: String::new(),
+                w: 0,
+                h: 0,
+            },
+        ] {
+            assert!(runs_offline(&cmd), "{cmd:?} must run offline");
+        }
+    }
+
+    #[test]
+    fn network_commands_are_gated() {
+        // Spot-check every family that hits the wire.
+        for cmd in [
+            Command::OpenChat(String::new()),
+            Command::RefreshChat(String::new()),
+            Command::Send {
+                chat_id: String::new(),
+                text: String::new(),
+                cmid: String::new(),
+            },
+            Command::FetchImage(String::new()),
+            Command::LoadCalendar,
+            Command::LoadFiles,
+            Command::LoadTodo,
+            Command::StartCall(String::new()),
+            Command::JoinMeeting {
+                source: String::new(),
+                camera: false,
+                mic: true,
+            },
+            Command::LoadOlder(String::new()),
+            Command::MarkRead {
+                chat_id: String::new(),
+                message_id: String::new(),
+            },
+        ] {
+            assert!(!runs_offline(&cmd), "{cmd:?} must be gated offline");
+        }
     }
 }
