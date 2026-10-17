@@ -373,6 +373,9 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // that turned out to be our panel-order bug — composer rendered AFTER
     // CentralPanel consumed the space — not an egui defect. stick_to_bottom
     // is verified rendering again, see bisect in git history.)
+    if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+        eprintln!("PRESCROLL aw={:.0} maxrect={:?}", ui.available_width(), ui.max_rect());
+    }
     let mut area = ScrollArea::vertical().auto_shrink(false);
     // NB: this egui style runs FLOATING scroll bars (scroll.floating=true,
     // verified by probe) — they reserve ZERO content width, so bar
@@ -403,12 +406,14 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
             let mr = ui.max_rect();
             eprintln!(
-                "RECTFRAME panel_aw={:.0} maxrect_w={:.0} screen_w={:.0} left={:.0} right={:.0}",
+                "RECTFRAME panel_aw={:.0} maxrect_w={:.0} screen_w={:.0} left={:.0} right={:.0} name_len={} name={:?}",
                 ui.available_width(),
                 mr.width(),
                 ui.input(|i| i.content_rect().width()),
                 mr.left(),
-                mr.right()
+                mr.right(),
+                ctx.chat_name.chars().count(),
+                ctx.chat_name.chars().take(30).collect::<String>()
             );
         }
         if ctx.older_link.is_some() {
@@ -515,10 +520,11 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     });
     if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
         eprintln!(
-            "SCROLLAW inner_w={:.0} content_h={:.0} floating={}",
+            "SCROLLAW inner_w={:.0} content_h={:.0} floating={} central_min_right={:.0}",
             scroll_out.inner_rect.width(),
             scroll_out.content_size.y,
-            ui.spacing().scroll.floating
+            ui.spacing().scroll.floating,
+            ui.min_rect().right()
         );
         let _ = &scroll_out;
     }
@@ -867,7 +873,7 @@ fn message_row(
             )
             .mesh_bounds
             .width();
-        let slot_w = (text_w + 26.0).clamp(56.0, cap);
+        let slot_w = own_slot_width(text_w, avail);
         ui.horizontal(|ui| {
             ui.add_space(6.0);
             ui.allocate_ui(egui::vec2(slot_w, 10.0), |ui| {
@@ -933,18 +939,6 @@ fn bubble_parts(
     last_of_group: bool,
 ) {
 
-    // Reactions chips (hover = who reacted; click = full list popup)
-    if !m.reactions.is_empty() {
-        if own {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                reaction_chips(ui, ctx, m, own);
-            });
-        } else {
-            ui.horizontal(|ui| {
-                reaction_chips(ui, ctx, m, own);
-            });
-        }
-    }
     // Reply quote preview
     if m.reply_to.is_some() {
         if own {
@@ -1128,50 +1122,22 @@ fn bubble_parts(
         eprintln!("DBG bubble own rect={bubble_rect:?}");
     }
 
+    // Reserved reaction strip: fixed-height row attached at the bubble's
+    // bottom-right, allocated on EVERY message from first paint.
+    // Reactions only ever arrive with network pages (the archive never
+    // stores them) and with later refreshes — previously the chips row
+    // appeared ABOVE the bubble and grew the row by ~46px, shoving every
+    // later message down (the run-5 P0). Reserving the height up front
+    // means a reaction appearing changes only the strip's contents. The
+    // last-of-group meta (timestamp/seen/pin) shares the reserved row.
+    reaction_strip(ui, ctx, m, own, bubble_rect.right(), last_of_group);
+
     // Hover state: POINTER-POSITION based. egui's per-widget hover is not
     // reliable across an Area boundary (the bar vanishes when the pointer
     // moves into the gap), so track the bar's rect and test containment
     // directly, with a 6px grow to bridge the bubble→bar gap.
     let hover_id = egui::Id::new(("msg-hover", &m.id));
 
-    if last_of_group {
-        let pinned = ctx.pinned.contains(&m.id);
-        let seen_by: Option<String> = ctx.receipts.get(&m.id).map(|users| {
-            let names: Vec<String> = users
-                .iter()
-                .map(|u| ctx.members.get(u).cloned().unwrap_or_else(|| "Someone".into()))
-                .collect();
-            names.join(", ")
-        });
-        if own {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(names) = seen_by {
-                    ui.label(
-                        RichText::new("Seen")
-                            .small()
-                            .weak()
-                            .color(ctx.pal.ok),
-                    )
-                    .on_hover_text(format!("Seen by {names}"));
-                }
-                ui.label(
-                    RichText::new(format_message_time(&m.timestamp)).small().weak(),
-                );
-                if pinned {
-                    ui.add(
-                        egui::Image::from_bytes(
-                            crate::theme::Icon::Pin.uri(),
-                            crate::theme::Icon::Pin.bytes(),
-                        )
-                        .tint(ctx.pal.secondary)
-                        .fit_to_exact_size(egui::Vec2::splat(10.0)),
-                    );
-                }
-            });
-        } else {
-            ui.label(RichText::new(format_message_time(&m.timestamp)).small().weak());
-        }
-    }
 
     // Floating action bar: anchored ABOVE the bubble, right-aligned to its
     // right edge, clamped inside the panel. Content-sized (no with_layout
@@ -1462,6 +1428,119 @@ fn connector_card(ui: &mut egui::Ui, pal: &Palette) {
         });
 }
 
+/// Height reserved under EVERY bubble for the reaction strip. Chips are
+/// sized to fit inside it (`reaction_strip_reserves_constant_height`
+/// unit test); the reservation is what keeps a reaction appearing from
+/// moving anything.
+const REACT_STRIP_H: f32 = 18.0;
+/// Own-message slot floor: the bubble column reserves at least this much
+/// width so up to ~3 chips fit under a short bubble. The bubble itself
+/// stays text-width and right-aligned inside the (possibly wider) slot —
+/// the floor is invisible until reactions exist.
+const REACT_SLOT_FLOOR: f32 = 150.0;
+
+/// Pure own-slot math (unit-tested): text width + padding, clamped, and
+/// floored so the reserved reaction strip fits without touching the
+/// bubble's own width.
+fn own_slot_width(text_w: f32, avail: f32) -> f32 {
+    let cap = (avail * 0.85).min(680.0);
+    (text_w + 26.0).clamp(56.0, cap).max(REACT_SLOT_FLOOR.min(cap))
+}
+
+/// The always-reserved under-bubble row: fixed height, right edge
+/// anchored to the BUBBLE's right edge (narrow card bubbles keep their
+/// chips attached instead of hanging to the column edge), chips
+/// right-aligned — and for the last message of a group the timestamp /
+/// seen-by / pin meta joins the SAME row (an empty reserved strip between
+/// a bubble and its timestamp read as detached; merging keeps the
+/// hierarchy tight at zero extra height).
+fn reaction_strip(
+    ui: &mut egui::Ui,
+    ctx: &mut ConvCtx<'_>,
+    m: &MessageInfo,
+    own: bool,
+    bubble_right: f32,
+    last_of_group: bool,
+) {
+    let w = ui.available_width().max(0.0);
+    // allocate_ui does NOT honor the desired height as a floor (an empty
+    // child shrinks it) — the reservation must be an exact allocation
+    // with the chips painted into a child of that rect.
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, REACT_STRIP_H), egui::Sense::hover());
+    let right = bubble_right.min(rect.right()).max(rect.left());
+    let anchor = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top()),
+        egui::pos2(right, rect.bottom()),
+    );
+    let mut strip = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(anchor)
+            .layout(if own {
+                egui::Layout::right_to_left(egui::Align::Center)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            }),
+    );
+    strip.spacing_mut().item_spacing.x = 3.0;
+    if own {
+        // Right-to-left: chips rightmost against the bubble edge, then
+        // seen-by / timestamp / pin flowing left (the old meta order).
+        if !m.reactions.is_empty() {
+            reaction_chips(&mut strip, ctx, m, own);
+        }
+        if last_of_group {
+            meta_line(&mut strip, ctx, m);
+        }
+    } else {
+        // Left-to-right: timestamp first at the column's left edge, then
+        // the chips right-aligned to the bubble's right edge.
+        if last_of_group {
+            meta_line(&mut strip, ctx, m);
+        }
+        if !m.reactions.is_empty() {
+            strip.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    reaction_chips(ui, ctx, m, own);
+                },
+            );
+        }
+    }
+}
+
+/// Timestamp + seen-by + pin, as it appeared under the last bubble of a
+/// group (now inside the reserved strip row).
+fn meta_line(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
+    let pinned = ctx.pinned.contains(&m.id);
+    let seen_by: Option<String> = ctx.receipts.get(&m.id).map(|users| {
+        let names: Vec<String> = users
+            .iter()
+            .map(|u| ctx.members.get(u).cloned().unwrap_or_else(|| "Someone".into()))
+            .collect();
+        names.join(", ")
+    });
+    if ui.layout().main_dir() == egui::Direction::RightToLeft {
+        if let Some(names) = seen_by {
+            ui.label(RichText::new("Seen").small().weak().color(ctx.pal.ok))
+                .on_hover_text(format!("Seen by {names}"));
+        }
+        ui.label(RichText::new(format_message_time(&m.timestamp)).small().weak());
+        if pinned {
+            ui.add(
+                egui::Image::from_bytes(
+                    crate::theme::Icon::Pin.uri(),
+                    crate::theme::Icon::Pin.bytes(),
+                )
+                .tint(ctx.pal.secondary)
+                .fit_to_exact_size(egui::Vec2::splat(10.0)),
+            );
+        }
+    } else {
+        ui.label(RichText::new(format_message_time(&m.timestamp)).small().weak());
+    }
+}
+
 /// Reaction count chips: colour emoji + names on hover; click opens the
 /// full reactor list (and removes your own reaction when you were in it).
 fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool) {
@@ -1483,11 +1562,13 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
         let chip = Frame::default()
             .fill(crate::theme::tint_over(base, ctx.pal.text, 0.09))
             .stroke(Stroke::new(1.0, ctx.pal.outline.gamma_multiply(0.5)))
-            .corner_radius(CornerRadius::same(10))
-            .inner_margin(egui::Margin::symmetric(6, 2))
+            .corner_radius(CornerRadius::same(9))
+            // Sized to fit inside REACT_STRIP_H (unit-tested) — the strip's
+            // reserved height must never grow when chips render.
+            .inner_margin(egui::Margin::symmetric(5, 1))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    emoji_widget(ui, ctx, &r.emoji, 15.0);
+                    emoji_widget(ui, ctx, &r.emoji, 13.0);
                     ui.label(RichText::new(r.count.to_string()).small());
                 });
             })
@@ -1679,6 +1760,99 @@ mod tests {
             reply_to: None,
             client_message_id: None,
         }
+    }
+
+    /// The no-shift invariant, unit level: the reserved reaction strip
+    /// allocates EXACTLY REACT_STRIP_H whether empty or carrying chips —
+    /// reactions appearing must never change any row height (run-5 P0).
+    #[test]
+    fn reaction_strip_reserves_constant_height() {
+        crate::emoji::setup();
+        let empty: HashMap<String, String> = HashMap::new();
+        let textures: HashMap<String, (egui::TextureHandle, [usize; 2])> = HashMap::new();
+        let image_sizes: HashMap<String, [usize; 2]> = HashMap::new();
+        let mut pending_images: HashSet<String> = HashSet::new();
+        let mut emoji_textures: HashMap<String, egui::TextureHandle> = HashMap::new();
+        let egui_ctx = crate::theme::test_ctx();
+
+        let react = |emoji: &str, count: usize| ost::api::ReactionCount {
+            emoji: emoji.to_string(),
+            count,
+            reactors: (1..=count)
+                .map(|i| ost::api::Reactor {
+                    id: format!("8:orgid:t{i}"),
+                    name: format!("Tester {i}"),
+                })
+                .collect(),
+        };
+        let mut msg_empty = test_message();
+        let mut msg_full = test_message();
+        msg_full.reactions = vec![react("\u{1f44d}", 2), react("\u{2764}", 1), react("\u{1f389}", 3)];
+
+        let mut heights: Vec<f32> = Vec::new();
+        for m in [&msg_empty, &msg_full] {
+            let mut actions = Vec::new();
+            let measured = std::cell::Cell::new(0.0f32);
+            let mut out = egui_ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.vertical(|ui| {
+                        let top = ui.cursor().top();
+                        let mut ctx = ConvCtx {
+                            chat_name: "Chat".into(),
+                            chat_id: "19:chat@thread.v2".into(),
+                            messages: std::slice::from_ref(m),
+                            members: &empty,
+                            self_name: "Me".into(),
+                            self_id: Some("other-id"),
+                            older_link: None,
+                            loading_older: false,
+                            typing_user: None,
+                            edit: None,
+                            reply: None,
+                            uploads: &[],
+                            pending: &[],
+                            receipts: &empty2(),
+                            pinned: &[],
+                            can_call: false,
+                            call_label: None,
+                            textures: &textures,
+                            image_sizes: &image_sizes,
+                            pending_images: &mut pending_images,
+                            emoji_textures: &mut emoji_textures,
+                            pal: &Palette::dark(),
+                            overlays_open: false,
+                            actions: &mut actions,
+                        };
+                        reaction_strip(ui, &mut ctx, m, false, 400.0, true);
+                        let h = ui.cursor().top() - top;
+                        assert!(h > 0.0, "strip allocated nothing");
+                        measured.set(h - ui.spacing().item_spacing.y);
+                    });
+                });
+            // The emoji raster queues a texture delta; a test Context has
+            // no renderer to apply it — clear before drop (its own advice)
+            // or the Context destructor panics.
+            out.textures_delta.clear();
+            heights.push(measured.get());
+        }
+        assert_eq!(heights[0], REACT_STRIP_H, "empty strip must reserve exactly REACT_STRIP_H");
+        assert_eq!(
+            heights[1], REACT_STRIP_H,
+            "chips must fit inside the reservation (got {})",
+            heights[1]
+        );
+    }
+
+    /// Own-slot math: the slot reserves room for the reaction strip floor
+    /// without changing the bubble cap behavior.
+    #[test]
+    fn own_slot_width_floor_and_cap() {
+        // Short text: floored so chips fit under it.
+        assert_eq!(own_slot_width(10.0, 800.0), REACT_SLOT_FLOOR);
+        // Long text: text width + padding, capped at 85%/680.
+        assert_eq!(own_slot_width(1000.0, 800.0), 680.0);
+        assert_eq!(own_slot_width(300.0, 800.0), 326.0);
+        // Tiny window: the floor never exceeds the cap.
+        assert_eq!(own_slot_width(10.0, 100.0), 85.0);
     }
 
     /// Regression: the hover bar's buttons collected actions into a RefCell
