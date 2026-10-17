@@ -530,8 +530,12 @@ pub struct TeamsFastApp {
     /// Call stage panel open (tiles + controls).
     call_view_open: bool,
     /// Known image sizes (url -> w,h): placeholders reserve the final
-    /// box so loading images doesn't reflow the conversation.
+    /// box so loading images don't reflow the conversation.
     image_sizes: HashMap<String, [usize; 2]>,
+    /// QA: Messages events seen per chat id (TEAMSFAST_REACT seeds
+    /// reactions only on the NETWORK replaces — event 2+ — so the
+    /// cached→network paint delta is reproducible headlessly).
+    qa_msgs_seen: HashMap<String, u32>,
     /// Remote/local video textures for the stage (recreated on size change).
     remote_video_tex: Option<egui::TextureHandle>,
     local_video_tex: Option<egui::TextureHandle>,
@@ -882,13 +886,19 @@ fn teams_dialog(
 static LATECAM_QA: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// QA env flags read once (they fire inside hot event handlers).
-fn qa_flag(key: &str) -> bool {
+pub(crate) fn qa_flag(key: &str) -> bool {
     static FLAGS: std::sync::OnceLock<std::collections::HashMap<&'static str, bool>> =
         std::sync::OnceLock::new();
     FLAGS
         .get_or_init(|| {
             let mut m = std::collections::HashMap::new();
-            for k in ["TEAMSFAST_TABLE", "TEAMSFAST_CALDUMP", "TEAMSFAST_FAILSEND"] {
+            for k in [
+                "TEAMSFAST_TABLE",
+                "TEAMSFAST_CALDUMP",
+                "TEAMSFAST_FAILSEND",
+                "TEAMSFAST_RECTLOG",
+                "TEAMSFAST_REACT",
+            ] {
                 m.insert(k, std::env::var(k).as_deref() == Ok("1"));
             }
             m
@@ -1163,6 +1173,7 @@ impl TeamsFastApp {
             call_media: None,
             call_view_open: false,
             image_sizes: HashMap::new(),
+            qa_msgs_seen: HashMap::new(),
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
@@ -1838,6 +1849,41 @@ impl TeamsFastApp {
                             format!(r#"<Swift b64="{b64}"/>"#),
                         ));
                     }
+                    // QA hook: TEAMSFAST_REACT=1 seeds synthetic reactions
+                    // on NETWORK full-replaces only (event 2+ per chat —
+                    // event 1 is the cached archive paint, whose rows never
+                    // carry reactions). That reproduces the production
+                    // arrival shape — reactions land with the network page
+                    // after the cached paint — so reaction-driven layout
+                    // shift is measurable headlessly. Fictional reactor
+                    // names per the fixtures policy.
+                    if qa_flag("TEAMSFAST_REACT")
+                        && !prepend
+                        && !merge
+                        && *self.qa_msgs_seen.entry(chat_id.clone()).or_insert(0) >= 1
+                    {
+                        let n = self.messages.len();
+                        let seed = |vec: &mut Vec<MessageInfo>| {
+                            let react = |emoji: &str, count: usize| ost::api::ReactionCount {
+                                emoji: emoji.to_string(),
+                                count,
+                                reactors: (1..=count)
+                                    .map(|i| ost::api::Reactor {
+                                        id: format!("8:orgid:qa{i:04}"),
+                                        name: format!("QA Tester {i}"),
+                                    })
+                                    .collect(),
+                            };
+                            if n >= 2 {
+                                vec[n - 2].reactions = vec![react("👍", 2), react("❤️", 1)];
+                            }
+                            if n >= 4 {
+                                vec[n - 4].reactions = vec![react("🎉", 1)];
+                            }
+                        };
+                        seed(&mut self.messages);
+                    }
+                    *self.qa_msgs_seen.entry(chat_id.clone()).or_insert(0) += 1;
                     // Who has read what (quiet fetch, no error surfaced) —
                     // throttled: refreshes land in bursts and receipts move
                     // slowly, each fetch is a worker round-trip.
@@ -3403,6 +3449,9 @@ impl TeamsFastApp {
 
 impl eframe::App for TeamsFastApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+            eprintln!("ROOT max_rect={:?}", ui.max_rect());
+        }
         self.drain_events();
         self.sync_tray(ui);
         self.update_logic(ui);
@@ -3470,6 +3519,9 @@ impl eframe::App for TeamsFastApp {
         egui::Panel::top("top").show(ui, |ui| {
             self.top_bar(ui);
         });
+        if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+            eprintln!("AVAIL after-top {:?}", ui.available_rect_before_wrap());
+        }
 
         // Section rail (icon strip, far left).
         if self.offline.is_some() {
@@ -3838,6 +3890,9 @@ impl eframe::App for TeamsFastApp {
             .show(ui, |ui| {
                 self.rail(ui);
             });
+        if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+            eprintln!("AVAIL after-rail {:?}", ui.available_rect_before_wrap());
+        }
 
         // Chat-family sections keep the list sidebar; the others take the
         // whole central area.
@@ -3847,6 +3902,9 @@ impl eframe::App for TeamsFastApp {
                 .default_size(300.0)
                 .resizable(true)
                 .show(ui, |ui| {
+                    if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+                        eprintln!("SIDEW={:.0}", ui.max_rect().width());
+                    }
                     let mut sctx = crate::ui::sidebar::SidebarCtx {
                         chats: &self.chats,
                         selected: self.selected.as_ref(),
@@ -3884,6 +3942,9 @@ impl eframe::App for TeamsFastApp {
                         self.apply(a);
                     }
                 });
+        if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+            eprintln!("AVAIL after-side {:?}", ui.available_rect_before_wrap());
+        }
         }
 
         // ---- call stage (right panel): video tiles + live controls ----
@@ -4355,6 +4416,9 @@ impl eframe::App for TeamsFastApp {
             egui::Panel::bottom("composer").show(ui, |ui| {
                 conversation::conversation_composer(ui, &mut ctx, &mut self.draft);
             });
+            if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+                eprintln!("AVAIL after-composer {:?}", ui.available_rect_before_wrap());
+            }
             let bench = std::env::var("TEAMSFAST_SCROLLBENCH").as_deref() == Ok("1");
             let t_bench = (bench).then(std::time::Instant::now);
             egui::CentralPanel::default().show(ui, |ui| {

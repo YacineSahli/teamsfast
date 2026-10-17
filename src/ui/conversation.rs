@@ -362,6 +362,10 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // CentralPanel consumed the space — not an egui defect. stick_to_bottom
     // is verified rendering again, see bisect in git history.)
     let mut area = ScrollArea::vertical().auto_shrink(false);
+    // NB: this egui style runs FLOATING scroll bars (scroll.floating=true,
+    // verified by probe) — they reserve ZERO content width, so bar
+    // visibility never affects wrap width here. Do not "fix" width
+    // breathing via scroll_bar_visibility; it does nothing under floating.
     area = area.stick_to_bottom(true);
     // QA hook: drive a synthetic scroll through the loaded history (a few
     // thousand px per frame downward from the bottom) and let the caller
@@ -383,7 +387,18 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // keep the frames coming (QA hook only).
         ui.ctx().request_repaint();
     }
-    area.show(ui, |ui| {
+    let scroll_out = area.show(ui, |ui| {
+        if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+            let mr = ui.max_rect();
+            eprintln!(
+                "RECTFRAME panel_aw={:.0} maxrect_w={:.0} screen_w={:.0} left={:.0} right={:.0}",
+                ui.available_width(),
+                mr.width(),
+                ui.input(|i| i.content_rect().width()),
+                mr.left(),
+                mr.right()
+            );
+        }
         if ctx.older_link.is_some() {
             ui.vertical_centered(|ui| {
                 if ctx.loading_older {
@@ -449,6 +464,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                     }
                 };
             let grouped = i > 0 && groups_with(m, &ctx.messages[i - 1]);
+            let row_avail = ui.available_width();
             // Teams attributes the timestamp (and seen-by) to the LAST
             // bubble of a run, not the first.
             let last_of_group = ctx.messages.get(i + 1).is_none_or(|n| {
@@ -463,12 +479,37 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(row_id, egui::vec2(0.0, h)));
             }
+            // QA: per-row rect stability log (TEAMSFAST_RECTLOG=1). One
+            // line per rendered row per frame — diffing the cached-paint
+            // frame against the network-settled frame proves whether rows
+            // moved (layout shift) without pixel-guessing.
+            if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+                let tail: String = m.id.chars().rev().take(6).collect();
+                eprintln!(
+                    "RECT {tail} top={top:.1} h={h:.1} rt={} rx={} rawlen={} g={} last={} aw={:.0}",
+                    m.reply_to.is_some(),
+                    m.reactions.len(),
+                    m.raw.len(),
+                    grouped,
+                    last_of_group,
+                    row_avail
+                );
+            }
         }
         // Own sends in flight / failed: translucent bubble, Retry on error.
         for p in ctx.pending {
             pending_bubble(ui, ctx, p);
         }
     });
+    if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+        eprintln!(
+            "SCROLLAW inner_w={:.0} content_h={:.0} floating={}",
+            scroll_out.inner_rect.width(),
+            scroll_out.content_size.y,
+            ui.spacing().scroll.floating
+        );
+        let _ = &scroll_out;
+    }
 }
 
 /// Own message bubble for a send that hasn't been confirmed by the server
