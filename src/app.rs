@@ -3610,7 +3610,9 @@ impl eframe::App for TeamsFastApp {
                 // above (ease-out cubic, anchored at the ring's start).
                 let screen = ui.input(|i| i.raw.screen_rect).unwrap_or(egui::Rect::ZERO);
                 let card_w = 460.0;
-                let target_y = 40.0;
+                // 16px like the right inset — 40px read as hung-low
+                // (battery round-5 P3; the slide-in animation is unchanged).
+                let target_y = 16.0;
                 let t_in = (ring.at.elapsed().as_secs_f32() / 0.35).min(1.0);
                 let ease = 1.0 - (1.0 - t_in) * (1.0 - t_in) * (1.0 - t_in);
                 let y = -90.0 + (target_y + 90.0) * ease;
@@ -3703,7 +3705,10 @@ impl eframe::App for TeamsFastApp {
                                         + 0.7152 * palette.ok.g() as f32
                                         + 0.0722 * palette.ok.b() as f32;
                                     let (accept_fill, accept_fg) = if ok_luma > 128.0 {
-                                        (palette.ok.gamma_multiply(0.72), Color32::WHITE)
+                                        // 0.60: at 0.72 the white label sat at
+                                        // 3.0:1 — under the small-text bar
+                                        // next to Decline's 4.6:1.
+                                        (palette.ok.gamma_multiply(0.60), Color32::WHITE)
                                     } else {
                                         (palette.ok, Color32::WHITE)
                                     };
