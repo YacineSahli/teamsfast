@@ -77,10 +77,12 @@ impl Palette {
         }
     }
 
-    /// Light-base palettes (window is bright) — theme-aware tinting
-    /// directions (recess toward white, not black).
+    /// Light-base palettes — theme-aware tinting directions (recess
+    /// toward white, not black). Keys on `panel`: that is the surface
+    /// the tint blends over (a bright-window/dark-panel theme would
+    /// otherwise wash white over dark).
     pub fn is_light(&self) -> bool {
-        let [r, g, b, _] = self.window.to_srgba_unmultiplied();
+        let [r, g, b, _] = self.panel.to_srgba_unmultiplied();
         u16::from(r) + u16::from(g) + u16::from(b) > 384
     }
 
