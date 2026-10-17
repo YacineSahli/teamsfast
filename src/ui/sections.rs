@@ -554,9 +554,26 @@ fn meeting_pill(
         let line = if subject.trim().is_empty() {
             time.clone()
         } else {
-            let frag = ellipsize(ui, &subject, 10.0, (text_w - 32.0).max(8.0));
+            // Budget the fragment by the MEASURED stamp width: the old
+            // fixed -32 undersized a "11:45–12:00" stamp (~55px), so
+            // stamp+fragment overflowed the pill and the hard clip ate
+            // the ellipsis mid-word (month cells, week compact lanes).
+            let stamp_w = |t: &str| {
+                ui.painter()
+                    .layout_no_wrap(
+                        format!("{t} "),
+                        egui::FontId::proportional(10.0),
+                        title_col,
+                    )
+                    .size()
+                    .x
+            };
+            let frag = ellipsize(ui, &subject, 10.0, (text_w - stamp_w(&stamp)).max(8.0));
             if frag.chars().all(|c| c == '…' || c.is_whitespace()) {
-                format!("{time} {}", ellipsize(ui, &subject, 10.0, text_w.max(8.0)))
+                format!(
+                    "{time} {}",
+                    ellipsize(ui, &subject, 10.0, (text_w - stamp_w(&time)).max(8.0))
+                )
             } else {
                 format!("{stamp} {frag}")
             }
