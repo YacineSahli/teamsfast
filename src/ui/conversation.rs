@@ -261,7 +261,9 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // screen — the wrap width then differed between paints and rows
         // re-wrapped (run-5 layout-shift forensics). The budget keeps
         // room for the trailing header controls.
-        let name_w = (ui.available_width() - 250.0).clamp(24.0, ui.available_width());
+        let name_w = (ui.available_width() - 250.0)
+            .max(24.0)
+            .min(ui.available_width());
         ui.add_sized(
             [name_w, 20.0],
             egui::Label::new(RichText::new(&ctx.chat_name).bold().size(17.0))
@@ -555,7 +557,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // by it and repaint (the state write is consumed by the NEXT begin —
     // the calendar scroll-to-today lesson).
     {
-        let h_key = egui::Id::new("conv_content_h");
+        let h_key = egui::Id::new("conv_content_h").with(ctx.chat_id.as_str());
         let prev_h: Option<f32> = ui.ctx().data_mut(|d| d.get_temp(h_key));
         let h2 = scroll_out.content_size.y;
         let armed = ctx.prepend_adjust.take();
@@ -566,6 +568,11 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         {
             let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
             if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), state_id) {
+                // NB: an in-flight ANIMATED scroll (JumpLatest/scroll_to)
+                // can lerp back to its target next frame and discard this
+                // adjustment — egui's State.offset_target is private with
+                // no setter, so this race stays open (prepend-during-jump
+                // is rare; the buttons sit at opposite ends of the list).
                 if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
                     eprintln!(
                         "PREPENDADJUST h1={h1:.0} h2={h2:.0} delta={} offset={:.0}",
@@ -914,7 +921,6 @@ fn message_row(
         // Own row: measure the text, give the bubble exactly that width
         // (shrink-to-fit, capped), right-aligned; avatar at the far right.
         let avail = ui.available_width() - 12.0;
-        let cap = (avail * 0.85).min(680.0);
         let plain = crate::ui::widgets::plain_cached(&m.raw);
         let text_w = ui
             .painter()
@@ -1175,7 +1181,7 @@ fn bubble_parts(
             .rect
     };
 
-    if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() && own {
+    if crate::app::qa_flag("TEAMSFAST_LAYOUT_DEBUG") && own {
         eprintln!("DBG bubble own rect={bubble_rect:?}");
     }
 
@@ -1319,7 +1325,7 @@ fn bubble_parts(
                                 .stroke(Stroke::NONE)
                                 .min_size(egui::vec2(30.0, 28.0));
                                 let r = ui.add(btn).on_hover_text("React");
-                                if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
+                                if crate::app::qa_flag("TEAMSFAST_LAYOUT_DEBUG") {
                                     eprintln!(
                                         "react btn rect={:?} hovered={} clicked={} contains_ptr={}",
                                         r.rect,
@@ -1443,7 +1449,7 @@ fn bubble_parts(
             ctx.actions.push(a.clone());
         }
         actions_sink.borrow_mut().clear();
-        if std::env::var_os("TEAMSFAST_LAYOUT_DEBUG").is_some() {
+        if crate::app::qa_flag("TEAMSFAST_LAYOUT_DEBUG") {
             eprintln!(
                 "hover bar msg={} rect={:?} bubble={:?} clip={clip:?}",
                 &m.id
@@ -1501,7 +1507,11 @@ const REACT_SLOT_FLOOR: f32 = 150.0;
 /// bubble's own width.
 fn own_slot_width(text_w: f32, avail: f32) -> f32 {
     let cap = (avail * 0.85).min(680.0).min((avail - 44.0).max(56.0));
-    (text_w + 26.0).clamp(56.0, cap).max(REACT_SLOT_FLOOR.min(cap))
+    // max-then-min, never clamp: on tiny panes cap dips below 56 and
+    // clamp(56, cap<56) PANICS (reachable by resizing — no min window
+    // size is set). Degradation: a sub-66px pane overflows the row
+    // instead of crashing.
+    (text_w + 26.0).max(56.0).min(cap).max(REACT_SLOT_FLOOR.min(cap))
 }
 
 /// The always-reserved under-bubble row: fixed height, right edge
@@ -1626,11 +1636,15 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
     };
     let mut used = 0.0f32;
     let mut shown = 0usize;
-    for r in &m.reactions {
-        used += est(r);
-        if used > budget - 34.0 && m.reactions.len() > shown + 1 {
+    for (i, r) in m.reactions.iter().enumerate() {
+        // Reserve room for the "+K" chip ONLY when more reactions follow —
+        // a flat reserve collapsed one chip that actually fit.
+        let reserve = if i + 1 < m.reactions.len() { 34.0 } else { 0.0 };
+        let w = est(r);
+        if used + w + reserve > budget {
             break;
         }
+        used += w;
         shown += 1;
     }
     let hidden = m.reactions.len() - shown;
@@ -1992,6 +2006,10 @@ mod tests {
         let slot = own_slot_width(10.0, 100.0);
         assert_eq!(slot, 56.0);
         assert!(slot + 44.0 <= 100.0);
+        // Panic zone: sub-66px panes used to hit clamp(56, cap<56) and
+        // abort (reachable by window resize — no min size is set).
+        let slot = own_slot_width(10.0, 60.0);
+        assert!(slot <= 51.0, "cap must stay the binding constraint");
         // Narrow-but-sane window still floors when it can.
         let slot = own_slot_width(10.0, 400.0);
         assert_eq!(slot, REACT_SLOT_FLOOR);

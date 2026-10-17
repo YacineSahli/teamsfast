@@ -733,7 +733,8 @@ fn week_grid(
     let hour_px = (((ui.available_height() - header_h - 8.0) / rows).floor())
         .clamp(30.0, HOUR_PX);
     let body_h = rows * hour_px;
-    let total_w = gutter + col_w * 7.0;
+    // (total grid width is col_w*7 + gutter; the fixed-gutter layout
+    // no longer needs the combined figure.)
 
     let today = today_date();
 
@@ -892,7 +893,7 @@ fn week_grid(
                                     egui::pos2(x, y),
                                     egui::vec2(lane_w - 2.0, h),
                                 );
-                                if std::env::var("TEAMSFAST_CALGEOM").as_deref() == Ok("1") {
+                                if crate::app::qa_flag("TEAMSFAST_CALGEOM") {
                                     log::info!(
                                         "CALGEOM day={idx} subj={:?} lane={lane}/{total_lanes} lane_w={lane_w:.0} x={x:.0} y={y:.0} h={h:.0} col_w={col_w:.0} hour_px={hour_px:.0} top={top:.0}",
                                         m.subject

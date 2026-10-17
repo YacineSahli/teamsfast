@@ -904,6 +904,9 @@ pub(crate) fn qa_flag(key: &str) -> bool {
                 "TEAMSFAST_RECTLOG",
                 "TEAMSFAST_REACT",
                 "TEAMSFAST_LOADOLDER",
+                "TEAMSFAST_LAYOUT_DEBUG",
+                "TEAMSFAST_CALGEOM",
+                "TEAMSFAST_CHATFILES",
             ] {
                 m.insert(k, std::env::var(k).as_deref() == Ok("1"));
             }
@@ -1642,7 +1645,7 @@ impl TeamsFastApp {
                     }
                     // QA hook: TEAMSFAST_CHATFILES=1 fetches the open chat's
                     // shared files (pair with TEAMSFAST_OPEN).
-                    if std::env::var("TEAMSFAST_CHATFILES").as_deref() == Ok("1") {
+                    if qa_flag("TEAMSFAST_CHATFILES") {
                         if let Some(id) = std::env::var("TEAMSFAST_OPEN").ok() {
                             if !id.trim().is_empty() {
                                 self.switch_view(MainView::Files);
