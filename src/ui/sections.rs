@@ -879,6 +879,46 @@ fn week_grid(
                 }
             }
 
+            // Open the week at today/now: with wide-lane columns the day
+            // columns exceed the viewport and today starts off-screen to
+            // the right; native opens scrolled to the current time.
+            let scroll_id = ui.id().with(("week-scroll-to-now", offset));
+            let has_data = !by_day.is_empty();
+            if has_data
+                && !ui
+                    .data_mut(|d| d.get_temp::<bool>(scroll_id).unwrap_or(false))
+            {
+                ui.data_mut(|d| d.insert_temp(scroll_id, true));
+                // The scroll target queued mid-content is consumed by the
+                // ScrollArea on the NEXT frame — the event-driven loop must
+                // be promised one or the request dies with the pass state.
+                ui.ctx().request_repaint();
+                let end_of_week = monday
+                    .checked_add(jiff::ToSpan::days(7))
+                    .unwrap_or(monday);
+                let today_idx = if today >= monday && today < end_of_week {
+                    (today - monday).get_days().clamp(0, 6) as f32
+                } else {
+                    0.0
+                };
+                let mx = rect.left() + gutter + col_w * (today_idx + 0.5);
+                let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
+                let my = if today >= monday
+                    && today < end_of_week
+                    && mins >= h0 * 60
+                    && mins <= h1 * 60
+                {
+                    top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px
+                } else {
+                    top + header_h
+                };
+                let marker = egui::Rect::from_center_size(
+                    egui::pos2(mx, my),
+                    egui::vec2(1.0, 1.0),
+                );
+                ui.allocate_rect(marker, egui::Sense::hover())
+                    .scroll_to_me(Some(egui::Align::Center));
+            }
         });
 }
 
