@@ -693,6 +693,13 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                         let e = low[p..].find('"')? + p;
                         Some(low[p..e].to_string())
                     };
+                    // XHTML self-closing non-img tags are EMPTY: drop the
+                    // tag and let text flow. The consuming arms' take_until
+                    // has no closer to find — "<b/>rest" swallowed the
+                    // whole remainder as one Bold run (red-team catch).
+                    if self_closing && base != "img" {
+                        continue;
+                    }
                     match base {
                         "b" | "strong" => {
                             let (inner, next) = take_until(rest, &format!("</{}>", base));
@@ -1676,6 +1683,15 @@ mod br_tests {
             other => panic!("expected Bold, got {other:?}"),
         }
         assert_eq!(segs.len(), 1, "nothing may leak past the bold close");
+    }
+
+    // XHTML self-closing INLINE tags are empty — "<b/>rest" must not
+    // swallow the remainder as one styled run (take_until has no closer).
+    #[test]
+    fn self_closing_inline_tag_flows_text() {
+        assert_eq!(shape(&parse_html("<i/>plain")), vec!["plain"]);
+        assert_eq!(shape(&parse_html("a<b/>c")), vec!["ac"]);
+        assert_eq!(shape(&parse_html("<b/>x<br/>y")), vec!["x", "\n", "y"]);
     }
 }
 
