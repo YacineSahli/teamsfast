@@ -536,9 +536,11 @@ pub struct TeamsFastApp {
     /// reactions only on the NETWORK replaces — event 2+ — so the
     /// cached→network paint delta is reproducible headlessly).
     qa_msgs_seen: HashMap<String, u32>,
-    /// A load-older prepend just applied: adjust the conversation scroll
-    /// offset by the grown content height so the view stays put.
-    prepend_adjust: bool,
+    /// A load-older prepend just applied FOR THIS CHAT: adjust the
+    /// conversation scroll offset by the grown content height so the view
+    /// stays put. Keyed by chat id — a stale flag must never shift a
+    /// different conversation (red-team P1-2).
+    prepend_adjust: Option<String>,
     /// Remote/local video textures for the stage (recreated on size change).
     remote_video_tex: Option<egui::TextureHandle>,
     local_video_tex: Option<egui::TextureHandle>,
@@ -1178,7 +1180,7 @@ impl TeamsFastApp {
             call_view_open: false,
             image_sizes: HashMap::new(),
             qa_msgs_seen: HashMap::new(),
-            prepend_adjust: false,
+            prepend_adjust: None,
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
@@ -1802,7 +1804,7 @@ impl TeamsFastApp {
                         // would slide the view UP by the prepended height.
                         // The conversation view measures the delta after
                         // the next render and shifts the offset back.
-                        self.prepend_adjust = true;
+                        self.prepend_adjust = Some(chat_id.clone());
                     } else if merge {
                         merge_message_tail(&mut self.messages, messages);
                     } else {
@@ -2879,7 +2881,7 @@ impl TeamsFastApp {
                 self.cmd.send(Command::JoinPreviewStart).ok();
             }
             Action::Status(text) => self.status = text,
-            Action::PrependAnchored => self.prepend_adjust = false,
+            Action::PrependAnchored => self.prepend_adjust = None,
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
             }
@@ -4431,7 +4433,7 @@ impl eframe::App for TeamsFastApp {
                     || self.join_open
                     || self.team_dialog.open,
                 actions: &mut actions,
-                prepend_adjust: self.prepend_adjust,
+                prepend_adjust: self.prepend_adjust.clone(),
             };
             egui::Panel::bottom("composer").show(ui, |ui| {
                 conversation::conversation_composer(ui, &mut ctx, &mut self.draft);

@@ -241,10 +241,11 @@ pub struct ConvCtx<'a> {
     /// Foreground order as egui::Modal and otherwise z-fight above it
     /// (reachable for real via hover-message + Ctrl+N).
     pub overlays_open: bool,
-    /// App set this when a load-older prepend just applied: after this
-    /// render, shift the scroll offset by the content-height delta so
-    /// the viewport stays on the same messages.
-    pub prepend_adjust: bool,
+    /// App set this when a load-older prepend just applied (chat id):
+    /// after this render, shift the scroll offset by the content-height
+    /// delta so the viewport stays on the same messages. Stale flags for
+    /// OTHER chats are dropped here (never shift the wrong conversation).
+    pub prepend_adjust: Option<String>,
     pub actions: &'a mut Vec<Action>,
 }
 
@@ -260,7 +261,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // screen — the wrap width then differed between paints and rows
         // re-wrapped (run-5 layout-shift forensics). The budget keeps
         // room for the trailing header controls.
-        let name_w = (ui.available_width() - 170.0).max(80.0);
+        let name_w = (ui.available_width() - 170.0).clamp(24.0, ui.available_width());
         ui.add_sized(
             [name_w, 20.0],
             egui::Label::new(RichText::new(&ctx.chat_name).bold().size(17.0))
@@ -551,7 +552,9 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         let h_key = egui::Id::new("conv_content_h");
         let prev_h: Option<f32> = ui.ctx().data_mut(|d| d.get_temp(h_key));
         let h2 = scroll_out.content_size.y;
-        if ctx.prepend_adjust
+        let armed = ctx.prepend_adjust.take();
+        if let Some(arm_chat) = armed
+            && arm_chat == ctx.chat_id
             && let Some(h1) = prev_h
             && h2 > h1
         {
@@ -967,7 +970,11 @@ fn message_row(
             });
         });
     }
-    ui.add_space(if grouped { 2.0 } else { 9.0 });
+    // The reserved strip adds ~20px under EVERY bubble, so group-internal
+    // spacing and group boundaries converged (light QA measured 40px vs
+    // 42px — groups read as broken). Widen the inter-group gap so the
+    // hierarchy survives the reservation.
+    ui.add_space(if grouped { 2.0 } else { 34.0 });
 }
 
 /// Reactions, reply quote, bubble, timestamp, hover toolbar — one message's
@@ -1487,7 +1494,7 @@ const REACT_SLOT_FLOOR: f32 = 150.0;
 /// floored so the reserved reaction strip fits without touching the
 /// bubble's own width.
 fn own_slot_width(text_w: f32, avail: f32) -> f32 {
-    let cap = (avail * 0.85).min(680.0);
+    let cap = (avail * 0.85).min(680.0).min((avail - 44.0).max(56.0));
     (text_w + 26.0).clamp(56.0, cap).max(REACT_SLOT_FLOOR.min(cap))
 }
 
@@ -1525,6 +1532,10 @@ fn reaction_strip(
                 egui::Layout::left_to_right(egui::Align::Center)
             }),
     );
+    // Chips beyond what fits must never paint over the neighboring
+    // column — clip the strip to its reserved rect (width-capped chips +
+    // this clip are the two guards; red-team P1-1).
+    strip.set_clip_rect(anchor);
     strip.spacing_mut().item_spacing.x = 3.0;
     if own {
         // Right-to-left: chips rightmost against the bubble edge, then
@@ -1588,6 +1599,34 @@ fn meta_line(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo) {
 /// Reaction count chips: colour emoji + names on hover; click opens the
 /// full reactor list (and removes your own reaction when you were in it).
 fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own: bool) {
+    // Cap chips to the strip's width: a 6-reaction announcement message
+    // would otherwise paint past the column (clipped) and hide the meta
+    // line. Overflow collapses into one "+K" chip; the full list is one
+    // click away (the popup shows every reactor).
+    let budget = ui.available_width();
+    let est = |r: &ost::api::ReactionCount| -> f32 {
+        let count_w = ui
+            .painter()
+            .layout(
+                r.count.to_string(),
+                egui::FontId::proportional(11.0),
+                Color32::WHITE,
+                f32::INFINITY,
+            )
+            .mesh_bounds
+            .width();
+        13.0 + count_w + 12.0 + 3.0
+    };
+    let mut used = 0.0f32;
+    let mut shown = 0usize;
+    for r in &m.reactions {
+        used += est(r);
+        if used > budget - 34.0 && m.reactions.len() > shown + 1 {
+            break;
+        }
+        shown += 1;
+    }
+    let hidden = m.reactions.len() - shown;
     // Chip tint derives from the HOST bubble — a fixed bubble_in fill sat
     // invisible on the light incoming bubble (both white) and mismatched
     // the own indigo bubble.
@@ -1596,7 +1635,36 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
     } else {
         ctx.pal.bubble_in
     };
-    for r in &m.reactions {
+    for (i, r) in m.reactions.iter().enumerate() {
+        if i >= shown {
+            if hidden > 0 {
+                let names: Vec<String> = m
+                    .reactions
+                    .iter()
+                    .skip(shown)
+                    .flat_map(|r| r.reactors.iter().map(|x| x.name.clone()))
+                    .collect();
+                let tip = format!("{} more — click for all", names.join(", "));
+                let chip = Frame::default()
+                    .fill(crate::theme::tint_over(base, ctx.pal.text, 0.09))
+                    .stroke(Stroke::new(1.0, ctx.pal.outline.gamma_multiply(0.5)))
+                    .corner_radius(CornerRadius::same(9))
+                    .inner_margin(egui::Margin::symmetric(5, 1))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(format!("+{hidden}")).small());
+                    })
+                    .response;
+                if chip.clicked() {
+                    ctx.actions.push(Action::ShowReactions {
+                        emoji: m.reactions[shown].emoji.clone(),
+                        names,
+                    });
+                }
+                let _ = tip;
+                let _ = chip.on_hover_text(tip);
+            }
+            break;
+        }
         let names: Vec<String> = r.reactors.iter().map(|x| x.name.clone()).collect();
         let tip = if names.is_empty() {
             format!("{} reaction{}", r.count, if r.count == 1 { "" } else { "s" })
@@ -1864,7 +1932,7 @@ mod tests {
                             emoji_textures: &mut emoji_textures,
                             pal: &Palette::dark(),
                             overlays_open: false,
-                            prepend_adjust: false,
+                            prepend_adjust: None,
                             actions: &mut actions,
                         };
                         reaction_strip(ui, &mut ctx, m, false, 400.0, true);
@@ -1896,8 +1964,16 @@ mod tests {
         // Long text: text width + padding, capped at 85%/680.
         assert_eq!(own_slot_width(1000.0, 800.0), 680.0);
         assert_eq!(own_slot_width(300.0, 800.0), 326.0);
-        // Tiny window: the floor never exceeds the cap.
-        assert_eq!(own_slot_width(10.0, 100.0), 85.0);
+        // Tiny window: the avatar row (44px) must still fit beside the
+        // slot — the slot caps at avail-44, never overflowing the pane
+        // (red-team P2-1).
+        let slot = own_slot_width(10.0, 100.0);
+        assert_eq!(slot, 56.0);
+        assert!(slot + 44.0 <= 100.0);
+        // Narrow-but-sane window still floors when it can.
+        let slot = own_slot_width(10.0, 400.0);
+        assert_eq!(slot, REACT_SLOT_FLOOR);
+        assert!(slot + 44.0 <= 400.0);
     }
 
     /// Regression: the hover bar's buttons collected actions into a RefCell
@@ -1949,7 +2025,7 @@ mod tests {
                     emoji_textures,
                     pal: &Palette::dark(),
                     overlays_open: false,
-                    prepend_adjust: false,
+                    prepend_adjust: None,
                     actions: &mut actions,
                 };
                 conversation_messages(ui, &mut ctx);
@@ -2064,7 +2140,7 @@ mod tests {
                 emoji_textures: &mut emoji_textures,
                 pal: &Palette::dark(),
                 overlays_open: false,
-                prepend_adjust: false,
+                prepend_adjust: None,
                 actions: &mut actions,
             };
             conversation_composer(ui, &mut ctx, draft);

@@ -1019,11 +1019,17 @@ fn label_breaking_long_tokens(ui: &mut Ui, t: &str) -> egui::Response {
             .get(&egui::TextStyle::Body)
             .cloned()
             .unwrap_or_else(|| egui::FontId::proportional(14.0));
+        // Wrap at the CONTAINER width, not the remaining line: this label
+        // follows earlier pieces on a wrapped row, and available_width()
+        // there is the current line's leftover — wrapping there produced
+        // a tall per-character column. The over-wide galley moves to the
+        // next full line (red-team P2-3).
+        let wrap_w = ui.max_rect().width().max(1.0);
         let mut job = egui::text::LayoutJob::simple(
             t.to_owned(),
             font_id,
             ui.visuals().text_color(),
-            ui.available_width().max(1.0),
+            wrap_w,
         );
         job.wrap.break_anywhere = true;
         ui.add(egui::Label::new(job).selectable(false))
