@@ -5084,10 +5084,15 @@ impl eframe::App for TeamsFastApp {
                 let tile_h = (tile_w * 9.0 / 16.0).round().clamp(120.0, 230.0);
                 let (tile_rect, _) =
                     ui.allocate_exact_size(egui::vec2(tile_w, tile_h), egui::Sense::hover());
-                ui.painter().rect_filled(
+                // Recessed like the input fields: a plain tint slab was a
+                // ~5 RGB delta from the modal — it read as a smudge, not a
+                // video stage (battery round-5).
+                ui.painter().rect_filled(tile_rect, 8, self.palette.panel);
+                ui.painter().rect_stroke(
                     tile_rect,
                     8,
-                    crate::theme::tint_over(self.palette.panel, self.palette.text, 0.10),
+                    egui::Stroke::new(1.0, self.palette.outline),
+                    egui::StrokeKind::Inside,
                 );
                 if self.join_camera && self.join_camera_ok {
                     if let Some(rx) = self.join_preview.as_ref() {

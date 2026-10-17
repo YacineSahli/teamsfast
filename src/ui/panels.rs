@@ -156,11 +156,15 @@ fn modal_primary(
     )
     .min_size(egui::vec2(width, 26.0))
     .corner_radius(egui::CornerRadius::same(6))
-    .fill(if enabled { pal.accent } else { pal.surface })
+    .fill(if enabled { pal.accent } else { pal.panel })
     .stroke(if enabled {
         egui::Stroke::NONE
     } else {
-        egui::Stroke::new(1.0, pal.outline)
+        // The disabled state used fill=surface (the modal's own color)
+        // with a hairline outline — 1.07:1, the buttons vanished into
+        // the dialog (battery round-5). Recessed fill + real border +
+        // readable label instead (the inputs' treatment).
+        egui::Stroke::new(1.0, crate::theme::tint_over(pal.panel, pal.text, 0.35))
     });
     ui.add_enabled(enabled, b)
 }
