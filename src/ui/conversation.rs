@@ -486,7 +486,7 @@ fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
                 None => (ctx.pal.bubble_out, egui::Stroke::NONE),
                 Some(_) => (ctx.pal.bubble_out, egui::Stroke::new(1.0, ctx.pal.danger)),
             };
-            let mut frame = egui::Frame::default()
+            let frame = egui::Frame::default()
                 .fill({
                     // 55% alpha while pending.
                     let [r, g, b, _] = fill.to_srgba_unmultiplied();
