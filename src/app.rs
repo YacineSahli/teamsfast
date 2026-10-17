@@ -509,6 +509,10 @@ pub struct TeamsFastApp {
     ringer: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// True when the active call is a MEETING join (lobby UI applies).
     call_is_meeting: bool,
+    /// Whether the live call was PLACED with a camera (pre-spawn capture).
+    /// False on audio legs: the camera button then starts a mid-call
+    /// capture through the CameraSlot instead of only gating the lens.
+    call_has_camera: bool,
     /// Join/lobby machine over the active meeting call
     /// (joining → lobby → admitted; pure transitions from teams-core).
     lobby: ost::api::LobbyState,
@@ -867,6 +871,11 @@ fn teams_dialog(
         });
 }
 
+/// QA (TEAMSFAST_LATECAM): armed by the timer thread, consumed by the
+/// frame loop — flips the camera ON mid-call for headless camera-on-later
+/// verification (this harness cannot click the stage button).
+static LATECAM_QA: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl TeamsFastApp {
     /// End the pre-join camera preview. Dropping the receiver unwinds the
     /// forwarder and the capture thread (each exits when its channel peer
@@ -876,6 +885,48 @@ impl TeamsFastApp {
         self.join_camera_ok = false;
         self.join_preview_tex = None;
         self.cmd.send(Command::JoinPreviewStop).ok();
+    }
+
+    /// Camera-on-later: start a mid-call camera capture for a leg that
+    /// was placed audio-only. The video m-line already exists (black
+    /// keyframes keep it alive); swapping the receiver into the
+    /// CameraSlot makes the send loop encode live frames on the next
+    /// tick. No renegotiation. Camera-start failure degrades to black —
+    /// logged, matching the pre-spawn behavior.
+    fn begin_call_camera(&mut self) {
+        let Some(media) = self.call_media.as_ref() else {
+            return;
+        };
+        let slot = media.camera_source.clone();
+        std::thread::spawn(move || {
+            match ost::calling::camera::CameraCapture::start(None, 320, 240, 15) {
+                Ok((capture, cam_rx)) => {
+                    // Keep the capture thread alive for the call's
+                    // lifetime (the driver's own pre-spawn precedent).
+                    std::mem::forget(capture);
+                    let (tx, rx) = std::sync::mpsc::sync_channel(2);
+                    std::thread::spawn(move || {
+                        while let Ok(f) = cam_rx.recv() {
+                            let vf = ost::calling::video::VideoFrame {
+                                width: f.width,
+                                height: f.height,
+                                data: f.data,
+                            };
+                            if tx.send(vf).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = Some(rx);
+                    }
+                    log::info!("mid-call camera started (camera-on-later)");
+                }
+                Err(e) => {
+                    log::warn!("mid-call camera start failed: {e:#}");
+                }
+            }
+        });
     }
 
     /// Start screen sharing on the live call: portal ScreenCast (feature
@@ -1077,6 +1128,7 @@ impl TeamsFastApp {
             call_connected_at: None,
             ringer: None,
             call_is_meeting: false,
+            call_has_camera: false,
             lobby: ost::api::LobbyState::Idle,
             lobby_placed_at: None,
             incoming: None,
@@ -1429,6 +1481,7 @@ impl TeamsFastApp {
                     }
                 }
                 Event::CallEnded(summary) => {
+                    self.call_has_camera = false;
                     self.play_end_beep();
                     self.stop_screen_share();
                     self.call = None;
@@ -1489,6 +1542,7 @@ impl TeamsFastApp {
                         self.cmd.send(Command::TestCall { video: false }).ok();
                     }
                     if std::env::var("TEAMSFAST_VIDEOCALL").as_deref() == Ok("1") {
+                        self.call_has_camera = true;
                         self.cmd.send(Command::TestCall { video: true }).ok();
                     }
                     // QA hook: TEAMSFAST_HANGUP_AFTER=<secs> hangs up N
@@ -1500,6 +1554,17 @@ impl TeamsFastApp {
                             std::thread::spawn(move || {
                                 std::thread::sleep(std::time::Duration::from_secs(secs));
                                 cmd.send(crate::backend::Command::HangUp).ok();
+                            });
+                        }
+                    }
+                    // QA hook: TEAMSFAST_LATECAM=<secs> flips the camera
+                    // ON N seconds after Ready — headless camera-on-later
+                    // QA on an audio-placed call (no click injection here).
+                    if let Ok(secs) = std::env::var("TEAMSFAST_LATECAM") {
+                        if let Ok(secs) = secs.trim().parse::<u64>() {
+                            std::thread::spawn(move || {
+                                std::thread::sleep(std::time::Duration::from_secs(secs));
+                                LATECAM_QA.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             });
                         }
                     }
@@ -2633,15 +2698,18 @@ impl TeamsFastApp {
             Action::ClearActivity => self.activity.clear(),
             // ---- calls ----
             Action::StartCall(chat_id) => {
+                self.call_has_camera = false;
                 self.cmd.send(Command::StartCall(chat_id)).ok();
             }
             Action::StartVideoCall(chat_id) => {
+                self.call_has_camera = true;
                 self.cmd.send(Command::StartVideoCall(chat_id)).ok();
             }
             Action::TestCall => {
                 self.cmd.send(Command::TestCall { video: false }).ok();
             }
             Action::AcceptIncoming => {
+                self.call_has_camera = false;
                 self.stop_ringer();
                 if let Some(ring) = self.incoming.take() {
                     self.cmd.send(Command::AcceptIncoming(ring.raw)).ok();
@@ -2661,6 +2729,7 @@ impl TeamsFastApp {
             } => {
                 self.join_open = false;
                 self.stop_join_preview();
+                self.call_has_camera = camera;
                 self.status = "Resolving meeting…".into();
                 self.call_is_meeting = true;
                 self.lobby = ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Start);
@@ -3761,6 +3830,7 @@ impl eframe::App for TeamsFastApp {
         // Share clicks are collected inside the stage panel (self is
         // borrowed there) and applied once the borrow ends.
         let mut share_clicked = false;
+        let mut late_camera_clicked = false;
         if self.call_view_open {
             if let (Some((label, _at)), Some(media)) = (self.call.clone(), self.call_media.as_ref())
             {
@@ -3985,7 +4055,7 @@ impl eframe::App for TeamsFastApp {
                                     {
                                         self.cmd.send(Command::HangUp).ok();
                                     }
-                                    if media.local_preview.is_some() {
+                                    {
                                         let cam_on = *media.camera_on.borrow();
                                         let cam = ui.add(
                                             egui::Button::new(
@@ -4004,6 +4074,14 @@ impl eframe::App for TeamsFastApp {
                                             .clicked()
                                         {
                                             let _ = media.camera_on.send(!cam_on);
+                                            // Audio-placed leg turning its
+                                            // camera ON: the gate alone has
+                                            // no frames to un-black — start
+                                            // a mid-call capture into the
+                                            // CameraSlot.
+                                            if !cam_on && !self.call_has_camera {
+                                                late_camera_clicked = true;
+                                            }
                                         }
                                         // Screen share (video calls — the share
                                         // rides the video leg). Accent-filled
@@ -4071,6 +4149,20 @@ impl eframe::App for TeamsFastApp {
             } else if self.screen_share == ScreenShare::Off {
                 self.begin_screen_share();
             }
+        }
+        if late_camera_clicked {
+            self.call_has_camera = true;
+            self.begin_call_camera();
+        }
+        if LATECAM_QA.swap(0, std::sync::atomic::Ordering::SeqCst) > 0
+            && self.call.is_some()
+            && self.call_media.is_some()
+        {
+            if let Some(media) = self.call_media.as_ref() {
+                let _ = media.camera_on.send(true);
+            }
+            self.call_has_camera = true;
+            self.begin_call_camera();
         }
 
         if self.search_open {
