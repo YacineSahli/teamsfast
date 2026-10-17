@@ -106,6 +106,11 @@ impl Palette {
         v.widgets.hovered.bg_fill = self.surface_hover;
         v.widgets.active.bg_fill = self.accent;
         v.hyperlink_color = self.link;
+        // egui's stock LIGHT weak-text is tuned for pure-white panels; on
+        // the light palette it landed ~1.8:1 (composer placeholder and the
+        // unarmed send glyph were near-invisible; `.weak()` metadata sat at
+        // 4.10:1). The palette's secondary reads on both bases.
+        v.weak_text_color = Some(self.secondary);
         // `outline` disappears on the surface-coloured modal (unchecked
         // checkbox boxes were invisible); `dim` reads on both bases.
         v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.dim);
