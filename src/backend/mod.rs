@@ -1065,7 +1065,11 @@ async fn start_call_labelled(
         // (calling…/ringing…/connected) drives the banner.
         // Live call controls (mute/camera gates + frame sinks for the
         // stage UI); the handle rides to the UI as an event.
-        let (media, media_handle) = ost::calling::call_controls(video);
+        // Preview tee ALWAYS on: it mirrors the encode input (camera OR
+        // screen share), so a mid-call camera flip or a share from an
+        // audio-placed leg still surfaces frames to the stage's monitor
+        // tile. With no source the tee simply stays empty.
+        let (media, media_handle) = ost::calling::call_controls(true);
         // Pre-join choice: start muted when the user toggled mic off
         // (the gate is a watch channel created true).
         if !mic {

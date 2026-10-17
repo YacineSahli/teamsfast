@@ -940,9 +940,14 @@ impl TeamsFastApp {
             return;
         }
         let Some(media) = self.call_media.as_ref() else { return; };
-        if media.local_preview.is_none() {
-            self.share_note =
-                Some("Screen sharing needs a video call (the share rides the video leg).".into());
+        // The share rides the VIDEO LEG — which every AV offer carries.
+        // A leg is video-live once the camera is (pre-spawn capture or a
+        // mid-call flip); the old preview-tee gate refused shares from
+        // audio-turned-video calls.
+        if media.local_preview.is_none() && !self.call_has_camera {
+            self.share_note = Some(
+                "Screen sharing needs the camera on first (the share rides the video leg).".into(),
+            );
             return;
         }
         let slot = media.screen_source.clone();
@@ -1446,7 +1451,9 @@ impl TeamsFastApp {
                     // headlessly (TEAMSFAST_VIDEOCALL=1 places the call).
                     if std::env::var("TEAMSFAST_SCREENSHARE").as_deref() == Ok("1")
                         && !self.share_auto_fired
-                        && self.call_media.as_ref().is_some_and(|m| m.local_preview.is_some())
+                        && self.call_media.as_ref().is_some_and(|m| {
+                            m.local_preview.is_some() || self.call_has_camera
+                        })
                     {
                         self.share_auto_fired = true;
                         self.begin_screen_share();
@@ -4163,6 +4170,17 @@ impl eframe::App for TeamsFastApp {
             }
             self.call_has_camera = true;
             self.begin_call_camera();
+            // The stage stays collapsed on TestCall (meetings open it);
+            // the QA path wants to SEE the tiles.
+            self.call_view_open = true;
+            // Chain the QA share onto the flip when asked: exercises the
+            // late-camera → share path headlessly.
+            if std::env::var("TEAMSFAST_SCREENSHARE").as_deref() == Ok("1")
+                && !self.share_auto_fired
+            {
+                self.share_auto_fired = true;
+                self.begin_screen_share();
+            }
         }
 
         if self.search_open {
