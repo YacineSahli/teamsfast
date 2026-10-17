@@ -812,33 +812,6 @@ fn week_grid(
                 }
             }
 
-            // Now line.
-            let now = jiff::Zoned::now();
-            if today >= monday
-                && today
-                    < monday
-                        .checked_add(jiff::ToSpan::days(7))
-                        .unwrap_or(monday)
-            {
-                let day_idx = (today - monday).get_days() as f32;
-                let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
-                if mins >= h0 * 60 && mins <= h1 * 60 {
-                    let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px;
-                    // The now-line spans the WHOLE grid from the shared time
-                    // axis (a line starting at today's column read as a
-                    // decoration of the days after it); the dot marks the
-                    // current column.
-                    let x_dot = rect.left() + gutter + col_w * day_idx;
-                    let x_end = rect.left() + gutter + col_w * 7.0;
-                    ui.painter().line_segment(
-                        [egui::pos2(rect.left() + gutter, y), egui::pos2(x_end, y)],
-                        egui::Stroke::new(1.5, pal.danger),
-                    );
-                    ui.painter()
-                        .circle_filled(egui::pos2(x_dot, y), 3.0, pal.danger);
-                }
-            }
-
             // Meeting blocks: concurrent events lane side-by-side within
             // their day column instead of overlapping. Spans + lane
             // geometry were precomputed above (they size the grid too).
@@ -875,6 +848,37 @@ fn week_grid(
                     }
                 }
             }
+
+            // Now line — painted AFTER the blocks: chips covered it wherever
+            // they crossed, reading as broken dashes (native keeps the
+            // current-time line continuous above events).
+            // Now line.
+            let now = jiff::Zoned::now();
+            if today >= monday
+                && today
+                    < monday
+                        .checked_add(jiff::ToSpan::days(7))
+                        .unwrap_or(monday)
+            {
+                let day_idx = (today - monday).get_days() as f32;
+                let mins = i32::from(now.hour()) * 60 + i32::from(now.minute());
+                if mins >= h0 * 60 && mins <= h1 * 60 {
+                    let y = top + header_h + (mins - h0 * 60) as f32 / 60.0 * hour_px;
+                    // The now-line spans the WHOLE grid from the shared time
+                    // axis (a line starting at today's column read as a
+                    // decoration of the days after it); the dot marks the
+                    // current column.
+                    let x_dot = rect.left() + gutter + col_w * day_idx;
+                    let x_end = rect.left() + gutter + col_w * 7.0;
+                    ui.painter().line_segment(
+                        [egui::pos2(rect.left() + gutter, y), egui::pos2(x_end, y)],
+                        egui::Stroke::new(1.5, pal.danger),
+                    );
+                    ui.painter()
+                        .circle_filled(egui::pos2(x_dot, y), 3.0, pal.danger);
+                }
+            }
+
         });
 }
 
