@@ -1889,3 +1889,99 @@ mod quote_plain_tests {
         );
     }
 }
+
+/// Real-payload fuzz harness (run-4). The archive holds thousands of real
+/// Teams HTML payloads; this drives them — pristine and mutated (truncation
+/// at every char boundary, unicode injection, tag swaps, pipe floods) —
+/// through every pure parser on the message path. Panics report the file +
+/// mutation so the exact input can be replayed.
+///
+/// Env-gated: without TEAMSFAST_FUZZ_DIR the test is a no-op (the corpus
+/// is machine-local and must never be committed — fictional fixtures only).
+/// Run: TEAMSFAST_FUZZ_DIR=/tmp/fuzz_corpus/html cargo test --release fuzz_corpus
+#[cfg(test)]
+mod fuzz_corpus {
+    use super::{parse_html, segs_to_plain, split_markdown_links, split_pipe_tables};
+
+    fn exercise(label: &str, input: &str) {
+        let r = std::panic::catch_unwind(|| {
+            let segs = parse_html(input);
+            let plain = segs_to_plain(&segs);
+            let _ = split_markdown_links(&plain);
+            let _ = split_markdown_links(input);
+            let _ = split_pipe_tables(&plain);
+            let _ = crate::ui::cards::extract_card(input);
+            let _ = crate::backend::live_parse::strip_html(&plain);
+        });
+        if r.is_err() {
+            panic!("FUZZ HIT at {label}: {input:?}");
+        }
+    }
+
+    fn char_indices_sampled(s: &str, full_below: usize, stride: usize) -> Vec<usize> {
+        let mut v: Vec<usize> = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .filter(|&i| s.is_char_boundary(i))
+            .collect();
+        if s.chars().count() > full_below {
+            v.retain(|&i| i % stride == 0);
+        }
+        v.push(s.len());
+        v
+    }
+
+    #[test]
+    fn real_payloads_and_mutations_never_panic() {
+        let Ok(dir) = std::env::var("TEAMSFAST_FUZZ_DIR") else {
+            return; // no local corpus — nothing to fuzz
+        };
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .expect("TEAMSFAST_FUZZ_DIR must be a readable dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "html"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "corpus dir has no .html payloads");
+        let mut n = 0;
+        for f in &files {
+            let Ok(raw) = std::fs::read_to_string(f) else {
+                continue;
+            };
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            // Pristine.
+            exercise(&name, &raw);
+            // Truncation at every char boundary (sampled for big payloads).
+            for i in char_indices_sampled(&raw, 2048, 101) {
+                exercise(&format!("{name}#trunc@{i}"), &raw[..i]);
+            }
+            // Unicode injection at sampled boundaries.
+            for i in char_indices_sampled(&raw, 512, 211) {
+                let mut m = String::with_capacity(raw.len() + 8);
+                m.push_str(&raw[..i]);
+                m.push_str("🎉éע❤️‍");
+                m.push_str(&raw[i..]);
+                exercise(&format!("{name}#inj@{i}"), &m);
+            }
+            // Tag chaos.
+            let ops: [fn(&str) -> String; 5] = [
+                |s: &str| s.replace('<', "<br/>"),
+                |s: &str| s.replace("</", "/>"),
+                |s: &str| s.to_uppercase(),
+                |s: &str| s.replace("<p>", "<br>").replace("<br>", "<p>"),
+                |s: &str| format!("{s}<)<<a</</"),
+            ];
+            for (k, op) in ops.iter().enumerate() {
+                exercise(&format!("{name}#tagop{k}"), &op(&raw));
+            }
+            // Pipe flood through the table splitter.
+            let plain = segs_to_plain(&parse_html(&raw));
+            let flood = format!("{plain}{}|a|b|\n|c|d|", "|".repeat(64));
+            exercise(&format!("{name}#pipes"), &flood);
+            n += 1;
+        }
+        eprintln!("fuzz: exercised {n} payloads from {dir}");
+    }
+}
+
