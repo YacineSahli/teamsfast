@@ -152,9 +152,14 @@ fn modal_primary(
         RichText::new(text)
             .size(12.5)
             .bold()
-            .color(if enabled { pal.on_accent } else { pal.secondary }),
+            // egui fades a disabled widget's text ~0.6x, so pal.secondary
+            // landed at 2.5:1 — start from pal.text so the faded result
+            // stays readable.
+            .color(if enabled { pal.on_accent } else { pal.text }),
     )
-    .min_size(egui::vec2(width, 26.0))
+    // 30 matches the secondary buttons beside it (they measured 32 outer
+    // incl. stroke; a 26px core left Join visibly 2px shorter than Cancel).
+    .min_size(egui::vec2(width, 30.0))
     .corner_radius(egui::CornerRadius::same(6))
     .fill(if enabled { pal.accent } else { pal.panel })
     .stroke(if enabled {
