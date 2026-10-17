@@ -19,9 +19,13 @@ pub async fn fetch_image(ses: &Session, tx: &Sender<Event>, url: &str) {
     let tx2 = tx.clone();
     let url_for_decode = url_owned.clone();
 
-    // Fetch on the runtime; decode off it. The handle is JOINED (a panic
-    // inside decode must still surface ImageFailed — a detached handle
-    // would leave the placeholder spinner forever).
+    // Fetch on the runtime; decode off it. The JoinHandle is JOINED by a
+    // small watcher task, not by this handler: the worker loop awaits
+    // every command serially, and awaiting the handle here parked the
+    // whole worker for the full decode+downscale of each image (a large
+    // photo is hundreds of ms) — every queued command behind it stalled.
+    // The watcher still surfaces a panicked decode as ImageFailed (a
+    // detached handle would leave the placeholder spinner forever).
     let fetched = ost::api::fetch_media_data(&client, &url_owned).await;
     let decode = tokio::task::spawn_blocking(move || match fetched {
         Ok(mb) => match decode_rgba(&mb.data) {
@@ -42,10 +46,14 @@ pub async fn fetch_image(ses: &Session, tx: &Sender<Event>, url: &str) {
             let _ = tx2.send(Event::ImageFailed(url_for_decode));
         }
     });
-    if decode.await.is_err() {
-        log::warn!("image decode task panicked");
-        let _ = tx.send(Event::ImageFailed(url.to_string()));
-    }
+    let tx_watch = tx.clone();
+    let url_watch = url.to_string();
+    tokio::spawn(async move {
+        if decode.await.is_err() {
+            log::warn!("image decode task panicked");
+            let _ = tx_watch.send(Event::ImageFailed(url_watch));
+        }
+    });
 }
 
 /// Decode to RGBA8, downscaling to `MAX_EDGE` on the long edge.
