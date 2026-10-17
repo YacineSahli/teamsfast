@@ -4106,12 +4106,26 @@ impl eframe::App for TeamsFastApp {
                                     }
                                     {
                                         let cam_on = *media.camera_on.borrow();
+                                        // Accent-filled while the camera runs —
+                                        // the share button already mirrors its
+                                        // live state; the camera read as
+                                        // always-off (light-stage QA note).
                                         let cam = ui.add(
                                             egui::Button::new(
-                                                crate::theme::Icon::Video
-                                                    .image(self.palette.secondary, 15.0),
+                                                crate::theme::Icon::Video.image(
+                                                    if cam_on {
+                                                        self.palette.on_accent
+                                                    } else {
+                                                        self.palette.secondary
+                                                    },
+                                                    15.0,
+                                                ),
                                             )
-                                            .fill(self.palette.surface_hover)
+                                            .fill(if cam_on {
+                                                self.palette.accent
+                                            } else {
+                                                self.palette.surface_hover
+                                            })
                                             .min_size(egui::vec2(36.0, 30.0)),
                                         );
                                         if cam
