@@ -361,7 +361,7 @@ pub async fn react(
     }
 }
 
-pub async fn mark_read(ses: &Session, tx: &Sender<Event>, chat_id: &str, message_id: &str) {
+pub async fn mark_read(ses: &Session, _tx: &Sender<Event>, chat_id: &str, message_id: &str) {
     let Some(c) = client(ses) else {
         return;
     };
