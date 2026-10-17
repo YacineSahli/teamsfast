@@ -534,7 +534,23 @@ fn meeting_pill(
         // fragment says anything — a pure-ellipsis fragment falls back to
         // the title at full width ("14:00 …" says nothing). An EMPTY
         // subject renders the time alone (an empty line left a stroke-only
-        // pill that read as a stray glyph in month cells).
+        // pill that read as a stray glyph in month cells). Prefer the
+        // RANGE over the bare start when it fits beside the subject —
+        // start-only stamps next to ranged neighbors read inconsistent.
+        let stamp = if subject.trim().is_empty() {
+            time.clone()
+        } else {
+            let rw = ui
+                .painter()
+                .layout_no_wrap(range.clone(), egui::FontId::proportional(10.0), title_col)
+                .size()
+                .x;
+            if rw + 14.0 <= text_w * 0.62 {
+                range.clone()
+            } else {
+                time.clone()
+            }
+        };
         let line = if subject.trim().is_empty() {
             time.clone()
         } else {
@@ -542,7 +558,7 @@ fn meeting_pill(
             if frag.chars().all(|c| c == '…' || c.is_whitespace()) {
                 format!("{time} {}", ellipsize(ui, &subject, 10.0, text_w.max(8.0)))
             } else {
-                format!("{time} {frag}")
+                format!("{stamp} {frag}")
             }
         };
         let r = p.text(
