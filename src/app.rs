@@ -536,6 +536,9 @@ pub struct TeamsFastApp {
     /// reactions only on the NETWORK replaces — event 2+ — so the
     /// cached→network paint delta is reproducible headlessly).
     qa_msgs_seen: HashMap<String, u32>,
+    /// A load-older prepend just applied: adjust the conversation scroll
+    /// offset by the grown content height so the view stays put.
+    prepend_adjust: bool,
     /// Remote/local video textures for the stage (recreated on size change).
     remote_video_tex: Option<egui::TextureHandle>,
     local_video_tex: Option<egui::TextureHandle>,
@@ -898,6 +901,7 @@ pub(crate) fn qa_flag(key: &str) -> bool {
                 "TEAMSFAST_FAILSEND",
                 "TEAMSFAST_RECTLOG",
                 "TEAMSFAST_REACT",
+                "TEAMSFAST_LOADOLDER",
             ] {
                 m.insert(k, std::env::var(k).as_deref() == Ok("1"));
             }
@@ -1174,6 +1178,7 @@ impl TeamsFastApp {
             call_view_open: false,
             image_sizes: HashMap::new(),
             qa_msgs_seen: HashMap::new(),
+            prepend_adjust: false,
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
@@ -1792,6 +1797,12 @@ impl TeamsFastApp {
                         merged.retain(|m| seen.insert(m.id.clone()));
                         self.messages = merged;
                         self.loading_older = false;
+                        // Keep the viewport on the same content: egui's
+                        // scroll offset is content-relative, so prepending
+                        // would slide the view UP by the prepended height.
+                        // The conversation view measures the delta after
+                        // the next render and shifts the offset back.
+                        self.prepend_adjust = true;
                     } else if merge {
                         merge_message_tail(&mut self.messages, messages);
                     } else {
@@ -1883,7 +1894,14 @@ impl TeamsFastApp {
                         };
                         seed(&mut self.messages);
                     }
-                    *self.qa_msgs_seen.entry(chat_id.clone()).or_insert(0) += 1;
+                    let seen = self.qa_msgs_seen.entry(chat_id.clone()).or_insert(0);
+                    *seen += 1;
+                    // QA hook: auto-click "Load earlier messages" once the
+                    // network page settled, so prepend scroll anchoring is
+                    // measurable headlessly (RECTLOG tops before/after).
+                    if qa_flag("TEAMSFAST_LOADOLDER") && *seen == 2 {
+                        self.apply(Action::LoadOlder);
+                    }
                     // Who has read what (quiet fetch, no error surfaced) —
                     // throttled: refreshes land in bursts and receipts move
                     // slowly, each fetch is a worker round-trip.
@@ -2861,6 +2879,7 @@ impl TeamsFastApp {
                 self.cmd.send(Command::JoinPreviewStart).ok();
             }
             Action::Status(text) => self.status = text,
+            Action::PrependAnchored => self.prepend_adjust = false,
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
             }
@@ -4412,6 +4431,7 @@ impl eframe::App for TeamsFastApp {
                     || self.join_open
                     || self.team_dialog.open,
                 actions: &mut actions,
+                prepend_adjust: self.prepend_adjust,
             };
             egui::Panel::bottom("composer").show(ui, |ui| {
                 conversation::conversation_composer(ui, &mut ctx, &mut self.draft);

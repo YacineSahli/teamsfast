@@ -191,6 +191,9 @@ pub enum Action {
     /// Surface a transient note in the top bar (e.g. why a calendar click
     /// had no join action).
     Status(String),
+    /// The conversation view applied the prepend scroll adjustment —
+    /// clears App's one-shot flag.
+    PrependAnchored,
 }
 
 /// An own message on its way out (or failed, awaiting Retry) — the view
@@ -238,6 +241,10 @@ pub struct ConvCtx<'a> {
     /// Foreground order as egui::Modal and otherwise z-fight above it
     /// (reachable for real via hover-message + Ctrl+N).
     pub overlays_open: bool,
+    /// App set this when a load-older prepend just applied: after this
+    /// render, shift the scroll offset by the content-height delta so
+    /// the viewport stays on the same messages.
+    pub prepend_adjust: bool,
     pub actions: &'a mut Vec<Action>,
 }
 
@@ -376,7 +383,12 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
         eprintln!("PRESCROLL aw={:.0} maxrect={:?}", ui.available_width(), ui.max_rect());
     }
-    let mut area = ScrollArea::vertical().auto_shrink(false);
+    // Stable id: the prepend offset-adjust below needs to address the
+    // ScrollArea's persistent state directly.
+    const CONV_SCROLL_SALT: &str = "conv_msgs_scroll";
+    let mut area = ScrollArea::vertical()
+        .auto_shrink(false)
+        .id_salt(CONV_SCROLL_SALT);
     // NB: this egui style runs FLOATING scroll bars (scroll.floating=true,
     // verified by probe) — they reserve ZERO content width, so bar
     // visibility never affects wrap width here. Do not "fix" width
@@ -526,7 +538,39 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             ui.spacing().scroll.floating,
             ui.min_rect().right()
         );
-        let _ = &scroll_out;
+    }
+
+    // Prepend anchoring: egui's scroll offset is measured from the
+    // content TOP, so history prepended above the view slides everything
+    // the user is reading down by the prepended height (a 50-message page
+    // is ~20k px — the reading position is lost entirely). After the
+    // prepend's first render we know the height delta; shift the offset
+    // by it and repaint (the state write is consumed by the NEXT begin —
+    // the calendar scroll-to-today lesson).
+    {
+        let h_key = egui::Id::new("conv_content_h");
+        let prev_h: Option<f32> = ui.ctx().data_mut(|d| d.get_temp(h_key));
+        let h2 = scroll_out.content_size.y;
+        if ctx.prepend_adjust
+            && let Some(h1) = prev_h
+            && h2 > h1
+        {
+            let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
+            if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), state_id) {
+                if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+                    eprintln!(
+                        "PREPENDADJUST h1={h1:.0} h2={h2:.0} delta={} offset={:.0}",
+                        h2 - h1,
+                        state.offset.y
+                    );
+                }
+                state.offset.y += h2 - h1;
+                ui.ctx().data_mut(|d| d.insert_temp(state_id, state));
+            }
+            ui.ctx().request_repaint();
+            ctx.actions.push(Action::PrependAnchored);
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(h_key, h2));
     }
 }
 
@@ -1820,6 +1864,7 @@ mod tests {
                             emoji_textures: &mut emoji_textures,
                             pal: &Palette::dark(),
                             overlays_open: false,
+                            prepend_adjust: false,
                             actions: &mut actions,
                         };
                         reaction_strip(ui, &mut ctx, m, false, 400.0, true);
@@ -1904,6 +1949,7 @@ mod tests {
                     emoji_textures,
                     pal: &Palette::dark(),
                     overlays_open: false,
+                    prepend_adjust: false,
                     actions: &mut actions,
                 };
                 conversation_messages(ui, &mut ctx);
@@ -2018,6 +2064,7 @@ mod tests {
                 emoji_textures: &mut emoji_textures,
                 pal: &Palette::dark(),
                 overlays_open: false,
+                prepend_adjust: false,
                 actions: &mut actions,
             };
             conversation_composer(ui, &mut ctx, draft);
