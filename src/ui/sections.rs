@@ -1610,10 +1610,21 @@ pub fn todo_panel(
                 // (56+8 spacing = the 64px inset above) — the default
                 // button hung 4px below the input and 5px short of the
                 // global right margin.
+                // Explicit label color: the stock disabled wash (weak
+                // gray on the widget fill) measured 2.75:1 in light —
+                // palette secondary stays readable while still reading
+                // as disabled (no fill emphasis).
                 let add = ui
                     .add_enabled(
                         armed,
-                        egui::Button::new("Add").min_size(egui::vec2(56.0, 24.0)),
+                        egui::Button::new(
+                            RichText::new("Add").color(if armed {
+                                pal.text
+                            } else {
+                                pal.secondary
+                            }),
+                        )
+                        .min_size(egui::vec2(56.0, 24.0)),
                     )
                     .clicked()
                     || (armed
