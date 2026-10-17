@@ -255,6 +255,27 @@ remaining Phase 2 item.
   paint; black bands at 1240x820 are the harness, never the app.
 - Xvfb draws a phantom mouse pointer dead-center that can hold a hover
   bar open or tint one row — ignore in vision QA.
+- TWO app instances share ~/.local/state/teamsfast/teamsfast.log: the
+  newer launch TRUNCATES it and the older instance's append-writer then
+  progressively overwrites the new lines (a running soak destroys QA
+  log evidence and vice versa). Grep log evidence DURING the app's
+  lifetime, and stop soaks before log-heavy QA sessions.
+- Offline QA: `unshare -n` is blocked by the exec sandbox; use
+  `bwrap --unshare-net --dev-bind / / ./target/debug/teamsfast`
+  (keyring stays reachable — tokens load; the app must paint cached
+  chats + the offline banner — Event::ChatsCached merge rule).
+- Keyboard QA is impossible in this sandbox: XTEST fake events never
+  materialize (verified with a raw XNextEvent listener), wtype is
+  Wayland-only, xdotool/xwininfo are not installed. a11y/keyboard nav
+  stays untested until tooling exists.
+- egui `scroll_to_me`/`scroll_to_rect` queued mid-ScrollArea-content is
+  consumed by the ScrollArea's NEXT `begin` — on the event-driven frame
+  loop you MUST `ctx.request_repaint()` beside it or the scroll silently
+  never applies (calendar week scroll-to-now, 0227aac).
+- SQLCipher ad-hoc queries: the keyring secret IS the key string (64
+  ASCII chars of hex text) — use it directly; re-hexing the bytes gives
+  a 128-char "not a database" key. Message HTML lives in the `raw`
+  column (`content` is the plain projection).
 
 ### Threading & crates
 - `ses.call_stop` is a `CallSlot { stop, done }`: the `done` flag is set
