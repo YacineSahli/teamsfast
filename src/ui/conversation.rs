@@ -357,7 +357,17 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             ctx.actions.push(Action::ShowChatFiles(ctx.chat_id.clone()));
         }
         // Jump to latest: history is paged above, so re-anchor to the tail.
-        if ctx.older_link.is_some() {
+        // Native Teams only offers the jump when the view is actually
+        // scrolled up — an always-on pill is dead chrome that also steals
+        // the header width the typing indicator needs. The at-bottom flag
+        // is computed after the message ScrollArea each frame (one-frame
+        // lag, refreshed beside the scroll state it derives from); while
+        // someone is typing the pill yields its slot entirely.
+        let at_bottom: bool = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str())))
+            .unwrap_or(true);
+        if ctx.older_link.is_some() && !at_bottom && ctx.typing_user.is_none() {
             if ui
                 .small_button(RichText::new("⇩ Latest").small())
                 .on_hover_text("Reload the newest messages")
@@ -368,9 +378,9 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         }
         if let Some(user) = ctx.typing_user {
             // Truncate to what's left of the header row: with the call/
-            // files/latest controls present, a long name overflowed ON TOP
-            // of them and clipped at the pane edge (battery P1). Prefer
-            // the first name over a mid-word ellipsis when that fits.
+            // files controls present, a long name overflowed ON TOP of
+            // them and clipped at the pane edge (battery P1). Prefer the
+            // first name over a mid-word ellipsis when that fits.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let full = format!("{user} is typing…");
                 let first = format!(
@@ -389,7 +399,10 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 } else if w(&first) <= ui.available_width() {
                     first
                 } else {
-                    full
+                    // Neither fits: the SHORTER label truncates later
+                    // (falling back to `full` here is what rendered
+                    // "Souh…" — battery round 6).
+                    first
                 };
                 ui.add(
                     egui::Label::new(RichText::new(label).small().color(ctx.pal.link))
@@ -428,6 +441,12 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         let f = BENCH_FRAME
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             as f32;
+        // stick_to_bottom re-pins the offset on EVERY content change —
+        // under live traffic the bench's offset drive never moved the
+        // view at all (probe-verified run 6: state offset pinned at
+        // bottom through the whole "sweep"). Disable the stick while
+        // benching so the drive actually sweeps.
+        area = area.stick_to_bottom(false);
         // 300 settle frames at the bottom, then a steady upward scroll
         // through the loaded history (~150px/frame; the offset clamps at
         // the content top and stays there).
@@ -439,6 +458,11 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // keep the frames coming (QA hook only).
         ui.ctx().request_repaint();
     }
+    // Screen-space bottom of the FINAL row — the observable at-bottom
+    // signal for the header's "⇩ Latest" pill (egui's State.offset tracks
+    // the committed offset, not the rendered offset_target; see the
+    // prepend-adjust note for the same trap).
+    let mut last_row_bottom = f32::NEG_INFINITY;
     let scroll_out = area.show(ui, |ui| {
         if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
             let mr = ui.max_rect();
@@ -493,6 +517,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             let row_id = ui.id().with(("msg-row-h", &m.id));
             let known: Option<egui::Vec2> = ui.ctx().data_mut(|d| d.get_temp(row_id));
             let top = ui.cursor().top();
+            last_row_bottom = last_row_bottom.max(top + known.map(|k| k.y).unwrap_or(40.0));
             if let Some(sz) = known
                 && (top > clip.bottom() + CULL_MARGIN
                     || top + sz.y < clip.top() - CULL_MARGIN)
@@ -529,6 +554,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             // spacing on top of each allocation, so strip it back out — the
             // placeholder gets its own spacing when allocated.
             let h = (ui.cursor().top() - top - ui.spacing().item_spacing.y).max(0.0);
+            last_row_bottom = last_row_bottom.max(top + h);
             if h > 0.0 {
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(row_id, egui::vec2(0.0, h)));
@@ -603,6 +629,51 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             ctx.actions.push(Action::PrependAnchored);
         }
         ui.ctx().data_mut(|d| d.insert_temp(h_key, h2));
+    }
+
+    // At-bottom flag for the header's "⇩ Latest" pill (native shows the
+    // jump affordance only when the view is scrolled up). offset is
+    // content-relative from the top, so "at bottom" is offset + viewport
+    // reaching the content height.
+    {
+        let key = egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str());
+        // 40px slack: stick_to-bottom parks the last row's bottom AT the
+        // viewport bottom; short conversations park it above.
+        let at_bottom =
+            last_row_bottom.is_finite() && last_row_bottom <= scroll_out.inner_rect.bottom() + 40.0;
+        let prev: Option<bool> = ui.ctx().data_mut(|d| d.get_temp(key));
+        if prev != Some(at_bottom) {
+            // The header's "⇩ Latest" pill reads this one frame late; on
+            // the event-driven loop nothing repaints when the flag flips,
+            // so the pill (and its disappearance) would never paint.
+            ui.ctx().request_repaint();
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(key, at_bottom));
+    }
+
+    // QA hook: force the conversation to a scrolled-up position once the
+    // history is loaded (TEAMSFAST_SCROLLUP=1). The SCROLLBENCH offset
+    // drive is re-pinned by stick_to_bottom every frame — the prepend
+    // adjust's direct state write is the mechanism that actually holds.
+    if crate::app::qa_flag("TEAMSFAST_SCROLLUP") {
+        static ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static SEEN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        // Arm late: firing on the cached paint lets the arriving network
+        // page grow the content and re-pin the view before the shot.
+        let ready = match SEEN_AT.get_or_init(std::time::Instant::now) {
+            t => t.elapsed() > std::time::Duration::from_secs(3),
+        };
+        if ready
+            && !ARMED.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && scroll_out.content_size.y > 1200.0
+        {
+            let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
+            if let Some(mut st) = egui::scroll_area::State::load(ui.ctx(), state_id) {
+                st.offset.y = 2000.0;
+                ui.ctx().data_mut(|d| d.insert_temp(state_id, st));
+            }
+            ui.ctx().request_repaint();
+        }
     }
 }
 
@@ -1005,7 +1076,10 @@ fn message_row(
         ui.horizontal_wrapped(|ui| {
             ui.add_space(6.0);
             if grouped {
-                ui.add_space(38.0);
+                // 43 = avatar(32) + gap(3) + one inter-widget spacing:
+                // 38 shifted every avatar-less group 5px left of the
+                // named groups' text column (battery round 6).
+                ui.add_space(43.0);
             } else {
                 avatar(ui, &sender_label(m, ctx), 32.0);
                 ui.add_space(3.0);
@@ -1072,6 +1146,22 @@ fn bubble_parts(
     // content-cached (b64 scan + JSON parse per frame is expensive).
     let (decoded_card, card_salt) = crate::ui::cards::extract_card_cached(&m.raw);
 
+    // Own bubbles are indigo/violet — the theme link color fails AA on
+    // them in BOTH themes (2.8:1 dark, 3.2:1 light; battery round 6).
+    // Body links inside own bubbles render through this bubble-aware
+    // palette clone; cards paint their own surface and keep pal.link.
+    let link_pal = if own {
+        let mut p = ctx.pal.clone();
+        p.link = if ctx.pal.is_light() {
+            Color32::from_rgb(0x1e, 0x4f, 0xb0)
+        } else {
+            Color32::from_rgb(0xb3, 0xcc, 0xf7)
+        };
+        p
+    } else {
+        ctx.pal.clone()
+    };
+
     // The bubble itself
     let row_id = egui::Id::new(("msg", &m.id));
     let fill = if own {
@@ -1118,7 +1208,7 @@ fn bubble_parts(
                             render_segments(
                                 ui,
                                 &segments,
-                                ctx.pal,
+                                &link_pal,
                                 |ui, url| show_image(ui, ctx, url),
                                 |ui, name, url| {
                                     if ui
@@ -1194,7 +1284,7 @@ fn bubble_parts(
                         render_segments(
                             ui,
                             &segments,
-                            ctx.pal,
+                            &link_pal,
                             |ui, url| show_image(ui, ctx, url),
                             |ui, name, url| {
                                 if ui

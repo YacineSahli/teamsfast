@@ -907,6 +907,7 @@ pub(crate) fn qa_flag(key: &str) -> bool {
                 "TEAMSFAST_LAYOUT_DEBUG",
                 "TEAMSFAST_CALGEOM",
                 "TEAMSFAST_CHATFILES",
+                "TEAMSFAST_SCROLLUP",
             ] {
                 m.insert(k, std::env::var(k).as_deref() == Ok("1"));
             }
@@ -3613,9 +3614,10 @@ impl eframe::App for TeamsFastApp {
                 // above (ease-out cubic, anchored at the ring's start).
                 let screen = ui.input(|i| i.raw.screen_rect).unwrap_or(egui::Rect::ZERO);
                 let card_w = 460.0;
-                // 16px like the right inset — 40px read as hung-low
-                // (battery round-5 P3; the slide-in animation is unchanged).
-                let target_y = 16.0;
+                // Below the top-bar user chip (~30px): at 16px the card's
+                // top border sliced through the chip's bottom third
+                // (battery round 6). The slide-in animation is unchanged.
+                let target_y = 34.0;
                 let t_in = (ring.at.elapsed().as_secs_f32() / 0.35).min(1.0);
                 let ease = 1.0 - (1.0 - t_in) * (1.0 - t_in) * (1.0 - t_in);
                 let y = -90.0 + (target_y + 90.0) * ease;
@@ -5168,23 +5170,27 @@ impl eframe::App for TeamsFastApp {
                 // as enabled).
                 let can_join = !self.join_source.trim().is_empty();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_enabled_ui(can_join, |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("Join")
-                                        .bold()
-                                        .color(self.palette.on_accent),
-                                )
-                                .fill(self.palette.accent)
-                                .min_size(egui::vec2(84.0, 26.0)),
-                            )
-                            .clicked()
-                            || (enter && can_join)
-                        {
-                            join_now = true;
-                        }
-                    });
+                    // modal_primary: 30-core/32-outer height matches the
+                    // secondary Cancel (a 26px core left Join visibly
+                    // shorter), and its disabled treatment swaps fill and
+                    // border instead of egui's disabled rim — the rim put
+                    // a 1px frame around the accent fill that measured
+                    // 34px vs Cancel's 32 (battery round 6).
+                    if crate::ui::panels::modal_primary(
+                        ui,
+                        &self.palette,
+                        "Join",
+                        can_join,
+                        84.0,
+                    )
+                    .clicked()
+                        || (enter && can_join)
+                    {
+                        join_now = true;
+                    }
+                    // 4px rode the row's tightened spacing — 8px gutter
+                    // between adjacent dialog buttons.
+                    ui.add_space(4.0);
                     if crate::ui::widgets::btn::secondary(ui, &self.palette, "Cancel")
                         .clicked()
                     {
