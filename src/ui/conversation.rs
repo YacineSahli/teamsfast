@@ -194,6 +194,9 @@ pub enum Action {
     /// The conversation view applied the prepend scroll adjustment —
     /// clears App's one-shot flag.
     PrependAnchored,
+    /// The conversation view consumed the full-replace bottom pin —
+    /// clears App's one-shot flag.
+    BottomPinApplied,
 }
 
 /// An own message on its way out (or failed, awaiting Retry) — the view
@@ -224,8 +227,20 @@ pub struct ConvCtx<'a> {
     pub receipts: &'a std::collections::HashMap<String, Vec<String>>,
     /// Locally pinned message ids in this chat.
     pub pinned: &'a [String],
-    /// True when this chat is a 1:1 thread a call can be placed to.
+    /// STABLE 1:1-callability facts only (chat id shape — spaces 1:1 that
+    /// is not a meeting thread). Transient data (the roster) must not
+    /// gate button PRESENCE: while the roster is pending the buttons
+    /// render DISABLED instead of vanishing (open/refresh blink report).
     pub can_call: bool,
+    /// First page of this conversation is still in flight (no cached
+    /// content painted) — the pane shows a centered loader.
+    pub conv_loading: bool,
+    /// The app just full-replaced the open conversation's page while the
+    /// view was at the bottom: pin the scroll to the new bottom THIS
+    /// frame (stick_to_bottom re-pins only at ScrollArea::end, so the
+    /// replace frame otherwise renders the grown content at the stale
+    /// offset — a full-pane blank straddle frame, the visible "blink").
+    pub pin_bottom_next: bool,
     /// Active-call banner text (None when idle).
     pub call_label: Option<&'a str>,
     pub textures: &'a std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
@@ -324,25 +339,44 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 ctx.actions.push(Action::HangUp);
             }
         } else if ctx.can_call {
-            let call = ui.add(
-                egui::Button::new(crate::theme::Icon::Phone.image(ctx.pal.secondary, 15.0))
-                    .fill(egui::Color32::TRANSPARENT),
-            );
-            if call
-                .on_hover_text("Call (audio)")
-                .clicked()
-            {
-                ctx.actions.push(Action::StartCall(ctx.chat_id.clone()));
-            }
-            let video = ui.add(
-                egui::Button::new(crate::theme::Icon::Video.image(ctx.pal.secondary, 15.0))
-                    .fill(egui::Color32::TRANSPARENT),
-            );
-            if video
-                .on_hover_text("Call with camera")
-                .clicked()
-            {
-                ctx.actions.push(Action::StartVideoCall(ctx.chat_id.clone()));
+            // Button PRESENCE keys on stable facts only (ctx.can_call =
+            // chat id shape). The roster decides enabled-ness: while it
+            // is still loading the buttons render grayed-out instead of
+            // vanishing (they used to blink out on every open/refresh —
+            // empty members read as "bot-only chat" and hid them).
+            // Once the roster lands, a bot-only (connector DM) thread
+            // hides them for good — there is no human to call.
+            let bot_only = !ctx.members.is_empty()
+                && ctx.members.keys().all(|m| m.starts_with("28:"));
+            if !bot_only {
+                let ready = !ctx.members.is_empty();
+                ui.add_enabled_ui(ready, |ui| {
+                    let call = ui.add(
+                        egui::Button::new(crate::theme::Icon::Phone.image(ctx.pal.secondary, 15.0))
+                            .fill(egui::Color32::TRANSPARENT),
+                    );
+                    let video = ui.add(
+                        egui::Button::new(crate::theme::Icon::Video.image(ctx.pal.secondary, 15.0))
+                            .fill(egui::Color32::TRANSPARENT),
+                    );
+                    if ready {
+                        if call
+                            .on_hover_text("Call (audio)")
+                            .clicked()
+                        {
+                            ctx.actions.push(Action::StartCall(ctx.chat_id.clone()));
+                        }
+                        if video
+                            .on_hover_text("Call with camera")
+                            .clicked()
+                        {
+                            ctx.actions.push(Action::StartVideoCall(ctx.chat_id.clone()));
+                        }
+                    } else {
+                        let _ = call.on_disabled_hover_text("Loading chat…");
+                        let _ = video.on_disabled_hover_text("Loading chat…");
+                    }
+                });
             }
         }
         // Shared files of this conversation (Files section).
@@ -485,6 +519,29 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // keep the frames coming (QA hook only).
         ui.ctx().request_repaint();
     }
+    // Same-frame bottom pin after a full page replace (ConvCtx::
+    // pin_bottom_next): stick_to_bottom re-pins only at ScrollArea::end,
+    // so the replace frame renders the grown content at the STALE offset —
+    // a mid-content blank straddle frame (the visible open/refresh blink;
+    // video forensics: cached page → blank+divider → final). Pinning the
+    // state before begin lands the view at the new bottom this frame.
+    // Gated on the PREVIOUS frame's at-bottom: a mid-read replace must
+    // not yank the user to the bottom.
+    if ctx.pin_bottom_next {
+        let prev_bottom: bool = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str())))
+            .unwrap_or(true);
+        if prev_bottom {
+            let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
+            if let Some(mut st) = egui::scroll_area::State::load(ui.ctx(), state_id) {
+                // MAX clamps to the new content max at the next begin.
+                st.offset.y = f32::MAX;
+                ui.ctx().data_mut(|d| d.insert_temp(state_id, st));
+            }
+        }
+        ctx.actions.push(Action::BottomPinApplied);
+    }
     // Screen-space bottom of the FINAL row — the observable at-bottom
     // signal for the header's "⇩ Latest" pill (egui's State.offset tracks
     // the committed offset, not the rendered offset_target; see the
@@ -552,8 +609,10 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             // Runs before the cull so culled rows above the view are
             // skipped by the geometry test, not by the branch. `last_day`
             // is already this row's day — separators paint ahead of the
-            // first row of each day.
-            if top_day.is_none() {
+            // first row of each day. Empty label = unparseable timestamp
+            // (format_day_label's failure shape): capture nothing — the
+            // chip would paint an empty pill.
+            if top_day.is_none() && !last_day.is_empty() {
                 let h_est = known.map(|k| k.y).unwrap_or(40.0);
                 if top + h_est > clip.top() {
                     top_day = Some(last_day.clone());
@@ -639,10 +698,11 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // prepend's first render we know the height delta; shift the offset
     // by it and repaint (the state write is consumed by the NEXT begin —
     // the calendar scroll-to-today lesson).
-    {
+    let grew = {
         let h_key = egui::Id::new("conv_content_h").with(ctx.chat_id.as_str());
         let prev_h: Option<f32> = ui.ctx().data_mut(|d| d.get_temp(h_key));
         let h2 = scroll_out.content_size.y;
+        let grew = prev_h.is_some_and(|p| h2 > p + 0.5);
         let armed = ctx.prepend_adjust.take();
         if let Some(arm_chat) = armed
             && arm_chat == ctx.chat_id
@@ -670,7 +730,8 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             ctx.actions.push(Action::PrependAnchored);
         }
         ui.ctx().data_mut(|d| d.insert_temp(h_key, h2));
-    }
+        grew
+    };
 
     // At-bottom flag for the header's "⇩ Latest" pill (native shows the
     // jump affordance only when the view is scrolled up). offset is
@@ -678,11 +739,15 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // reaching the content height.
     let at_bottom = {
         let key = egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str());
+        let prev: Option<bool> = ui.ctx().data_mut(|d| d.get_temp(key));
         // 40px slack: stick_to-bottom parks the last row's bottom AT the
         // viewport bottom; short conversations park it above.
-        let at_bottom =
-            last_row_bottom.is_finite() && last_row_bottom <= scroll_out.inner_rect.bottom() + 40.0;
-        let prev: Option<bool> = ui.ctx().data_mut(|d| d.get_temp(key));
+        let at_bottom = effective_at_bottom(
+            last_row_bottom.is_finite()
+                && last_row_bottom <= scroll_out.inner_rect.bottom() + 40.0,
+            grew,
+            prev,
+        );
         if prev != Some(at_bottom) {
             // The header's "⇩ Latest" pill reads this one frame late; on
             // the event-driven loop nothing repaints when the flag flips,
@@ -709,10 +774,36 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         crate::ui::widgets::sticky_day_chip(ui.painter(), ctx.pal, sep_line, day);
     }
 
+    // First-page loader: opening a chat with no cached content left the
+    // pane a pure void until the worker's page arrived (open-blink
+    // report). The pane is never cleared on refresh — this only paints
+    // while genuinely empty + in flight. Spinner via ui.put at an
+    // absolute rect (ScrollArea-adjacent centering must be painter-style;
+    // layout centering collapses available rects), animated by the tick
+    // gate (conv_loading).
+    if ctx.conv_loading && ctx.messages.is_empty() && ctx.pending.is_empty() {
+        let rect = scroll_out.inner_rect;
+        let center = egui::pos2(rect.center().x, rect.center().y.max(rect.top() + 80.0));
+        ui.put(
+            egui::Rect::from_center_size(egui::pos2(center.x, center.y - 14.0), egui::vec2(28.0, 28.0)),
+            egui::Spinner::new().size(28.0),
+        );
+        ui.painter().text(
+            egui::pos2(center.x, center.y + 20.0),
+            egui::Align2::CENTER_CENTER,
+            "Loading messages…",
+            egui::FontId::proportional(13.0),
+            ctx.pal.secondary,
+        );
+    }
+
     // QA hook: force the conversation to a scrolled-up position once the
     // history is loaded (TEAMSFAST_SCROLLUP=1). The SCROLLBENCH offset
     // drive is re-pinned by stick_to_bottom every frame — the prepend
     // adjust's direct state write is the mechanism that actually holds.
+    // NB under this flag the repeating write overrides the prepend anchor
+    // and the Latest pill's scroll-to animation same-frame — don't read
+    // SCROLLUP shots as prepend/jump QA.
     if crate::app::qa_flag("TEAMSFAST_SCROLLUP") {
         static SEEN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         // Arm late: firing on the cached paint lets the arriving network
@@ -720,10 +811,13 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // write REPEATS every frame (a one-shot raced the network
         // full-replace: stick_to_bottom re-pins on every content change,
         // so a late reply ate the written offset — run-7 forensics).
+        // The height gate must clear offset 2000 + viewport: egui clamps
+        // the state offset to max-scroll, so a chat in (1200, ~2700]px
+        // would pass the gate yet render AT BOTTOM (false "hook broken").
         let ready = match SEEN_AT.get_or_init(std::time::Instant::now) {
             t => t.elapsed() > std::time::Duration::from_secs(3),
         };
-        if ready && scroll_out.content_size.y > 1200.0 {
+        if ready && scroll_out.content_size.y > 2800.0 {
             let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
             if let Some(mut st) = egui::scroll_area::State::load(ui.ctx(), state_id) {
                 st.offset.y = 2000.0;
@@ -732,6 +826,17 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// At-bottom with the growth latch: egui re-pins stick_to_bottom at
+/// ScrollArea::END, so the one frame where content GREW renders at the
+/// stale offset and geometry alone says "not at bottom" (an incoming
+/// message taller than the 40px slack flashed the Latest pill and the
+/// sticky-day chip for a frame under live traffic). Treat growth while
+/// previously at bottom as still-at-bottom; the next frame's geometry
+/// confirms.
+fn effective_at_bottom(geom: bool, grew_since_prev: bool, prev: Option<bool>) -> bool {
+    geom || (grew_since_prev && prev == Some(true))
 }
 
 /// Own message bubble for a send that hasn't been confirmed by the server
@@ -2150,6 +2255,27 @@ mod tests {
         }
     }
 
+    /// The growth latch: the frame where an incoming message grew the
+    /// content renders at the stale offset (stick re-pins at ScrollArea
+    /// end) — geometry alone reads "scrolled up" and flashed the Latest
+    /// pill + sticky-day chip for one frame. Growth while previously at
+    /// bottom must count as at-bottom; genuine scrolls must not.
+    #[test]
+    fn at_bottom_growth_latch() {
+        use super::effective_at_bottom;
+        // Settled at bottom, nothing grew: bottom.
+        assert!(effective_at_bottom(true, false, Some(true)));
+        // Grew while at bottom (the incoming-message frame): STILL bottom.
+        assert!(effective_at_bottom(false, true, Some(true)));
+        // Grew while NOT at bottom (prepend/load-older): stays not-bottom.
+        assert!(!effective_at_bottom(false, true, Some(false)));
+        // First frame ever (no prev): geometry only.
+        assert!(!effective_at_bottom(false, true, None));
+        assert!(effective_at_bottom(true, true, None));
+        // Plain scroll: geometry rules.
+        assert!(!effective_at_bottom(false, false, Some(true)));
+    }
+
     /// The no-shift invariant, unit level: the reserved reaction strip
     /// allocates EXACTLY REACT_STRIP_H whether empty or carrying chips —
     /// reactions appearing must never change any row height (run-5 P0).
@@ -2209,6 +2335,8 @@ mod tests {
                             pal: &Palette::dark(),
                             overlays_open: false,
                             prepend_adjust: None,
+                            conv_loading: false,
+                            pin_bottom_next: false,
                             actions: &mut actions,
                         };
                         reaction_strip(ui, &mut ctx, m, false, 400.0, true);
@@ -2329,6 +2457,8 @@ mod tests {
                     pal: &Palette::dark(),
                     overlays_open: false,
                     prepend_adjust: None,
+                    conv_loading: false,
+                    pin_bottom_next: false,
                     actions: &mut actions,
                 };
                 conversation_messages(ui, &mut ctx);
@@ -2444,6 +2574,8 @@ mod tests {
                 pal: &Palette::dark(),
                 overlays_open: false,
                 prepend_adjust: None,
+                conv_loading: false,
+                pin_bottom_next: false,
                 actions: &mut actions,
             };
             conversation_composer(ui, &mut ctx, draft);

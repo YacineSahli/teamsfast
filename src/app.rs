@@ -541,6 +541,15 @@ pub struct TeamsFastApp {
     /// stays put. Keyed by chat id — a stale flag must never shift a
     /// different conversation (red-team P1-2).
     prepend_adjust: Option<String>,
+    /// First page of the open conversation is still in flight (opened
+    /// with no cached content) — the conversation pane paints a centered
+    /// loader until it lands.
+    conv_loading: bool,
+    /// The worker just full-replaced the open conversation's page: the
+    /// view pins the scroll to the new bottom THIS frame (stick_to_bottom
+    /// re-pins one frame late — the replace frame renders the grown
+    /// content at the stale offset, the visible blank-straddle blink).
+    pin_bottom_next: bool,
     /// Remote/local video textures for the stage (recreated on size change).
     remote_video_tex: Option<egui::TextureHandle>,
     local_video_tex: Option<egui::TextureHandle>,
@@ -1185,6 +1194,8 @@ impl TeamsFastApp {
             image_sizes: HashMap::new(),
             qa_msgs_seen: HashMap::new(),
             prepend_adjust: None,
+            conv_loading: false,
+            pin_bottom_next: false,
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
@@ -1813,7 +1824,17 @@ impl TeamsFastApp {
                         merge_message_tail(&mut self.messages, messages);
                     } else {
                         self.messages = messages;
+                        // Full replace while the view sits at the bottom:
+                        // stick_to_bottom re-pins one frame LATE, so this
+                        // frame would render the grown content at the
+                        // stale offset (a mid-content blank straddle — the
+                        // visible refresh blink). Arm the same-frame pin;
+                        // the view gates it on the previous at-bottom.
+                        self.pin_bottom_next = true;
                     }
+                    // A page for the open chat landed: the loader (if any)
+                    // is done.
+                    self.conv_loading = false;
                     if !members.is_empty() {
                         self.members = members;
                     }
@@ -2138,8 +2159,11 @@ impl TeamsFastApp {
                 }
                 Event::Error(e) => {
                     // A failed worker op also un-wedges the debounced
-                    // refresh guard (a hung fetch must not stop refreshes).
+                    // refresh guard (a hung fetch must not stop refreshes)
+                    // and the conversation loader (a failed open must not
+                    // spin forever; the toast explains what broke).
                     self.refresh_in_flight = false;
+                    self.conv_loading = false;
                     self.error = Some(e);
                 }
             }
@@ -2436,10 +2460,16 @@ impl TeamsFastApp {
             self.messages = cached.messages;
             self.members = cached.members;
             self.older_link = cached.older_link;
+            self.conv_loading = false;
         } else {
             self.messages.clear();
             self.members.clear();
             self.older_link = None;
+            // No cached copy anywhere yet: the pane shows a centered
+            // loader until the worker's first page lands (Event::Messages
+            // clears it). Cleared on errors too — a failed open must not
+            // spin forever.
+            self.conv_loading = true;
         }
         self.loading_older = false;
         self.receipts.clear();
@@ -2893,6 +2923,7 @@ impl TeamsFastApp {
             }
             Action::Status(text) => self.status = text,
             Action::PrependAnchored => self.prepend_adjust = None,
+            Action::BottomPinApplied => self.pin_bottom_next = false,
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
             }
@@ -4428,15 +4459,13 @@ impl eframe::App for TeamsFastApp {
                 pending: &pending_view,
                 receipts: &self.receipts,
                 pinned: &pinned_here,
+                // STABLE facts only: chat id shape. Presence must not
+                // depend on transient state — the roster decides
+                // enabled-ness in the header (disabled while loading,
+                // hidden for bot-only threads once it lands).
                 can_call: {
                     let id = chat_id.as_str();
-                    id.contains("@unq.gbl.spaces")
-                        && !chat_id.starts_with("19:meeting_")
-                        // A call needs a human on the other end — bot-only
-                        // threads (connector DMs) get no call buttons.
-                        // "Any 28: rider" would disable every human 1:1:
-                        // Cortana rides along in those rosters.
-                        && !self.members.keys().all(|m| m.starts_with("28:"))
+                    id.contains("@unq.gbl.spaces") && !chat_id.starts_with("19:meeting_")
                 },
                 call_label: self.call.as_ref().map(|(l, _)| l.as_str()),
                 textures: &self.textures,
@@ -4451,6 +4480,8 @@ impl eframe::App for TeamsFastApp {
                     || self.team_dialog.open,
                 actions: &mut actions,
                 prepend_adjust: self.prepend_adjust.clone(),
+                conv_loading: self.conv_loading,
+                pin_bottom_next: self.pin_bottom_next,
             };
             egui::Panel::bottom("composer").show(ui, |ui| {
                 conversation::conversation_composer(ui, &mut ctx, &mut self.draft);
@@ -5269,6 +5300,7 @@ impl eframe::App for TeamsFastApp {
             || self.typing.is_some()
             || self.offline.is_some()
             || self.pending_open_refresh
+            || self.conv_loading
             || !self.uploads.is_empty()
         {
             Some(Duration::from_millis(250))
