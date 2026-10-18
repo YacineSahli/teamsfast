@@ -141,7 +141,7 @@ fn dialog_section(ui: &mut egui::Ui, pal: &Palette, title: &str) {
 
 /// Accent primary that reads disabled until `enabled` (the stock disabled
 /// visuals can't dim an explicit accent fill — swap fill/stroke/text).
-fn modal_primary(
+pub(crate) fn modal_primary(
     ui: &mut egui::Ui,
     pal: &Palette,
     text: &str,
@@ -151,15 +151,18 @@ fn modal_primary(
     let b = egui::Button::new(
         RichText::new(text)
             .size(12.5)
-            .bold()
+            // NB: no .bold() — the inter-bold family's metrics are 2px
+            // taller, which put this button's outer height at 34 next to
+            // 32px secondary buttons (battery round 6). The accent fill
+            // carries the hierarchy.
             // egui fades a disabled widget's text ~0.6x, so pal.secondary
             // landed at 2.5:1 — start from pal.text so the faded result
             // stays readable.
             .color(if enabled { pal.on_accent } else { pal.text }),
     )
-    // 30 matches the secondary buttons beside it (they measured 32 outer
-    // incl. stroke; a 26px core left Join visibly 2px shorter than Cancel).
-    .min_size(egui::vec2(width, 30.0))
+    // 32 outer matches the secondary buttons beside it (their stroke
+    // rows included; battery round-6 pixel-measured).
+    .min_size(egui::vec2(width, 32.0))
     .corner_radius(egui::CornerRadius::same(6))
     .fill(if enabled { pal.accent } else { pal.panel })
     .stroke(if enabled {
@@ -171,7 +174,24 @@ fn modal_primary(
         // readable label instead (the inputs' treatment).
         egui::Stroke::new(1.0, crate::theme::tint_over(pal.panel, pal.text, 0.35))
     });
-    ui.add_enabled(enabled, b)
+    // egui renders DISABLED buttons with the style's noninteractive
+    // visuals wholesale (its own bg_fill/border + a 2px expansion that
+    // made this button 34px next to 32px secondaries), ignoring the
+    // builder's fill/stroke. Scope those visuals to our recessed
+    // treatment so the disabled shape matches the enabled one.
+    let mut resp = None;
+    // Child scope (inherits the cursor) so the style tweak stays local.
+    ui.add_enabled_ui(true, |ui| {
+        let w = &mut ui.visuals_mut().widgets;
+        let recessed = egui::Stroke::new(1.0, crate::theme::tint_over(pal.panel, pal.text, 0.35));
+        for v in [&mut w.noninteractive, &mut w.inactive] {
+            v.bg_fill = pal.panel;
+            v.bg_stroke = recessed;
+            v.expansion = 0.0;
+        }
+        resp = Some(ui.add_enabled(enabled, b));
+    });
+    resp.unwrap()
 }
 
 /// New-conversation dialog CONTENT — App hosts it in an egui::Modal
