@@ -1454,6 +1454,46 @@ pub fn day_separator(ui: &mut Ui, pal: &Palette, label: &str) {
     );
 }
 
+/// Pill rect for the sticky-day chip: centered on the header separator
+/// line, straddling it symmetrically. `None` when the pill would not fit
+/// (ultra-narrow panes) — skip rather than straddle the pane edges.
+pub fn sticky_day_pill_rect(line: egui::Rect, tw: f32, th: f32) -> Option<egui::Rect> {
+    let size = egui::vec2(tw + 20.0, th + 6.0);
+    if size.x > line.width() - 16.0 {
+        return None;
+    }
+    let c = line.center();
+    Some(egui::Rect::from_center_size(c, size))
+}
+
+/// Sticky-day chip on the header separator line: while the view is
+/// scrolled up, native Teams pins the day of the topmost visible row in
+/// the header region — a scrolling separator hugging the header line
+/// reads as content intruding into the chrome. PAINTED, never allocated
+/// (the header height and the scroll viewport origin must not move when
+/// it appears) and painted AFTER the message ScrollArea so the chip wins
+/// z-order over the top sliver of the topmost message.
+pub fn sticky_day_chip(painter: &egui::Painter, pal: &Palette, line: egui::Rect, label: &str) {
+    let gal = painter.layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(11.0),
+        pal.secondary,
+    );
+    let tw = gal.mesh_bounds.width();
+    let th = gal.size().y;
+    let Some(pill) = sticky_day_pill_rect(line, tw, th) else {
+        return;
+    };
+    painter.rect_filled(pill, egui::CornerRadius::same(5), pal.surface);
+    painter.rect_stroke(
+        pill,
+        egui::CornerRadius::same(5),
+        egui::Stroke::new(1.0, pal.outline),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(egui::pos2(pill.left() + 10.0, pill.center().y - th / 2.0), gal, pal.secondary);
+}
+
 #[cfg(test)]
 mod markdown_link_tests {
     use super::split_markdown_links;
@@ -2229,6 +2269,27 @@ mod split_cells_tests {
             super::strip_tags(raw),
             "Merve **updated** a comment Merve **updated** a comment"
         );
+    }
+
+    /// The sticky-day chip is painter-only: its rect must center on the
+    /// separator line, straddle it symmetrically, and never be produced
+    /// when the pane is too narrow to hold it.
+    #[test]
+    fn sticky_day_pill_geometry() {
+        use super::sticky_day_pill_rect;
+        let line = egui::Rect::from_min_max(egui::pos2(0.0, 50.0), egui::pos2(700.0, 52.0));
+        let pill = sticky_day_pill_rect(line, 60.0, 12.0).expect("fits");
+        assert_eq!(pill.center(), line.center());
+        assert_eq!(pill.width(), 80.0);
+        assert_eq!(pill.height(), 18.0);
+        // Straddles the line symmetrically.
+        assert_eq!(line.center().y - pill.top(), pill.bottom() - line.center().y);
+        // Too wide for the line: skipped, not squashed.
+        assert!(sticky_day_pill_rect(line, 700.0, 12.0).is_none());
+        // Narrow line boundary: exactly at the skip edge.
+        let narrow = egui::Rect::from_min_max(egui::pos2(0.0, 50.0), egui::pos2(100.0, 52.0));
+        assert!(sticky_day_pill_rect(narrow, 60.0, 12.0).is_some());
+        assert!(sticky_day_pill_rect(narrow, 70.0, 12.0).is_none());
     }
 }
 

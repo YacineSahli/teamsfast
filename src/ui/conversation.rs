@@ -419,7 +419,26 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             });
         }
     });
-    ui.separator();
+    // The separator doubles as the anchor line for the sticky-day chip
+    // (native Teams pins the visible day in the header region while the
+    // view is scrolled up). The chip itself paints after the ScrollArea —
+    // later paint wins over the topmost message's clipped sliver.
+    let sep_line = ui.separator().rect;
+    let sticky_day: Option<String> = {
+        // One-frame lag like the "⇩ Latest" pill: the at-bottom flag and
+        // the topmost visible day are computed AFTER the scroll area.
+        let at_bottom_prev: bool = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str())))
+            .unwrap_or(true);
+        if at_bottom_prev {
+            None
+        } else {
+            ui.ctx()
+                .data_mut(|d| d.get_temp(egui::Id::new("conv_top_day").with(ctx.chat_id.as_str())))
+                .flatten()
+        }
+    };
 
     // Oldest at the top, newest pinned to the bottom — Teams style.
     // (History note: a non-zero ScrollArea offset once painted blank here;
@@ -471,6 +490,8 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // the committed offset, not the rendered offset_target; see the
     // prepend-adjust note for the same trap).
     let mut last_row_bottom = f32::NEG_INFINITY;
+    // Day of the topmost VISIBLE row (feeds the header's sticky-day chip).
+    let mut top_day: Option<String> = None;
     let scroll_out = area.show(ui, |ui| {
         if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
             let mr = ui.max_rect();
@@ -526,6 +547,18 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             let known: Option<egui::Vec2> = ui.ctx().data_mut(|d| d.get_temp(row_id));
             let top = ui.cursor().top();
             last_row_bottom = last_row_bottom.max(top + known.map(|k| k.y).unwrap_or(40.0));
+            // Topmost visible row's day: the first row whose extent reaches
+            // past the viewport's top edge (rows above it end above it).
+            // Runs before the cull so culled rows above the view are
+            // skipped by the geometry test, not by the branch. `last_day`
+            // is already this row's day — separators paint ahead of the
+            // first row of each day.
+            if top_day.is_none() {
+                let h_est = known.map(|k| k.y).unwrap_or(40.0);
+                if top + h_est > clip.top() {
+                    top_day = Some(last_day.clone());
+                }
+            }
             if let Some(sz) = known
                 && (top > clip.bottom() + CULL_MARGIN
                     || top + sz.y < clip.top() - CULL_MARGIN)
@@ -643,7 +676,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // jump affordance only when the view is scrolled up). offset is
     // content-relative from the top, so "at bottom" is offset + viewport
     // reaching the content height.
-    {
+    let at_bottom = {
         let key = egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str());
         // 40px slack: stick_to-bottom parks the last row's bottom AT the
         // viewport bottom; short conversations park it above.
@@ -657,6 +690,23 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             ui.ctx().request_repaint();
         }
         ui.ctx().data_mut(|d| d.insert_temp(key, at_bottom));
+        at_bottom
+    };
+    // Sticky-day chip state (native Teams shows the visible day in the
+    // header region while scrolled). Stored only for the header's NEXT
+    // frame — one-frame lag, same contract as conv_at_bottom. Repaint on
+    // change so the chip tracks day boundaries on the event-driven loop.
+    {
+        let day_key = egui::Id::new("conv_top_day").with(ctx.chat_id.as_str());
+        let new_day = if at_bottom { None } else { top_day };
+        let prev: Option<String> = ui.ctx().data_mut(|d| d.get_temp(day_key));
+        if prev != new_day {
+            ui.ctx().request_repaint();
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(day_key, new_day));
+    }
+    if let Some(day) = sticky_day.as_deref() {
+        crate::ui::widgets::sticky_day_chip(ui.painter(), ctx.pal, sep_line, day);
     }
 
     // QA hook: force the conversation to a scrolled-up position once the
@@ -667,11 +717,9 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         static SEEN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         // Arm late: firing on the cached paint lets the arriving network
         // page grow the content and re-pin the view before the shot. The
-        // write REPEATS every frame while the flag is on — a one-shot
-        // raced the network full-replace (stick re-pins on every content
-        // change, so a late reply ate the written offset; run-7
-        // forensics: two "scrolled" shots came back byte-identical to
-        // the bottom state on a slow page).
+        // write REPEATS every frame (a one-shot raced the network
+        // full-replace: stick_to_bottom re-pins on every content change,
+        // so a late reply ate the written offset — run-7 forensics).
         let ready = match SEEN_AT.get_or_init(std::time::Instant::now) {
             t => t.elapsed() > std::time::Duration::from_secs(3),
         };
