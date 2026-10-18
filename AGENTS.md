@@ -83,6 +83,15 @@ remaining Phase 2 item.
 - `set_max_width` inside a `right_to_left` layout SHIFTS content left
   instead of capping it. For own bubbles use
   `with_layout(top_down(Align::Max))` on an explicit-width slot.
+- Right-anchored shrink-to-fit cluster (own message rows): do NOT rebuild
+  with RTL/allocate_ui/set_max_width — all mis-anchor on this stack
+  (four verified-broken run-5 attempts). The working primitive is an LTR
+  `ui.horizontal` + a computed LEADING space in which the measured slot
+  width cancels arithmetically (`own_row_lead`), pinning one shared
+  right edge. The slot measurement must be content-aware (text via
+  painter.layout, cards=560, images from persisted image_sizes): any
+  content that escapes its slot grows the parent `max_rect` and POISONS
+  every following row's `available_width` (live-verified cascade).
 - `StickArea`/`stick_to_bottom` + late content: earlier blank-pane
   incident was OUR panel-order bug (composer rendered after CentralPanel
   consumed space), not egui. Keep order: top → left → right → bottom
