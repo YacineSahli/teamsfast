@@ -394,20 +394,28 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                         .mesh_bounds
                         .width()
                 };
-                let label = if w(&full) <= ui.available_width() {
-                    full
-                } else if w(&first) <= ui.available_width() {
-                    first
+                let avail = ui.available_width();
+                let bare = "typing…";
+                let label = if w(&full) <= avail {
+                    Some(full)
+                } else if w(&first) <= avail {
+                    Some(first)
+                } else if w(bare) <= avail {
+                    // Ultra-narrow header: the first-name form truncates
+                    // to a meaningless fragment ("Souh…" — narrow-window
+                    // battery). A bare "typing…" keeps the signal while
+                    // it fits; below that, nothing (blank beats a
+                    // hard-clipped "typin…").
+                    Some(bare.to_string())
                 } else {
-                    // Neither fits: the SHORTER label truncates later
-                    // (falling back to `full` here is what rendered
-                    // "Souh…" — battery round 6).
-                    first
+                    None
                 };
-                ui.add(
-                    egui::Label::new(RichText::new(label).small().color(ctx.pal.link))
-                        .truncate(),
-                );
+                if let Some(label) = label {
+                    ui.add(
+                        egui::Label::new(RichText::new(label).small().color(ctx.pal.link))
+                            .truncate(),
+                    );
+                }
             });
         }
     });

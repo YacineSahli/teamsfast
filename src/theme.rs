@@ -157,7 +157,8 @@ impl Palette {
         );
         // Focus: the ONE loud stroke. Focused text edits (and pressed
         // controls) draw an accent ring — reserve strong strokes for
-        // focus, Apple-style.
+        // focus, Apple-style. (The focused-TextEdit frame stroke comes
+        // from `selection.stroke`, set above.)
         v.widgets.active.bg_stroke = Stroke::new(1.5, self.accent);
         v.widgets.hovered.bg_stroke = Stroke::new(1.0, self.outline);
         v.widgets.inactive.fg_stroke = Stroke::new(1.0, self.text);
