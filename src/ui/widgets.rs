@@ -559,6 +559,7 @@ pub fn render_pipe_table(ui: &mut Ui, pal: &crate::theme::Palette, tbl: &PipeTab
     if cols == 0 || (tbl.header.is_empty() && tbl.rows.is_empty()) {
         return;
     }
+    let cap = pipe_cell_cap(ui, tbl, cols, size);
     egui::Grid::new(id)
         .striped(true)
         .num_columns(cols)
@@ -573,20 +574,86 @@ pub fn render_pipe_table(ui: &mut Ui, pal: &crate::theme::Palette, tbl: &PipeTab
             }
             for row in &tbl.rows {
                 for c in row {
-                    render_table_cell(ui, pal, c, size);
+                    render_table_cell(ui, pal, c, size, cap);
                 }
                 ui.end_row();
             }
         });
 }
 
+/// Rough average glyph width of the proportional chat font (fraction of
+/// the font size). Only used to PREDICT whether a table MIGHT overflow —
+/// tables that clearly fit skip the real measurement entirely.
+const PIPE_CHAR_W: f32 = 0.62;
+
+/// Column spacing of the table Grid (kept in sync with `.spacing` above).
+const PIPE_COL_GAP: f32 = 12.0;
+
+/// Per-cell character budget: the natural 36-char look whenever the table
+/// fits the available width, uniformly shrunk when it clearly doesn't — a
+/// wide paste must never escape its bubble (an escaped row grows the
+/// parent's min_rect and poisons the layout math of every row after it).
+///
+/// The cheap estimate errs wide; borderline tables get a real painter
+/// measurement (one galley per column — its widest cell) and a 10% grace
+/// band so a table over by a few px keeps its rendered look (the k8s
+/// right-sizing card sits in that band). Only genuinely wide pastes are
+/// crushed, floored at 4 chars per column.
+fn pipe_cell_cap(ui: &Ui, tbl: &PipeTable, cols: usize, size: f32) -> usize {
+    const NATURAL_CAP: usize = 36;
+    let budget = ui.available_width();
+    let mut col_chars = vec![0usize; cols];
+    let mut widest: Vec<&str> = vec![""; cols];
+    for row in std::iter::once(&tbl.header).chain(tbl.rows.iter()) {
+        for (j, cell) in row.iter().enumerate() {
+            if j < cols {
+                let n = cell.chars().count().min(NATURAL_CAP);
+                if n >= col_chars[j] {
+                    col_chars[j] = n;
+                    widest[j] = cell.as_str();
+                }
+            }
+        }
+    }
+    let spacing = PIPE_COL_GAP * cols.saturating_sub(1) as f32;
+    let est_natural: f32 = col_chars.iter().map(|&c| c as f32 * size * PIPE_CHAR_W).sum::<f32>()
+        + spacing;
+    if budget <= 0.0 || est_natural <= budget * 0.95 {
+        return NATURAL_CAP;
+    }
+    // Borderline or wide: measure the real per-column widths before
+    // deciding (a few galleys, only for tables the estimate flags).
+    let font = egui::FontId::proportional(size);
+    let mut natural = spacing;
+    for w in &widest {
+        natural += ui
+            .painter()
+            .layout(
+                (*w).to_owned(),
+                font.clone(),
+                egui::Color32::WHITE,
+                f32::INFINITY,
+            )
+            .mesh_bounds
+            .width();
+    }
+    if natural <= budget * 1.10 {
+        return NATURAL_CAP;
+    }
+    let total_chars: f32 = col_chars.iter().map(|&c| c as f32).sum::<f32>().max(1.0);
+    let avg_char_w = (natural - spacing) / total_chars;
+    let avail_chars = ((budget - spacing - 8.0) / avg_char_w.max(0.5) / cols as f32)
+        .floor()
+        .max(4.0) as usize;
+    avail_chars.min(NATURAL_CAP)
+}
+
 /// One grid cell. Cells keep emphasis/links (`*Increase*` action cells are
 /// real payloads), but grid cells don't wrap — long values ellipsize
 /// (char-safe) with the full text on hover.
-fn render_table_cell(ui: &mut Ui, pal: &crate::theme::Palette, text: &str, size: f32) {
-    const CAP: usize = 36;
-    let shown: String = if text.chars().count() > CAP {
-        let mut s: String = text.chars().take(CAP - 1).collect();
+fn render_table_cell(ui: &mut Ui, pal: &crate::theme::Palette, text: &str, size: f32, cap: usize) {
+    let shown: String = if text.chars().count() > cap {
+        let mut s: String = text.chars().take(cap - 1).collect();
         s.push('…');
         s
     } else {
@@ -2076,4 +2143,61 @@ mod split_cells_tests {
             vec!["".to_string(), "x".to_string()]
         );
     }
+    /// Pipe-table cell budget: natural 36-char look when the table fits
+    /// (cheap estimate AND measured borderline band), shrunk with a char
+    /// floor when a wide paste clearly overflows — an escaped table
+    /// poisons every following row's layout math.
+    #[test]
+    fn pipe_cell_cap_fits_vs_wide() {
+        use super::{pipe_cell_cap, PipeTable};
+        crate::emoji::setup();
+        let tbl = PipeTable {
+            header: vec!["a".into(), "b".into()],
+            rows: vec![vec!["short".into(), "value".into()]],
+        };
+        let wide = PipeTable {
+            header: (0..5).map(|_| "h".repeat(40)).collect(),
+            rows: vec![(0..5).map(|_| "c".repeat(60)).collect()],
+        };
+        let mut cap_out = [0usize; 2];
+        let ctx = crate::theme::test_ctx();
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 200.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                cap_out[0] = pipe_cell_cap(ui, &tbl, 2, 13.0);
+                cap_out[1] = pipe_cell_cap(ui, &wide, 5, 13.0);
+            },
+        );
+        let mut out = out;
+        out.textures_delta.clear();
+        // Tiny natural width vs a 600px budget: unchanged look (the
+        // estimate alone returns without measuring).
+        assert_eq!(cap_out[0], 36);
+        // Five 60-char columns in a 600px region: clearly over — shrunk,
+        // floored, sane (measured path).
+        assert!(cap_out[1] >= 4 && cap_out[1] < 36, "cap={}", cap_out[1]);
+
+        // Degenerate 1px region: never a 0-char budget (floor 4).
+        let mut tiny = 0;
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1.0, 1.0),
+                )),
+                ..Default::default()
+            },
+            |ui| tiny = pipe_cell_cap(ui, &wide, 5, 13.0),
+        );
+        let mut out = out;
+        out.textures_delta.clear();
+        assert!(tiny >= 4 && tiny < 36, "tiny={tiny}");
+    }
 }
+
