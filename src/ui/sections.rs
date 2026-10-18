@@ -1869,15 +1869,29 @@ pub fn activity_panel(
                                 },
                             );
                         });
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(format!("{}: {}", e.who, e.preview))
-                                    .small()
-                                    .weak(),
-                            )
-                            .truncate()
-                            .selectable(false),
-                        );
+                        // Preview with @you highlighted (native colors
+                        // mention chips; a flat dim line hid them).
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("{}:", e.who)).small().weak(),
+                                )
+                                .selectable(false),
+                            );
+                            for piece in e.preview.split("@you") {
+                                ui.add(
+                                    egui::Label::new(RichText::new(piece).small().weak())
+                                        .truncate()
+                                        .selectable(false),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new("@you").small().color(pal.accent),
+                                    )
+                                    .selectable(false),
+                                );
+                            }
+                        });
                     });
 
                 });
