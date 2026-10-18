@@ -318,3 +318,37 @@ Day-2: +1 commit battery fixes (87 tests). Wayland raise deferred w/
 upgraded design note (background_frame factoring = the prep step).
 Everything green; soak #4 harvested PASS earlier. Run-6 totals: 15
 commits (13ecaa0..HEAD), 84→87 tests, 0 warnings, core untouched.
+
+## Run 7 day 1 (2026-10-18 evening→night) — GREEN at eaf30c2
+
+User report list A–F ALL dispositioned; 10 commits (fe9a4ec..eaf30c2),
+87→95 tests, teams-core PUSHED 0b17a5e+2772600 (marker wire; char-index
+panic fix). settlediff IDENTICAL (± REACT). Soak #5 RUNNING (/tmp/soak8).
+See SESSION-REPORT §Run 7 for the full ledger + evidence paths.
+
+KEY TRAPS LEARNED TODAY (add to AGENTS next session):
+- egui stick_to_bottom re-pins EVERY frame while scroll_stuck_to_end;
+  only EXPLICIT scroll adjustments (scroll_to_rect, repeated) escape it;
+  raw State writes oscillate forever (jump probe: offset alternating
+  0/max per frame). The stuck flag is private.
+- A pre-begin offset write of f32::MAX: begin does NOT clamp → round_ui
+  overflows to -inf → all rows culled → blank frame → stick re-pin
+  computes NaN → f32::max(NaN,0)=0 → view parked at TOP, stick lost.
+- QA env hooks that arm at a wall-clock delay must pump their own
+  repaints (event-driven loop produces no frames on a quiet chat).
+- sqlcipher CLI prints "ok" BEFORE result rows — $( ) captures it into
+  the id (the pins seed was "ok\n<id>" → 6 give-up steps).
+- The debug-build first content frame can take ~3s under desktop load
+  (user's Firefox at 200% CPU) — settlediff now samples at 8s/12s.
+- str::find returns BYTE offsets — never feed into a char cursor
+  (teams-core P1: `éé` in backticks killed the backend thread).
+- vision agents can clobber the very files they inspect (two light-theme
+  false alarms today were file-overwrites mid-inspection) — keep
+  originals under names the agents aren't told about, or re-capture.
+
+NEXT: harvest soak (≥2h); day-2 menu = AGENTS trap dump from above,
+re-verify light sticky-day chip with a clean capture (the 840px pixel
+compare says it renders; a fresh vision pass would be nice), the
+reaction-wire 404 mystery (user tries one react in the app; web-client
+capture unblocks the picker), straddle-frame one-frame polish if a safe
+mechanism ever appears, user-gated: live formatted send.
