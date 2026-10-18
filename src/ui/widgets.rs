@@ -1481,10 +1481,15 @@ pub fn segs_to_markers(segs: &[Seg]) -> String {
             Seg::Quote(t) => t.starts_with(char::is_whitespace),
             _ => false,
         };
+        let starts_punct = match seg {
+            Seg::Text(t) => t.starts_with(|c: char| ",.!?:;)\"'}>".contains(c)),
+            _ => false,
+        };
         if (cur_styled || prev_styled)
             && !out.is_empty()
             && !out.ends_with(char::is_whitespace)
             && !starts_ws
+            && !starts_punct
             && !matches!(seg, Seg::LineBreak)
             && !out.ends_with('\n')
             && !matches!(seg, Seg::Text(t) if t == "• ")
@@ -1517,9 +1522,20 @@ pub fn segs_to_markers(segs: &[Seg]) -> String {
             }
             Seg::Code(t) => {
                 if t.contains('\n') || t.chars().count() > 48 {
-                    out.push_str("```\n");
+                    // A ``` line inside the block would close the fence
+                    // early and restructure the message on save — use a
+                    // four-backtick fence for such interiors (CommonMark
+                    // escalation; the wire builder treats ≥3 as a fence).
+                    let fence = if t.lines().any(|l| l.trim_start_matches([' ', '\t']).starts_with("```")) {
+                        "````"
+                    } else {
+                        "```"
+                    };
+                    out.push_str(fence);
+                    out.push('\n');
                     out.push_str(t);
-                    out.push_str("\n```");
+                    out.push('\n');
+                    out.push_str(fence);
                 } else {
                     out.push('`');
                     out.push_str(t);
@@ -2022,6 +2038,16 @@ l2</pre></p>"#,
         // Line breaks survive as newlines.
         let markers = segs_to_markers(&parse_html("<p>a</p><p>b</p>"));
         assert_eq!(markers, "\na\nb".trim_start_matches('\n'));
+        // No spurious space before punctuation after a styled span
+        // (adversarial review P2: untouched edit-saves changed text).
+        let markers = segs_to_markers(&parse_html(
+            r#"<p>see <a href="https://x.io/d">docs</a>, and <b>ok</b>. <code>make</code>!</p>"#,
+        ));
+        assert_eq!(markers, "see [docs](https://x.io/d), and **ok**. `make`!");
+        // A code block containing a ``` line escalates to a 4-fence so
+        // the save round-trips instead of splitting the block.
+        let markers = segs_to_markers(&parse_html("<pre>a\n```\nb</pre>"));
+        assert_eq!(markers, "````\na\n```\nb\n````");
     }
 
     // XHTML self-closing INLINE tags are empty — "<b/>rest" must not

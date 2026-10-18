@@ -2513,6 +2513,9 @@ impl TeamsFastApp {
         self.selected = Some(id.clone());
         self.edit = None;
         self.reply = None;
+        // A jump in flight for the chat being LEFT is stale (its scroll
+        // driver would hijack this chat's view; adversarial review P1).
+        self.jump_target = None;
         // Paint immediately from RAM when this chat was viewed recently —
         // the backend refresh then reconciles when it lands. Without this
         // the pane blanked until the worker round-tripped, which read as

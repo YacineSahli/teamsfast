@@ -891,10 +891,13 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         && let Some(st) = egui::scroll_area::State::load(ui.ctx(), state_id)
     {
         // Landed when the live offset centers the target row on a stable
-        // frame (the animation settles over a few frames; growth frames
-        // re-arm and are skipped).
+        // frame. egui's scroll_to_rect centers the rect's CENTER — the
+        // expected offset must include half the row height or the check
+        // never passes (a permanent repaint loop + the pending scroll
+        // hijacking every later scroll; adversarial review P1).
         let content_top = rect.top() - scroll_out.inner_rect.top() + st.offset.y;
-        let target = (content_top - scroll_out.inner_rect.height() / 2.0).max(0.0);
+        let target =
+            (content_top + rect.height() / 2.0 - scroll_out.inner_rect.height() / 2.0).max(0.0);
         if !grew && (st.offset.y - target).abs() < 2.0 {
             ctx.actions.push(Action::JumpPerformed);
         } else {
