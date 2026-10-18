@@ -967,9 +967,12 @@ fn strip_tags(s: &str) -> String {
         // Block tags imply whitespace: quote payloads run
         // "…</strong><p itemprop=preview>And…" and plain concatenation
         // fused the author into the preview ("GrguricinAnd we are…").
+        // `<Title>` (URIObject notification chrome) carries the SAME text
+        // as the leading preview node — fused without a boundary it read
+        // "commentMerve Aslan…" (day-2 battery).
         if matches!(
             name.as_str(),
-            "p" | "div" | "br" | "blockquote" | "li" | "h1" | "h2" | "h3"
+            "p" | "div" | "br" | "blockquote" | "li" | "h1" | "h2" | "h3" | "title"
         ) && !out.is_empty()
             && !out.ends_with(char::is_whitespace)
         {
@@ -2215,6 +2218,17 @@ mod split_cells_tests {
         let mut out = out;
         out.textures_delta.clear();
         assert!(tiny >= 4 && tiny < 36, "tiny={tiny}");
+    }
+    /// URIObject <Title> chrome carries the same text as the leading
+    /// preview node — a boundary keeps the two from fusing
+    /// ("commentMerve Aslan…", day-2 battery).
+    #[test]
+    fn title_boundary_in_urlobject() {
+        let raw = r#"<URIObject type="SWIFT.1" url="x">Merve **updated** a comment<Title>Merve **updated** a comment</Title><Swift b64="e30=" /></URIObject>"#;
+        assert_eq!(
+            super::strip_tags(raw),
+            "Merve **updated** a comment Merve **updated** a comment"
+        );
     }
 }
 

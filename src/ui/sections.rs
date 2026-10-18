@@ -214,14 +214,19 @@ pub fn calendar_panel(
             }
             // Navigation for every view — List steps weeks inside the
             // fetched window (pure client-side; the fetch covers 35 days).
-            if ui.small_button("›").clicked() {
+            // The arrow pills get the ghost buttons' height: small_button
+            // rendered ~10px shorter than the "Today" beside it (day-2).
+            let nav = |ui: &mut egui::Ui, glyph: &str| -> bool {
+                crate::ui::widgets::btn::ghost(ui, pal, glyph).clicked()
+            };
+            if nav(ui, "›") {
                 match view {
                     CalView::Week => *week_offset += 1,
                     CalView::Month => *month_offset += 1,
                     CalView::List => *list_offset += 1,
                 }
             }
-            if ui.small_button("‹").clicked() {
+            if nav(ui, "‹") {
                 match view {
                     CalView::Week => *week_offset -= 1,
                     CalView::Month => *month_offset -= 1,
@@ -618,7 +623,21 @@ fn meeting_pill(
         p.text(
             rect.left_bottom() + egui::vec2(5.0, -3.0),
             egui::Align2::LEFT_BOTTOM,
-            ellipsize(ui, &range, 9.5, text_w),
+            {
+                // Narrow lanes: an ellipsized RANGE reads as "ends
+                // unknown" ("13:40–…"); drop the END time instead —
+                // the start alone stays true (day-2 battery).
+                let rw = ui
+                    .painter()
+                    .layout_no_wrap(range.clone(), egui::FontId::proportional(9.5), pal.secondary)
+                    .size()
+                    .x;
+                if rw <= text_w {
+                    range.clone()
+                } else {
+                    time.clone()
+                }
+            },
             egui::FontId::proportional(9.5),
             pal.secondary,
         );
