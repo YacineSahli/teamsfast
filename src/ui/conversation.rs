@@ -964,6 +964,13 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         let ready = match SEEN_AT.get_or_init(std::time::Instant::now) {
             t => t.elapsed() > std::time::Duration::from_secs(3),
         };
+        if !ready {
+            // Frame starvation: a quiet chat produces no events after the
+            // login burst, so the 3s gate would never even be evaluated
+            // (run-7: three "chip missing" false alarms were the hook
+            // never firing, not the chip). Pump until armed.
+            ui.ctx().request_repaint();
+        }
         if ready && scroll_out.content_size.y > 2800.0 {
             let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
             if let Some(mut st) = egui::scroll_area::State::load(ui.ctx(), state_id) {
