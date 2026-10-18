@@ -609,12 +609,31 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
 /// Own message bubble for a send that hasn't been confirmed by the server
 /// yet (translucent) or that failed (danger border + Retry / Discard).
 fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
-    // Own sends: translucent bubble right-aligned; on error the status +
-    // Retry/Discard render UNDER it — beside the bubble (right-to-left)
-    // a wide bubble pushed them off the pane's left edge entirely (the
-    // run-4 error-path QA caught Retry invisible, "not sent" clipped to
-    // "nt").
+    // Own sends: translucent bubble right-aligned in the SAME cluster as
+    // confirmed own rows (12px margin + 32px avatar + gap), so the
+    // pending→confirmed swap never jumps horizontally; on error the
+    // status + Retry/Discard render UNDER it — beside the bubble
+    // (right-to-left) a wide bubble pushed them off the pane's left edge
+    // entirely (the run-4 error-path QA caught Retry invisible, "not
+    // sent" clipped to "nt").
     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+        // Slot math hoisted from the entry width (== message_row's avail
+        // basis): inside the cluster the remaining width is smaller, which
+        // would re-cap wide drafts below the confirmed slot.
+        let avail = ui.available_width().max(40.0) - 12.0;
+        let text_w = ui
+            .painter()
+            .layout(
+                p.text.clone(),
+                egui::FontId::proportional(14.0),
+                Color32::WHITE,
+                f32::INFINITY,
+            )
+            .mesh_bounds
+            .width();
+        let slot_w = own_slot_width(text_w, avail);
+        ui.add_space(12.0);
+        avatar(ui, ctx.self_name, 32.0);
         ui.add_space(6.0);
         ui.vertical(|ui| {
             let (fill, stroke) = match &p.error {
@@ -636,9 +655,9 @@ fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
                 })
                 .inner_margin(egui::Margin::symmetric(12, 7));
             frame.show(ui, |ui| {
-                // Cap the pending bubble at 70% width like the own-message
-                // slot — an uncapped multi-line draft rendered full-width.
-                ui.set_max_width(ui.available_width().max(40.0) * 0.70);
+                // Same slot math as the confirmed own row so the
+                // pending→confirmed swap never changes the bubble's width.
+                ui.set_max_width(slot_w.max(24.0));
                 ui.set_min_width(24.0);
                 ui.add(
                     egui::Label::new(RichText::new(&p.text).color(ctx.pal.text))
@@ -931,11 +950,16 @@ fn message_row(
     last_of_group: bool,
 ) {
     if own {
-        // Right-aligned row: RTL places the avatar at the far right; the
-        // bubble column sits to its left. Every part inside the column is
-        // laid out right-anchored (see bubble_parts).
         // Own row: measure the text, give the bubble exactly that width
-        // (shrink-to-fit, capped), right-aligned; avatar at the far right.
+        // (shrink-to-fit, capped), then push the whole cluster — bubble
+        // slot + avatar gutter — to the pane's right edge. The push is a
+        // computed LEADING space in this LTR row (the 397466e refactor
+        // dropped the old full-width RTL wrapper, which left-anchored the
+        // cluster and made each avatar trail its own bubble's width — the
+        // "avatar wobble"; RTL rebuilds all mis-anchor on this stack).
+        // `slot_w` cancels in lead + slot + gutter, so every own row ends
+        // at the same x: fixed avatar column, bubble hugging it from the
+        // left, exactly like the incoming layout mirrored.
         let avail = ui.available_width() - 12.0;
         let plain = crate::ui::widgets::plain_cached(&m.raw);
         let text_w = ui
@@ -948,9 +972,12 @@ fn message_row(
             )
             .mesh_bounds
             .width();
-        let slot_w = own_slot_width(text_w, avail);
+        let slot_w = own_slot_width(own_content_width(m, ctx, text_w), avail);
+        let isx = ui.spacing().item_spacing.x;
+        let lead = own_row_lead(slot_w, avail, isx);
+        let mut row_min = egui::Rect::NOTHING;
         ui.horizontal(|ui| {
-            ui.add_space(6.0);
+            ui.add_space(lead + 6.0);
             ui.allocate_ui(egui::vec2(slot_w, 10.0), |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                     bubble_parts(ui, ctx, m, own, grouped, last_of_group);
@@ -962,7 +989,18 @@ fn message_row(
             } else {
                 ui.add_space(38.0);
             }
+            row_min = ui.min_rect();
         });
+        // Rectlog probe for the own-row anchor: the row's painted extent
+        // must end at one shared right edge (lead math) and never escape
+        // the pane (row_min.right > pane right = escaped content).
+        if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+            eprintln!(
+                "RECTOWN slot={slot_w:.0} lead={lead:.0} row_min_r={:.0} row_min_l={:.0}",
+                row_min.right(),
+                row_min.left()
+            );
+        }
     } else {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(6.0);
@@ -1530,6 +1568,48 @@ fn own_slot_width(text_w: f32, avail: f32) -> f32 {
     (text_w + 26.0).max(56.0).min(cap).max(REACT_SLOT_FLOOR.min(cap))
 }
 
+/// Leading space that right-anchors the own-message cluster (bubble slot +
+/// 6 gap + 32 avatar / 38 grouped gutter + one inter-widget spacing) so it
+/// ends exactly at `avail`. Pure math (unit-tested): `slot_w` cancels, i.e.
+/// every own row shares one right edge regardless of bubble width — the
+/// avatar column never wobbles. Clamps at 0: panes narrower than the cap
+/// degrade to a left-anchored cluster (overflow class, never a panic).
+fn own_row_lead(slot_w: f32, avail: f32, isx: f32) -> f32 {
+    (avail - slot_w - 44.0 - isx).max(0.0)
+}
+
+/// Chat-image display box (width-capped 340, height-capped 460). Shared by
+/// the renderer and the own-slot measurement so the reserved slot always
+/// contains the painted image (an escaped row grows the parent max_rect and
+/// poisons every following row's available_width).
+fn image_display_box(w: usize, h: usize) -> egui::Vec2 {
+    let scale = (340.0 / w as f32).min(460.0 / h as f32).min(1.0);
+    egui::vec2(w as f32 * scale, h as f32 * scale)
+}
+
+/// Width the own-row slot must reserve for this message: the widest of the
+/// plain text and every deterministic non-text part. Cards render at ≤560
+/// (cards.rs clamps to that), images at image_display_box (from persisted
+/// decoded sizes; unknown sizes reserve the 340 placeholder box — the same
+/// box the renderer shows, so no reflow once decoded).
+fn own_content_width(m: &MessageInfo, ctx: &ConvCtx<'_>, text_w: f32) -> f32 {
+    let mut w = text_w;
+    if crate::ui::cards::extract_card_cached(&m.raw).0.is_some() {
+        w = w.max(560.0);
+    }
+    for seg in crate::ui::widgets::parse_html_cached(&m.raw).iter() {
+        if let crate::ui::widgets::Seg::Image { url } = seg {
+            let disp = ctx
+                .image_sizes
+                .get(url)
+                .map(|&[iw, ih]| image_display_box(iw, ih))
+                .unwrap_or_else(|| egui::vec2(340.0, 200.0));
+            w = w.max(disp.x);
+        }
+    }
+    w
+}
+
 /// The always-reserved under-bubble row: fixed height, right edge
 /// anchored to the BUBBLE's right edge (narrow card bubbles keep their
 /// chips attached instead of hanging to the column edge), chips
@@ -1866,10 +1946,7 @@ fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
     // Display box: width-capped at 340, height-capped at 460. Placeholder
     // reserves the SAME box (from the archive's decoded sizes) so an image
     // arriving mid-session doesn't reflow the conversation.
-    let display_box = |w: usize, h: usize| -> egui::Vec2 {
-        let scale = (340.0 / w as f32).min(460.0 / h as f32).min(1.0);
-        egui::vec2(w as f32 * scale, h as f32 * scale)
-    };
+    let display_box = image_display_box;
     if let Some((tex, size)) = ctx.textures.get(url) {
         let disp = display_box(size[0], size[1]);
         let resp = ui.add(egui::Image::new((tex.id(), disp)).sense(Sense::click()));
@@ -2030,6 +2107,29 @@ mod tests {
         let slot = own_slot_width(10.0, 400.0);
         assert_eq!(slot, REACT_SLOT_FLOOR);
         assert!(slot + 44.0 <= 400.0);
+    }
+
+    /// The own-row right anchor: lead + slot + gutter + one inter-widget
+    /// spacing must consume exactly `avail` for EVERY slot width — that
+    /// cancellation is what pins the avatar column to one x (397466e
+    /// left-anchored the cluster; the wobble was the avatar trailing each
+    /// bubble's measured width).
+    #[test]
+    fn own_row_lead_pins_right_edge() {
+        let isx = 8.0;
+        for slot in [150.0, 236.5, 380.0, 607.75] {
+            let avail = 715.0;
+            let lead = own_row_lead(slot, avail, isx);
+            assert!(lead > 0.0);
+            assert!((lead + slot + 44.0 + isx - avail).abs() < 1e-4);
+        }
+        // Same right edge for different slot widths: the sum is invariant.
+        let a = own_row_lead(150.0, 715.0, isx) + 150.0;
+        let b = own_row_lead(607.75, 715.0, isx) + 607.75;
+        assert!((a - b).abs() < 1e-4);
+        // Panic/degradation zone: never negative.
+        assert_eq!(own_row_lead(800.0, 715.0, isx), 0.0);
+        assert_eq!(own_row_lead(150.0, 100.0, isx), 0.0);
     }
 
     /// Regression: the hover bar's buttons collected actions into a RefCell
