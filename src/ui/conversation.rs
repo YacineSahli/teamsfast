@@ -664,17 +664,18 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // drive is re-pinned by stick_to_bottom every frame — the prepend
     // adjust's direct state write is the mechanism that actually holds.
     if crate::app::qa_flag("TEAMSFAST_SCROLLUP") {
-        static ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         static SEEN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         // Arm late: firing on the cached paint lets the arriving network
-        // page grow the content and re-pin the view before the shot.
+        // page grow the content and re-pin the view before the shot. The
+        // write REPEATS every frame while the flag is on — a one-shot
+        // raced the network full-replace (stick re-pins on every content
+        // change, so a late reply ate the written offset; run-7
+        // forensics: two "scrolled" shots came back byte-identical to
+        // the bottom state on a slow page).
         let ready = match SEEN_AT.get_or_init(std::time::Instant::now) {
             t => t.elapsed() > std::time::Duration::from_secs(3),
         };
-        if ready
-            && !ARMED.swap(true, std::sync::atomic::Ordering::Relaxed)
-            && scroll_out.content_size.y > 1200.0
-        {
+        if ready && scroll_out.content_size.y > 1200.0 {
             let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
             if let Some(mut st) = egui::scroll_area::State::load(ui.ctx(), state_id) {
                 st.offset.y = 2000.0;
