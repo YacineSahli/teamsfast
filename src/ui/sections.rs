@@ -496,10 +496,21 @@ fn meeting_pill(
     };
     let p = ui.painter().with_clip_rect(rect.shrink(1.0));
     p.rect_filled(rect, 6, fill);
-    p.rect_stroke(
+    // Light theme: pal.outline sits ~1.1:1 against the faint indigo chip
+    // fill — the chip shape dissolved on the canvas (battery round 6).
+    // Darken the edge toward text so the pill boundary scans. NB: the
+    // stroke paints on the UNCLIPPED painter — an Inside stroke occupies
+    // exactly the ring the shrunk clip rect would cut away (only the
+    // rounded corners leaked through, as stray specks).
+    let edge = if pal.is_light() {
+        crate::theme::tint_over(fill, pal.text, 0.25)
+    } else {
+        pal.outline
+    };
+    ui.painter().rect_stroke(
         rect,
         6,
-        egui::Stroke::new(1.0, if dead { pal.outline.gamma_multiply(0.6) } else { pal.outline }),
+        egui::Stroke::new(1.0, if dead { edge.gamma_multiply(0.6) } else { edge }),
         egui::StrokeKind::Inside,
     );
     let time = m.start.as_deref().map(hm_only).unwrap_or_default();
@@ -1884,9 +1895,23 @@ pub fn activity_panel(
                                         .truncate()
                                         .selectable(false),
                                 );
+                                // Dark accent on the canvas is 3.1:1 — the
+                                // semantically-hottest token was the least
+                                // readable text on the row (battery round
+                                // 6). Lighten toward white in dark; light
+                                // accent already clears AA.
+                                let mention_col = if pal.is_light() {
+                                    pal.accent
+                                } else {
+                                    crate::theme::tint_over(
+                                        pal.accent,
+                                        egui::Color32::WHITE,
+                                        0.38,
+                                    )
+                                };
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new("@you").small().color(pal.accent),
+                                        RichText::new("@you").small().color(mention_col),
                                     )
                                     .selectable(false),
                                 );
