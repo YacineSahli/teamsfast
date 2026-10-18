@@ -346,9 +346,15 @@ KEY TRAPS LEARNED TODAY (add to AGENTS next session):
   false alarms today were file-overwrites mid-inspection) — keep
   originals under names the agents aren't told about, or re-capture.
 
-NEXT: harvest soak (≥2h); day-2 menu = AGENTS trap dump from above,
-re-verify light sticky-day chip with a clean capture (the 840px pixel
-compare says it renders; a fresh vision pass would be nice), the
-reaction-wire 404 mystery (user tries one react in the app; web-client
-capture unblocks the picker), straddle-frame one-frame polish if a safe
-mechanism ever appears, user-gated: live formatted send.
+POST-CLOSE CORRECTION (same night): the "light chip missing" alarm was
+the SCROLLUP hook frame-starving on quiet chats (no events → no frames
+→ the 3s arm gate never evaluated → view stayed at bottom → chip
+correctly hidden). Hook now pumps repaints until armed (ad78b22); chip
+re-verified BOTH themes ("Mon 27 Jul" readable). Lesson added to
+AGENTS: QA hooks arming at wall-clock delays must self-pump.
+
+NEXT: harvest soak (≥2h); day-2 menu = the reaction-wire 404 mystery
+(user tries one react in the app; web-client capture unblocks the
+picker), composer P3 polish (multi-line B/I, partial-marker
+double-wrap, pipes in <li>), straddle-frame polish if a safe mechanism
+appears, user-gated: live formatted send.
