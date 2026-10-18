@@ -650,6 +650,8 @@ pub struct TeamsFastApp {
     textures: HashMap<String, (egui::TextureHandle, [usize; 2])>,
     emoji_textures: HashMap<String, egui::TextureHandle>,
     reaction_popup: Option<(String, Vec<String>)>,
+    /// Reaction picker: (message id, anchor) while open.
+    reaction_picker: Option<(String, egui::Pos2)>,
     lightbox: Option<String>,
     pending_images: HashSet<String>,
     queued_textures: Vec<(String, Vec<u8>, [usize; 2])>,
@@ -920,6 +922,7 @@ pub(crate) fn qa_flag(key: &str) -> bool {
                 "TEAMSFAST_FMTBAR",
                 "TEAMSFAST_FMT",
                 "TEAMSFAST_JUMP",
+                "TEAMSFAST_PICKER",
             ] {
                 m.insert(k, std::env::var(k).as_deref() == Ok("1"));
             }
@@ -1166,6 +1169,7 @@ impl TeamsFastApp {
             textures: HashMap::new(),
             emoji_textures: HashMap::new(),
             reaction_popup: None,
+            reaction_picker: None,
             lightbox: None,
             pending_images: HashSet::new(),
             failed_images: HashSet::new(),
@@ -1946,6 +1950,16 @@ impl TeamsFastApp {
                             "k8s right-sizing (QA)",
                             format!(r#"<Swift b64="{b64}"/>"#),
                         ));
+                    }
+                    // QA hook: TEAMSFAST_PICKER=1 opens the reaction
+                    // picker on the newest message of the opened chat —
+                    // headless QA can't click the hover bar's "+" chip.
+                    if crate::app::qa_flag("TEAMSFAST_PICKER")
+                        && self.reaction_picker.is_none()
+                        && let Some(m) = self.messages.last()
+                    {
+                        self.reaction_picker =
+                            Some((m.id.clone(), egui::Pos2::new(640.0, 110.0)));
                     }
                     // QA hook: TEAMSFAST_FMT=1 seeds one synthetic message
                     // whose raw HTML is EXACTLY what build_message_html
@@ -2763,6 +2777,16 @@ impl TeamsFastApp {
             }
             Action::ShowReactions { emoji, names } => {
                 self.reaction_popup = Some((emoji, names));
+            }
+            Action::OpenReactionPicker { message_id, anchor } => {
+                self.reaction_picker = Some((message_id, egui::Pos2::new(anchor[0], anchor[1])));
+            }
+            Action::ToggleReactionFavorite(emoji) => {
+                crate::ui::conversation::toggle_favorite(
+                    &mut self.settings.reaction_favorites,
+                    &emoji,
+                );
+                theme::save_settings(&self.settings);
             }
             Action::DownloadFile { name, url } => {
                 self.cmd.send(Command::DownloadFile { url, name }).ok();
@@ -5392,6 +5416,36 @@ impl eframe::App for TeamsFastApp {
                         self.reaction_popup = None;
                     }
                 });
+        }
+
+        if let Some((pmsg, anchor)) = self.reaction_picker.clone() {
+            let mut open = true;
+            let mut emap = std::mem::take(&mut self.emoji_textures);
+            let actions = crate::ui::conversation::reaction_picker_window(
+                ui,
+                anchor,
+                &mut open,
+                &self.settings.reaction_favorites,
+                &mut emap,
+            );
+            self.emoji_textures = emap;
+            for a in actions {
+                match a {
+                    crate::ui::conversation::PickerAction::React(emoji) => self.apply(
+                        Action::React {
+                            message_id: pmsg.clone(),
+                            emoji,
+                            remove: false,
+                        },
+                    ),
+                    crate::ui::conversation::PickerAction::ToggleFavorite(emoji) => {
+                        self.apply(Action::ToggleReactionFavorite(emoji));
+                    }
+                }
+            }
+            if !open {
+                self.reaction_picker = None;
+            }
         }
 
         if let Some(url) = self.lightbox.clone() {

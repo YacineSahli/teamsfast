@@ -36,6 +36,140 @@ fn quick_set(favorites: &[String]) -> Vec<String> {
     }
 }
 
+/// Curated picker grid shown by the "+" chip in the hover bar: the
+/// classic six plus common Teams fare. The wire accepts any of these
+/// (unicode setReaction, live-verified); favorites persist in settings.
+pub const PICKER_REACTIONS: &[&str] = &[
+    "👍", "❤️", "😂", "😮", "😢", "😠", "🎉", "🔥",
+    "👏", "🙏", "🚀", "💯", "✅", "❌", "👀", "🧠",
+    "🥰", "😍", "🤣", "😅", "😉", "😎", "🥳", "😭",
+    "😱", "🤯", "🤔", "🤨", "🥺", "😴", "🤮", "🤡",
+    "💪", "🫡", "🤝", "💖", "💜", "💙", "⚡", "🎯",
+    "🍿", "☕", "🍕", "🍻", "🎈", "🏆", "📌", "💀",
+];
+
+/// Favorites cap: the quick set is a QUICK set — beyond this the hover
+/// bar fills the whole strip.
+pub const FAVORITES_CAP: usize = 8;
+
+/// Toggle one emoji in the favorites list (append, or remove when
+/// present; oldest drops off the front at the cap).
+pub fn toggle_favorite(favorites: &mut Vec<String>, emoji: &str) {
+    if let Some(i) = favorites.iter().position(|x| x == emoji) {
+        favorites.remove(i);
+    } else {
+        favorites.push(emoji.to_string());
+        while favorites.len() > FAVORITES_CAP {
+            favorites.remove(0);
+        }
+    }
+}
+
+/// What the picker window did (drained by `App`).
+#[derive(Debug)]
+pub enum PickerAction {
+    React(String),
+    ToggleFavorite(String),
+}
+
+/// The reaction picker window: a compact grid anchored near the hover
+/// bar's "+" chip. Click an emoji to react (window closes); click the
+/// star beside it to (un)favorite — favorites are the hover bar's quick
+/// set. Renders COLOR emoji via the shared texture cache (windows fall
+/// back to monochrome with plain labels).
+pub fn reaction_picker_window(
+    ui: &mut egui::Ui,
+    anchor: egui::Pos2,
+    open: &mut bool,
+    favorites: &[String],
+    emoji_textures: &mut std::collections::HashMap<String, egui::TextureHandle>,
+) -> Vec<PickerAction> {
+    let mut out = Vec::new();
+    let mut close = false;
+    egui::Window::new("React")
+        .open(open)
+        .collapsible(false)
+        .resizable(false)
+        .fixed_pos(anchor)
+        .show(ui.ctx(), |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            let mut row = ui.horizontal(|ui| {
+                egui::Grid::new("reaction_picker_grid")
+                    .min_col_width(46.0)
+                    .show(ui, |ui| {
+                        for (i, e) in PICKER_REACTIONS.iter().enumerate() {
+                            let mut cell = ui.horizontal(|ui| {
+                                let btn = match emoji_image_map(ui, emoji_textures, e, 22.0) {
+                                    Some(img) => egui::Button::image(img),
+                                    None => egui::Button::new(
+                                        egui::RichText::new((*e).to_string()).size(22.0),
+                                    ),
+                                }
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE)
+                                .min_size(egui::vec2(30.0, 28.0));
+                                let r = ui.add(btn);
+                                if i == 0 {
+                                    // Rect persistence for the click test
+                                    // (same pattern as the hover bar).
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(
+                                            egui::Id::new("reaction_picker_first_cell"),
+                                            r.rect,
+                                        );
+                                    });
+                                }
+                                if r.clicked() {
+                                    out.push(PickerAction::React((*e).to_string()));
+                                    close = true;
+                                }
+                                let starred = favorites.iter().any(|f| f == e);
+                                let star = egui::RichText::new(if starred { "★" } else { "☆" })
+                                    .size(11.0)
+                                    .color(if starred {
+                                        egui::Color32::from_rgb(0xf0, 0xa8, 0x24)
+                                    } else {
+                                        egui::Color32::GRAY
+                                    });
+                                let sr = ui.add(
+                                    egui::Button::new(star)
+                                        .fill(Color32::TRANSPARENT)
+                                        .stroke(egui::Stroke::NONE)
+                                        .min_size(egui::vec2(16.0, 16.0)),
+                                );
+                                if i == 0 {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(
+                                            egui::Id::new("reaction_picker_first_star"),
+                                            sr.rect,
+                                        );
+                                    });
+                                }
+                                if sr.clicked() {
+                                    out.push(PickerAction::ToggleFavorite((*e).to_string()));
+                                }
+                            });
+                            let _ = &mut cell;
+                            if (i + 1) % 8 == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            });
+            let _ = &mut row;
+            ui.set_min_width(416.0);
+            ui.label(
+                egui::RichText::new("Click to react — ★ sets the quick set")
+                    .small()
+                    .weak(),
+            );
+        });
+    if close {
+        *open = false;
+    }
+    out
+}
+
 /// UI-intent actions produced by views, applied by `App`.
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -67,6 +201,14 @@ pub enum Action {
         emoji: String,
         remove: bool,
     },
+    /// Open the reaction picker for a message (anchored at the hover
+    /// bar's "+" chip).
+    OpenReactionPicker {
+        message_id: String,
+        anchor: [f32; 2],
+    },
+    /// Add/remove one emoji in settings.reaction_favorites.
+    ToggleReactionFavorite(String),
     LoadOlder,
     /// Mark-read rides with OpenChat today; kept for explicit calls.
     #[allow(dead_code)]
@@ -2235,8 +2377,10 @@ fn bubble_parts(
         // (LAYOUT_DEBUG, 1100x760) — the old 396x48 guess snapped the bar
         // ~20px sideways and 12px up one frame after opening.
         const BAR_H: f32 = 36.0;
-        const BAR_W_INCOMING: f32 = 417.0;
-        const BAR_W_OWN: f32 = 481.0;
+        // First-frame guesses include the "+" picker chip (26px) since
+        // run-8; later frames use the measured width.
+        const BAR_W_INCOMING: f32 = 443.0;
+        const BAR_W_OWN: f32 = 507.0;
         // Measured bar size from the previous frame (content-sized and
         // stable). Anchoring with the real width keeps the bar's right
         // edge aligned to the bubble's.
@@ -2336,6 +2480,25 @@ fn bubble_parts(
                                         message_id: m.id.clone(),
                                         emoji: (*e).to_string(),
                                         remove: false,
+                                    });
+                                }
+                            }
+                            // "+" opens the full reaction picker,
+                            // anchored under the chip.
+                            {
+                                let plus = ui.add(
+                                    egui::Button::new(
+                                        egui::RichText::new("+").size(18.0),
+                                    )
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(egui::Stroke::NONE)
+                                    .min_size(egui::vec2(26.0, 28.0)),
+                                )
+                                .on_hover_text("More reactions");
+                                if plus.clicked() {
+                                    sink.borrow_mut().push(Action::OpenReactionPicker {
+                                        message_id: m.id.clone(),
+                                        anchor: [plus.rect.left(), plus.rect.bottom() + 6.0],
                                     });
                                 }
                             }
@@ -2836,7 +2999,19 @@ fn emoji_image(
     cluster: &str,
     px: f32,
 ) -> Option<egui::Image<'static>> {
-    if !ctx.emoji_textures.contains_key(cluster) && !emoji_failed(cluster) {
+    emoji_image_map(ui, ctx.emoji_textures, cluster, px)
+}
+
+/// Texture-cache-backed color emoji for ANY surface (hover bar, picker
+/// window) — plain `ui.label` of an emoji in a Window renders
+/// monochrome (font fallback); Areas are fine, windows are not.
+fn emoji_image_map(
+    ui: &egui::Ui,
+    map: &mut std::collections::HashMap<String, egui::TextureHandle>,
+    cluster: &str,
+    px: f32,
+) -> Option<egui::Image<'static>> {
+    if !map.contains_key(cluster) && !emoji_failed(cluster) {
         if let Some((rgba, size)) = crate::theme::raster_emoji(cluster, 64) {
             let img = egui::ColorImage::from_rgba_unmultiplied(
                 [size[0], size[1]],
@@ -2845,12 +3020,12 @@ fn emoji_image(
             let tex = ui
                 .ctx()
                 .load_texture(format!("emoji:{cluster}"), img, Default::default());
-            ctx.emoji_textures.insert(cluster.to_string(), tex);
+            map.insert(cluster.to_string(), tex);
         } else {
             emoji_mark_failed(cluster);
         }
     }
-    let tex = ctx.emoji_textures.get(cluster)?;
+    let tex = map.get(cluster)?;
     let scale = px / tex.size()[1].max(1) as f32;
     let size = egui::vec2(
         tex.size()[0] as f32 * scale,
@@ -3561,5 +3736,131 @@ mod splice_review_tests {
         let (t, a, b) = splice_wrap("a **b** c", 8, 8, "**", "**");
         assert_eq!(t, "a **b** ****c");
         assert_eq!((a, b), (10, 10), "caret sits between the new markers");
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::{reaction_picker_window, toggle_favorite, PickerAction};
+    use std::collections::HashMap;
+
+    #[test]
+    fn favorites_toggle_adds_removes_and_caps() {
+        let mut f: Vec<String> = vec![];
+        toggle_favorite(&mut f, "👍");
+        toggle_favorite(&mut f, "🎉");
+        assert_eq!(f, ["👍", "🎉"]);
+        // Re-toggle removes.
+        toggle_favorite(&mut f, "👍");
+        assert_eq!(f, ["🎉"]);
+        // Cap: oldest falls off the front.
+        for e in ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"] {
+            toggle_favorite(&mut f, e);
+        }
+        assert_eq!(f.len(), super::FAVORITES_CAP);
+        assert_eq!(f[0], "a2", "oldest dropped");
+    }
+
+    /// The picker's buttons must actually fire (the hover bar shipped
+    /// with dead buttons once — clicks collected into a sink nobody
+    /// drained). Warm frame shares the Context (egui hit-tests the
+    /// PREVIOUS frame's rects).
+    #[test]
+    fn picker_cells_click_through() {
+        crate::emoji::setup();
+        let egui_ctx = crate::theme::test_ctx();
+        let mut emap: HashMap<String, egui::TextureHandle> = HashMap::new();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+        let mut run = |events: Vec<egui::Event>,
+                       open: &mut bool,
+                       emap: &mut HashMap<String, egui::TextureHandle>|
+         -> Vec<PickerAction> {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut acts = Vec::new();
+            let mut out = egui_ctx.run_ui(input, |ui| {
+                acts = reaction_picker_window(
+                    ui,
+                    egui::pos2(120.0, 120.0),
+                    open,
+                    &["👍".to_string()],
+                    emap,
+                );
+            });
+            // The emoji raster queues texture deltas; a test Context has
+            // no renderer — clear before drop or the destructor panics.
+            out.textures_delta.clear();
+            acts
+        };
+        let mut open = true;
+        let _ = run(vec![], &mut open, &mut emap); // layout frame
+        let cell = egui_ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("reaction_picker_first_cell")))
+            .expect("first cell rect persisted");
+        let star = egui_ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("reaction_picker_first_star")))
+            .expect("first star rect persisted");
+
+        // egui hit-tests the PREVIOUS frame's rects and wants the
+        // hover/press/release as separate frames (the hover-bar test's
+        // lesson) — packed into one frame the click never lands.
+        let mut acts = Vec::new();
+        for ev in [
+            egui::Event::PointerMoved(cell.center()),
+            egui::Event::PointerButton {
+                pos: cell.center(),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: cell.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ] {
+            acts = run(vec![ev], &mut open, &mut emap);
+        }
+        assert!(
+            acts.iter().any(|a| matches!(a, PickerAction::React(e) if e == "👍")),
+            "cell click must react, got {acts:?}"
+        );
+        assert!(!open, "react closes the picker");
+        // The star toggles a favorite without closing.
+        let mut open2 = true;
+        let _ = run(vec![], &mut open2, &mut emap);
+        // Re-read: the window re-laid-out after reopening.
+        let star = egui_ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("reaction_picker_first_star")))
+            .expect("first star rect persisted after reopen");
+        let mut acts2 = Vec::new();
+        for ev in [
+            egui::Event::PointerMoved(star.center()),
+            egui::Event::PointerButton {
+                pos: star.center(),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: star.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ] {
+            acts2 = run(vec![ev], &mut open2, &mut emap);
+        }
+        assert!(
+            acts2
+                .iter()
+                .any(|a| matches!(a, PickerAction::ToggleFavorite(e) if e == "👍")),
+            "star click must toggle favorite, got {acts2:?}"
+        );
+        assert!(open2, "starring keeps the picker open");
     }
 }
