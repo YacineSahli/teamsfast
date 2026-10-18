@@ -18,7 +18,12 @@ use ost::api::MessageInfo;
 use std::collections::{HashMap, HashSet};
 use crate::theme::RichTextBold;
 
-const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+// The wire-true six (teams-core REACTION_EMOJI): 🎉 is NOT sendable
+// through the classic gate — it errored on click once reactions went
+// live (run-8). Arbitrary unicode SENDS work server-side (stored as
+// 1f389_partypopper-style keys) but the receive parser only maps the
+// classic keys today; a wider picker lands with that parser.
+const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "😠"];
 
 /// The hover bar's quick set: the user's favorites (settings), or the
 /// shipped default six while unset. Constrained to single-grapheme
@@ -3184,7 +3189,7 @@ mod tests {
     #[test]
     fn quick_set_favorites_override() {
         use super::quick_set;
-        assert_eq!(quick_set(&[]), ["👍", "❤️", "😂", "😮", "😢", "🎉"]);
+        assert_eq!(quick_set(&[]), ["👍", "❤️", "😂", "😮", "😢", "😠"]);
         assert_eq!(quick_set(&["👍".into(), "🎉".into()]), ["👍", "🎉"]);
     }
 
