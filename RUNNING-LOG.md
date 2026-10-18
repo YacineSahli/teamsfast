@@ -311,3 +311,10 @@ HEAD 1ef606d → a9c59d2: 11 commits, 84→86 tests, 0 warnings, core
   re-cite cull-margin perf with the FIXED bench; user-gated items
   unchanged (mid-scroll prepend manual pass, benchmarks, capture-gated
   shapes, light-canvas rebaseline).
+
+## Run 6 day 2 close (2026-10-18 ~15:30) — GREEN
+
+Day-2: +1 commit battery fixes (87 tests). Wayland raise deferred w/
+upgraded design note (background_frame factoring = the prep step).
+Everything green; soak #4 harvested PASS earlier. Run-6 totals: 15
+commits (13ecaa0..HEAD), 84→87 tests, 0 warnings, core untouched.
