@@ -1184,6 +1184,51 @@ fn label_breaking_long_tokens(ui: &mut Ui, t: &str) -> egui::Response {
     last.unwrap_or_else(|| ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()))
 }
 
+/// Collect the pipe-table run starting at `segs[idx]` for
+/// `render_segments`: `Some((lines, next_idx))` when a ≥2-line run
+/// starts there. A run line is a Text seg starting with `|` — optionally
+/// preceded by its line's list bullet (`• `), because a table pasted
+/// into a bullet list arrives as `• `/pipe PAIRS and the sentinel broke
+/// the run after the first row (grid grouping lost; every row rendered
+/// as a bulleted plain line).
+fn collect_pipe_run(segs: &[Seg], idx: usize) -> Option<(Vec<String>, usize)> {
+    let pipe_at = |k: usize| -> Option<&str> {
+        match segs.get(k)? {
+            Seg::Text(t) if t.trim_start().starts_with('|') => Some(t.as_str()),
+            _ => None,
+        }
+    };
+    // Run start: a pipe line, or a bullet whose line continues with one.
+    let (first, step) = match pipe_at(idx) {
+        Some(t) => (t.to_string(), 1usize),
+        None => {
+            if matches!(segs.get(idx), Some(Seg::Text(t)) if t == "• ")
+                && let Some(t) = pipe_at(idx + 1)
+            {
+                (t.to_string(), 2)
+            } else {
+                return None;
+            }
+        }
+    };
+    let mut lines = vec![first];
+    let mut j = idx + step;
+    while matches!(segs.get(j), Some(Seg::LineBreak)) {
+        if let Some(t) = pipe_at(j + 1) {
+            lines.push(t.to_string());
+            j += 2;
+        } else if matches!(segs.get(j + 1), Some(Seg::Text(t)) if t == "• ")
+            && let Some(t) = pipe_at(j + 2)
+        {
+            lines.push(t.to_string());
+            j += 3;
+        } else {
+            break;
+        }
+    }
+    (lines.len() >= 2).then_some((lines, j))
+}
+
 pub fn render_segments(
     ui: &mut Ui,
     segs: &[Seg],
@@ -1203,37 +1248,21 @@ pub fn render_segments(
             // Pipe-table run: `<br>`-separated rows arrive as Text segs
             // split by LineBreak segs (strip_block_noise collapses raw
             // newlines, so multi-line text only takes this shape). Group
-            // ≥2 leading-pipe rows and render as a grid before the
-            // per-segment match; a lone pipe line falls through as text.
-            if let Seg::Text(t) = &segs[idx]
-                && t.trim_start().starts_with('|')
-                && idx + 2 < segs.len()
-            {
-                let mut lines: Vec<&str> = vec![t.as_str()];
-                let mut j = idx + 1;
-                while j + 1 < segs.len() {
-                    if matches!(segs[j], Seg::LineBreak)
-                        && let Seg::Text(t2) = &segs[j + 1]
-                        && t2.trim_start().starts_with('|')
-                    {
-                        lines.push(t2.as_str());
-                        j += 2;
-                    } else {
-                        break;
-                    }
-                }
-                if lines.len() >= 2 {
-                    if row_has_content {
-                        ui.end_row();
-                    }
-                    let tbl = parse_pipe_run(&lines);
-                    let id = ui.id().with(("pipe-table", idx, lines.len()));
-                    render_pipe_table(ui, pal, &tbl, id, 13.0);
+            // ≥2 leading-pipe rows (across list bullets) and render as a
+            // grid before the per-segment match; a lone pipe line falls
+            // through as text.
+            if let Some((lines, j)) = collect_pipe_run(segs, idx) {
+                if row_has_content {
                     ui.end_row();
-                    row_has_content = false;
-                    idx = j;
-                    continue;
                 }
+                let lines: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+                let tbl = parse_pipe_run(&lines);
+                let id = ui.id().with(("pipe-table", idx, lines.len()));
+                render_pipe_table(ui, pal, &tbl, id, 13.0);
+                ui.end_row();
+                row_has_content = false;
+                idx = j;
+                continue;
             }
             let seg = &segs[idx];
             match seg {
@@ -2583,5 +2612,51 @@ mod seg_text_tests {
         assert_eq!(joined, t, "runs reassemble the input verbatim");
         // Sanity: a normal sentence never trips the whole-piece gate.
         assert!(runs.iter().all(|(r, p)| !*p || r.contains(".png|")));
+    }
+}
+
+
+#[cfg(test)]
+mod bullet_pipe_tests {
+    use super::collect_pipe_run;
+    use super::Seg;
+
+    fn t(s: &str) -> Seg {
+        Seg::Text(s.to_string())
+    }
+
+    /// A table pasted into a bullet list arrives as `• `/pipe PAIRS —
+    /// the sentinel used to break the run after the first row and every
+    /// row rendered as a bulleted plain line instead of a grid.
+    #[test]
+    fn pipe_run_groups_across_list_bullets() {
+        let segs = vec![
+            t("• "),
+            t("||h1||h2||"),
+            Seg::LineBreak,
+            t("• "),
+            t("|a|b|"),
+            Seg::LineBreak,
+            t("• "),
+            t("|c|d|"),
+        ];
+        let (lines, next) = collect_pipe_run(&segs, 0).expect("run starts at the bullet");
+        assert_eq!(lines, vec!["||h1||h2||", "|a|b|", "|c|d|"]);
+        assert_eq!(next, segs.len(), "consumed the whole list");
+
+        // Mixed shapes group too: a bare pipe line after a bullet line.
+        let mixed = vec![t("• "), t("|a|b|"), Seg::LineBreak, t("|c|d|"), Seg::LineBreak, t("plain")];
+        let (lines2, _) = collect_pipe_run(&mixed, 0).expect("mixed run groups");
+        assert_eq!(lines2, vec!["|a|b|", "|c|d|"]);
+
+        // A lone bullet pipe line is NOT a table (falls through as text).
+        let lone = vec![t("• "), t("|only|"), Seg::LineBreak, t("plain")];
+        assert!(collect_pipe_run(&lone, 0).is_none());
+
+        // A bullet with NON-pipe content never starts a run.
+        let prose = vec![t("• "), t("see | docs"), Seg::LineBreak, t("|a|b|"), Seg::LineBreak, t("|c|d|")];
+        assert!(collect_pipe_run(&prose, 0).is_none());
+        // ...but the bare run behind it still groups.
+        assert!(collect_pipe_run(&prose, 3).is_some());
     }
 }

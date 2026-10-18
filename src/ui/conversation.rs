@@ -1503,6 +1503,13 @@ fn pointer2_anchor(pointer_y: Option<f32>, bar_h: f32, clip: egui::Rect, bubble:
 /// to remove). Returns the new text and the char span to select after
 /// (the inner text when wrapping, the collapsed point when unwrapping).
 /// All indices are CCursor (character) positions.
+///
+/// Two native-behaviour extensions (run-7 composer P3 tail):
+/// - A selection INSIDE an existing marker pair unwraps that pair — the
+///   old code wrapped again, producing double markers that render
+///   literally.
+/// - A MULTI-LINE selection wraps each spanned line separately (the wire
+///   builder is line-scoped; a pair spanning `\n` sent literal markers).
 fn splice_wrap(
     text: &str,
     a: usize,
@@ -1517,6 +1524,87 @@ fn splice_wrap(
     }
     let oc = open.chars().count();
     let cc = close.chars().count();
+    let pat_at = |pos: usize, pat: &str| -> bool {
+        let p: Vec<char> = pat.chars().collect();
+        pos + p.len() <= n && chars[pos..pos + p.len()] == p[..]
+    };
+
+    // Multi-line selection: per-line wrap (or per-line unwrap when every
+    // spanned line already carries the exact pair).
+    if chars[a..b].contains(&'\n') {
+        // Intersections of the selection with each line's content.
+        let mut lines: Vec<(usize, usize)> = Vec::new(); // [s,e) char ranges
+        let mut ls = a;
+        for i in a..=b {
+            if i == b || chars[i] == '\n' {
+                if i > ls {
+                    lines.push((ls, i));
+                }
+                ls = i + 1;
+            }
+        }
+        // A line counts as wrapped when the pair sits adjacent OUTSIDE the
+        // line's span, or the span itself carries it (select-all includes
+        // the markers).
+        let outside_wrapped = |&(s, e): &(usize, usize)| {
+            s >= oc && e + cc <= n && pat_at(s - oc, open) && pat_at(e, close)
+        };
+        let self_wrapped = |&(s, e): &(usize, usize)| {
+            e.saturating_sub(s) > oc + cc && pat_at(s, open) && pat_at(e - cc, close)
+        };
+        let all_wrapped = lines
+            .iter()
+            .all(|l| outside_wrapped(l) || self_wrapped(l));
+        let mut out = String::new();
+        let mut sel: Option<(usize, usize)> = None;
+        let mut cursor = 0usize; // consumed source chars
+        let mut delta: isize = 0; // net char delta before the current point
+        for &(s, e) in &lines {
+            if all_wrapped {
+                let outside = outside_wrapped(&(s, e));
+                // Kept content and the selection it maps to:
+                // outside: markers at [s-oc,s)/[e,e+cc) → keep [s,e)
+                // self:    markers at [s,s+oc)/[e-cc,e) → keep [s+oc,e-cc)
+                let (cs, ce, next_cursor, lead, tail) = if outside {
+                    (s, e, e + cc, oc, cc)
+                } else {
+                    (s + oc, e - cc, e, oc, cc)
+                };
+                let emit_until = if outside { s - oc } else { s };
+                out.extend(chars[cursor..emit_until].iter());
+                out.extend(chars[cs..ce].iter());
+                cursor = next_cursor;
+                // Both cases drop a leading marker before the content
+                // and a trailing one after it: content start = cs - oc,
+                // content end = ce - oc (the leading marker), all shifted
+                // by the running delta from earlier lines.
+                let ns = (cs as isize - oc as isize + delta) as usize;
+                let ne = (ce as isize - oc as isize + delta) as usize;
+                delta -= (lead + tail) as isize;
+                sel = Some(match sel {
+                    None => (ns, ne),
+                    Some((x, _)) => (x, ne),
+                });
+            } else {
+                out.extend(chars[cursor..s].iter());
+                out.push_str(open);
+                out.extend(chars[s..e].iter());
+                out.push_str(close);
+                cursor = e;
+                let ns = (s as isize + delta) as usize;
+                delta += (oc + cc) as isize;
+                let ne = (e as isize + delta) as usize;
+                sel = Some(match sel {
+                    None => (ns, ne),
+                    Some((x, _)) => (x, ne),
+                });
+            }
+        }
+        out.extend(chars[cursor..].iter());
+        let (na, nb) = sel.unwrap_or((a, b));
+        return (out, na, nb);
+    }
+
     // Toggle off: exact markers already surround [a,b).
     if a >= oc && b + cc <= n {
         let before: String = chars[a - oc..a].iter().collect();
@@ -1528,6 +1616,68 @@ fn splice_wrap(
             return (out, a - oc, b - oc);
         }
     }
+
+    // Selection that itself carries the pair (select-all on a wrapped
+    // line): unwrap it.
+    if b - a > oc + cc && pat_at(a, open) && pat_at(b - cc, close) {
+        let mut out: String = chars[..a].iter().collect();
+        out.extend(chars[a + oc..b - cc].iter());
+        out.extend(chars[b..].iter());
+        return (out, a, b - oc - cc);
+    }
+
+    // Selection inside an existing pair on the same line: unwrap the pair
+    // (native "press B inside bold text unbolds" — wrapping again
+    // double-marks and renders literally). A stack walk finds the
+    // INNERMOST enclosing pair — the markers are ambiguous (`**` is both
+    // open and close), so "last marker before the selection" is wrong:
+    // in `**a** and **b**` that marker is a CLOSE, and removing it fused
+    // the two pairs into one.
+    let line_start = chars[..a].iter().rposition(|&c| c == '\n').map_or(0, |i| i + 1);
+    let line_end = chars[b..].iter().position(|&c| c == '\n').map_or(n, |i| b + i);
+    let has_marker = |s: usize, e: usize| -> bool {
+        if s >= e {
+            return false;
+        }
+        (s..e).any(|p| pat_at(p, open) || pat_at(p, close))
+    };
+    if !has_marker(a, b) {
+        let mut stack: Vec<usize> = Vec::new();
+        let mut i = line_start;
+        let mut enclosing: Option<(usize, usize)> = None; // (open, close)
+        while i < line_end {
+            let is_open = pat_at(i, open) && i + oc <= line_end;
+            let is_close = pat_at(i, close) && i + cc <= line_end;
+            // SYMMETRIC markers (`**` is both open and close): an
+            // occurrence CLOSES when a pair is open — checking open first
+            // pushed every occurrence and the walk never paired anything
+            // (probe: stack=[0,12] on `**bold inner**`).
+            if is_close && !stack.is_empty() {
+                if let Some(p) = stack.pop() {
+                    // Pair (p, i) encloses content [p + oc, i).
+                    if enclosing.is_none()
+                        && p + oc <= a
+                        && b <= i
+                    {
+                        enclosing = Some((p, i));
+                    }
+                }
+                i += cc;
+            } else if is_open {
+                stack.push(i);
+                i += oc;
+            } else {
+                i += 1;
+            }
+        }
+        if let Some((p, q)) = enclosing {
+            let mut out: String = chars[..p].iter().collect();
+            out.extend(chars[p + oc..q].iter());
+            out.extend(chars[q + cc..].iter());
+            return (out, p, q - oc);
+        }
+    }
+
     let mut out: String = chars[..a].iter().collect();
     out.push_str(open);
     out.extend(chars[a..b].iter());
@@ -3302,5 +3452,53 @@ mod tests {
         );
         assert!(actions.is_empty() && actions2.is_empty());
         assert_eq!(draft, "hello");
+    }
+}
+
+/// Run-8 composer P3 tail: multi-line selections wrap per line (the wire
+/// builder is line-scoped — a pair spanning `\n` sent literal markers),
+/// and selections inside an existing pair unwrap it instead of
+/// double-wrapping (double markers render literally).
+#[cfg(test)]
+mod splice_p3_tests {
+    use super::splice_wrap;
+
+    #[test]
+    fn multiline_selection_wraps_each_line() {
+        let (t, a, b) = splice_wrap("ab\ncd", 0, 5, "**", "**");
+        assert_eq!(t, "**ab**\n**cd**");
+        assert_eq!((a, b), (0, 13), "selection covers the wrapped lines");
+        // Toggle back with the SAME full selection (markers included).
+        let (t2, a2, b2) = splice_wrap(&t, a, b, "**", "**");
+        assert_eq!(t2, "ab\ncd");
+        assert_eq!((a2, b2), (0, 5));
+        // One line's content only: the single-line exact toggle unwraps
+        // just that line (a contiguous multi-line selection that skips
+        // the middle markers cannot exist).
+        let (t3, a3, b3) = splice_wrap("**ab**\n**cd**", 2, 4, "**", "**");
+        assert_eq!(t3, "ab\n**cd**");
+        assert_eq!((a3, b3), (0, 2));
+        // Empty middle line: only non-empty lines get markers.
+        let (t4, _, _) = splice_wrap("a\n\nb", 0, 4, "_", "_");
+        assert_eq!(t4, "_a_\n\n_b_");
+    }
+
+    #[test]
+    fn selection_inside_pair_unwraps() {
+        // "inner" inside **bold inner** → the pair is removed.
+        let (t, a, b) = splice_wrap("**bold inner**", 6, 11, "**", "**");
+        assert_eq!(t, "bold inner");
+        assert_eq!((a, b), (0, 10));
+        // "b" inside "a **b** c".
+        let (t2, a2, b2) = splice_wrap("a **b** c", 4, 5, "**", "**");
+        assert_eq!(t2, "a b c");
+        assert_eq!((a2, b2), (2, 3));
+        // Between two pairs there is no enclosing pair → normal wrap.
+        let (t3, _, _) = splice_wrap("**a** and **b**", 6, 9, "**", "**");
+        assert_eq!(t3, "**a** **and** **b**");
+        // Select-all on one wrapped line unwraps (self-carried pair).
+        let (t4, a4, b4) = splice_wrap("**hi**", 0, 6, "**", "**");
+        assert_eq!(t4, "hi");
+        assert_eq!((a4, b4), (0, 2));
     }
 }
