@@ -545,6 +545,11 @@ pub struct TeamsFastApp {
     /// with no cached content) — the conversation pane paints a centered
     /// loader until it lands.
     conv_loading: bool,
+    /// Jump-to-message in flight: (chat id, message id, pages loaded so
+    /// far). The view scrolls when the row is laid out; Event::Messages
+    /// prepends keep feeding LoadOlder until found or the page budget
+    /// runs out.
+    jump_target: Option<(String, String, u32)>,
     /// Remote/local video textures for the stage (recreated on size change).
     remote_video_tex: Option<egui::TextureHandle>,
     local_video_tex: Option<egui::TextureHandle>,
@@ -914,6 +919,7 @@ pub(crate) fn qa_flag(key: &str) -> bool {
                 "TEAMSFAST_SCROLLUP",
                 "TEAMSFAST_FMTBAR",
                 "TEAMSFAST_FMT",
+                "TEAMSFAST_JUMP",
             ] {
                 m.insert(k, std::env::var(k).as_deref() == Ok("1"));
             }
@@ -1192,6 +1198,7 @@ impl TeamsFastApp {
             qa_msgs_seen: HashMap::new(),
             prepend_adjust: None,
             conv_loading: false,
+            jump_target: None,
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
@@ -1843,6 +1850,29 @@ impl TeamsFastApp {
                     // A page for the open chat landed: the loader (if any)
                     // is done.
                     self.conv_loading = false;
+                    // Jump-to-message load-until-found: keep pulling older
+                    // pages while the target is still outside the window.
+                    if let Some((jchat, jid, pages)) = self.jump_target.clone()
+                        && jchat == chat_id
+                    {
+                        match jump_next_step(
+                            self.messages.iter().any(|m| m.id == jid),
+                            pages,
+                            self.older_link.is_some(),
+                        ) {
+                            JumpStep::Scroll => {}
+                            JumpStep::Retry => {
+                                self.jump_target = Some((jchat, jid, pages + 1));
+                                self.loading_older = true;
+                                self.cmd.send(Command::LoadOlder(chat_id.clone())).ok();
+                            }
+                            JumpStep::GiveUp => {
+                                self.jump_target = None;
+                                self.error =
+                                    Some("That message is beyond the loaded history.".into());
+                            }
+                        }
+                    }
                     if !members.is_empty() {
                         self.members = members;
                     }
@@ -2645,6 +2675,35 @@ impl TeamsFastApp {
                 if let Some(chat) = self.selected.clone() {
                     self.loading_older = true;
                     self.cmd.send(Command::LoadOlder(chat)).ok();
+                }
+            }
+            Action::JumpToMessage(id) => {
+                if let Some(chat) = self.selected.clone() {
+                    if self.messages.iter().any(|m| m.id == id) {
+                        // Already in the loaded window.
+                        self.jump_target = Some((chat, id, 0));
+                    } else if self.older_link.is_some() {
+                        // Outside the window: load pages until found
+                        // (bounded in the Messages handler).
+                        self.jump_target = Some((chat.clone(), id, 0));
+                        self.loading_older = true;
+                        self.cmd.send(Command::LoadOlder(chat)).ok();
+                    } else {
+                        self.error = Some("Message is not in the loaded history.".into());
+                    }
+                }
+            }
+            Action::JumpPerformed => {
+                self.jump_target = None;
+            }
+            Action::UnpinMessage(id) => {
+                if let Some(chat) = self.selected.clone() {
+                    if let Some(pins) = self.settings.pinned_messages.get_mut(&chat) {
+                        if let Some(pos) = pins.iter().position(|m| m == &id) {
+                            pins.remove(pos);
+                        }
+                    }
+                    theme::save_settings(&self.settings);
                 }
             }
             Action::MarkRead(id) => {
@@ -4493,6 +4552,11 @@ impl eframe::App for TeamsFastApp {
                 pending: &pending_view,
                 receipts: &self.receipts,
                 pinned: &pinned_here,
+                jump_target: self
+                    .jump_target
+                    .as_ref()
+                    .filter(|(c, _, _)| c == &chat_id)
+                    .map(|(_, id, _)| id.as_str()),
                 // STABLE facts only: chat id shape. Presence must not
                 // depend on transient state — the roster decides
                 // enabled-ness in the header (disabled while loading,
@@ -5348,9 +5412,44 @@ impl eframe::App for TeamsFastApp {
     }
 }
 
+/// One step of the jump-to-message load-until-found loop (pure, tested):
+/// found → scroll; not found with budget + an older page → retry; else
+/// give up.
+enum JumpStep {
+    Scroll,
+    Retry,
+    GiveUp,
+}
+
+const JUMP_PAGE_BUDGET: u32 = 5;
+
+fn jump_next_step(found: bool, pages_loaded: u32, older_link: bool) -> JumpStep {
+    if found {
+        JumpStep::Scroll
+    } else if pages_loaded < JUMP_PAGE_BUDGET && older_link {
+        JumpStep::Retry
+    } else {
+        JumpStep::GiveUp
+    }
+}
+
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    /// Jump-to-message page budget: found → scroll; not found with pages
+    /// left AND an older link → retry; exhausted or no more pages → give
+    /// up (the error toast path).
+    #[test]
+    fn jump_page_budget_steps() {
+        use super::{jump_next_step, JumpStep};
+        assert!(matches!(jump_next_step(true, 0, false), JumpStep::Scroll));
+        assert!(matches!(jump_next_step(true, 9, false), JumpStep::Scroll));
+        assert!(matches!(jump_next_step(false, 0, true), JumpStep::Retry));
+        assert!(matches!(jump_next_step(false, 4, true), JumpStep::Retry));
+        assert!(matches!(jump_next_step(false, 5, true), JumpStep::GiveUp));
+        assert!(matches!(jump_next_step(false, 2, false), JumpStep::GiveUp));
+    }
 
     fn msg(id: &str, ts: &str) -> MessageInfo {
         MessageInfo {

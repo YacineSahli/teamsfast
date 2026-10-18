@@ -194,6 +194,14 @@ pub enum Action {
     /// The conversation view applied the prepend scroll adjustment —
     /// clears App's one-shot flag.
     PrependAnchored,
+    /// Jump to (scroll to) a message in this conversation; loads older
+    /// pages until it is in view (bounded).
+    JumpToMessage(String),
+    /// The conversation view performed the jump scroll — clears the
+    /// app-side target.
+    JumpPerformed,
+    /// Unpin a message from this chat (the pins bar's per-entry ✕).
+    UnpinMessage(String),
 }
 
 /// An own message on its way out (or failed, awaiting Retry) — the view
@@ -224,6 +232,9 @@ pub struct ConvCtx<'a> {
     pub receipts: &'a std::collections::HashMap<String, Vec<String>>,
     /// Locally pinned message ids in this chat.
     pub pinned: &'a [String],
+    /// Message id the view should scroll to (jump-to-message); the row
+    /// loop consumes it when the target row is laid out.
+    pub jump_target: Option<&'a str>,
     /// STABLE 1:1-callability facts only (chat id shape — spaces 1:1 that
     /// is not a meeting thread). Transient data (the roster) must not
     /// gate button PRESENCE: while the roster is pending the buttons
@@ -276,38 +287,57 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 .selectable(false)
                 .truncate(),
         );
-        // Pinned messages menu.
+        // Pinned messages: the compact BAR lives under the header (see
+        // below); this chip opens the per-pin list (jump + unpin).
         if !ctx.pinned.is_empty() {
             ui.menu_button(
-                crate::theme::Icon::Pin.image(ctx.pal.secondary, 14.0),
+                RichText::new(format!("📌 {}", ctx.pinned.len())).small(),
                 |ui| {
-                    ui.set_min_width(260.0);
-                    ui.strong("Pinned");
+                    ui.set_min_width(280.0);
+                    ui.strong("Pinned messages");
                     ui.separator();
-                    let mut shown = 0;
-                    for id in ctx.pinned {
-                        if let Some(m) = ctx.messages.iter().find(|m| &m.id == id) {
-                            ui.label(
-                                RichText::new(format!(
-                                    "📌 {}: {}",
+                    for id in ctx.pinned.to_vec() {
+                        let preview: String = ctx
+                            .messages
+                            .iter()
+                            .find(|m| m.id == *id)
+                            .map(|m| {
+                                format!(
+                                    "{}: {}",
                                     sender_label(m, ctx),
                                     crate::ui::widgets::segs_to_plain(&parse_html(&m.raw))
                                         .lines()
                                         .next()
                                         .unwrap_or("")
-                                ))
-                                .small()
-                                .color(ctx.pal.secondary),
-                            );
-                            shown += 1;
-                        }
-                    }
-                    if shown == 0 {
-                        ui.label(
-                            RichText::new("Pinned messages are outside the loaded page.")
-                                .small()
-                                .weak(),
-                        );
+                                )
+                            })
+                            .unwrap_or_else(|| "Pinned message (outside the loaded page)".into());
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::Label::new(
+                                        RichText::new(preview).small().color(ctx.pal.secondary),
+                                    )
+                                    .selectable(false)
+                                    .truncate(),
+                                )
+                                .on_hover_text("Jump")
+                                .clicked()
+                            {
+                                ctx.actions.push(Action::JumpToMessage(id.clone()));
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("✕").small())
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(egui::Stroke::NONE),
+                                )
+                                .on_hover_text("Unpin")
+                                .clicked()
+                            {
+                                ctx.actions.push(Action::UnpinMessage(id.clone()));
+                            }
+                        });
                     }
                 },
             );
@@ -444,6 +474,63 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             });
         }
     });
+    // Pinned-messages bar (workstream E): compact row between the header
+    // and the separator — preview of the newest pin, click to jump (the
+    // jump loads older pages until the row is in view). The bar appears
+    // only while pins exist (user-initiated height change, like the
+    // format toolbar).
+    if !ctx.pinned.is_empty() {
+        let newest = ctx.pinned.last().cloned().unwrap_or_default();
+        let preview: String = ctx
+            .messages
+            .iter()
+            .find(|m| m.id == newest)
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    sender_label(m, ctx),
+                    crate::ui::widgets::segs_to_plain(&parse_html(&m.raw))
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                )
+            })
+            .unwrap_or_else(|| "Pinned message".into());
+        let bar = Frame::default()
+            .fill(crate::theme::tint_over(ctx.pal.panel, ctx.pal.text, 0.04))
+            .stroke(Stroke::new(1.0, ctx.pal.outline))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(8, 3))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Image::from_bytes(
+                            crate::theme::Icon::Pin.uri(),
+                            crate::theme::Icon::Pin.bytes(),
+                        )
+                        .tint(ctx.pal.secondary)
+                        .fit_to_exact_size(egui::Vec2::splat(11.0)),
+                    );
+                    ui.add_space(4.0);
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new(preview).small().color(ctx.pal.secondary),
+                            )
+                            .selectable(false)
+                            .truncate(),
+                        )
+                        .on_hover_text("Jump to pinned message")
+                        .clicked()
+                    {
+                        ctx.actions.push(Action::JumpToMessage(newest.clone()));
+                    }
+                });
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let _ = bar;
+    }
     // The separator doubles as the anchor line for the sticky-day chip
     // (native Teams pins the visible day in the header region while the
     // view is scrolled up). The chip itself paints after the ScrollArea —
@@ -527,6 +614,11 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     let mut last_row_bottom = f32::NEG_INFINITY;
     // Day of the topmost VISIBLE row (feeds the header's sticky-day chip).
     let mut top_day: Option<String> = None;
+    // Jump-to-message: the row loop records the target row's rect; the
+    // state-write below centers it (scroll_to_rect alone loses to the
+    // stick's content-change re-pin — the SCROLLUP lesson).
+    let jump_pending = ctx.jump_target.map(str::to_string);
+    let mut jump_row: Option<egui::Rect> = None;
     let scroll_out = area.show(ui, |ui| {
         if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
             let mr = ui.max_rect();
@@ -600,6 +692,19 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
                 && (top > clip.bottom() + CULL_MARGIN
                     || top + sz.y < clip.top() - CULL_MARGIN)
             {
+                if jump_pending.as_deref() == Some(m.id.as_str()) {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(clip.left(), top),
+                        egui::vec2(clip.width(), sz.y),
+                    );
+                    // Repeated EXPLICIT scroll requests are the mechanism
+                    // that escapes stick_to_bottom: an explicit adjustment
+                    // skips the end-of-frame re-pin AND suppresses the
+                    // stuck-flag recompute (a raw state write fights the
+                    // re-pin forever — probe-verified oscillation).
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                    jump_row = Some(rect);
+                }
                 ui.allocate_exact_size(sz, egui::Sense::hover());
                 continue;
             }
@@ -627,6 +732,15 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             let last_of_group = ctx.messages.get(i + 1).is_none_or(|n| {
                 !groups_with(n, m)
             });
+            if jump_pending.as_deref() == Some(m.id.as_str()) {
+                let h0 = ui.cursor().top() - top;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(clip.left(), top),
+                    egui::vec2(clip.width(), h0.max(40.0)),
+                );
+                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                jump_row = Some(rect);
+            }
             message_row(ui, ctx, m, own, grouped, last_of_group);
             // Record the rendered height for culling. The flow adds item
             // spacing on top of each allocation, so strip it back out — the
@@ -659,6 +773,26 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             pending_bubble(ui, ctx, p);
         }
     });
+    // QA hook: auto-jump to the newest pinned message a few seconds after
+    // open (TEAMSFAST_JUMP=1) — exercises the full pins-bar path incl.
+    // load-until-found when the pin is outside the first page.
+    if crate::app::qa_flag("TEAMSFAST_JUMP") {
+        static SEEN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        static FIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let ready = matches!(SEEN_AT.get_or_init(std::time::Instant::now), t if t.elapsed() > std::time::Duration::from_secs(3));
+        if ready
+            && !FIRED.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && let Some(id) = ctx.pinned.last().cloned()
+        {
+            ctx.actions.push(Action::JumpToMessage(id));
+        }
+        // The frame loop is event-driven — a quiet chat produces no
+        // frames after the 3s mark, so the hook pumps its own repaints
+        // until it fires (the SCROLLBENCH pattern).
+        if !FIRED.load(std::sync::atomic::Ordering::Relaxed) {
+            ui.ctx().request_repaint();
+        }
+    }
     if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
         eprintln!(
             "SCROLLAW inner_w={:.0} content_h={:.0} floating={} central_min_right={:.0}",
@@ -735,6 +869,25 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         ui.ctx().data_mut(|d| d.insert_temp(key, at_bottom));
         at_bottom
     };
+    // Jump driver: repeat-write the scroll state until the target row
+    // is centered on a STABLE frame (content not growing — the stick
+    // re-pins on every content change and would eat a one-shot). This is
+    // the same mechanism that makes TEAMSFAST_SCROLLUP hold.
+    if let Some(rect) = jump_row
+        && let Some(state_id) = Some(ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT)))
+        && let Some(st) = egui::scroll_area::State::load(ui.ctx(), state_id)
+    {
+        // Landed when the live offset centers the target row on a stable
+        // frame (the animation settles over a few frames; growth frames
+        // re-arm and are skipped).
+        let content_top = rect.top() - scroll_out.inner_rect.top() + st.offset.y;
+        let target = (content_top - scroll_out.inner_rect.height() / 2.0).max(0.0);
+        if !grew && (st.offset.y - target).abs() < 2.0 {
+            ctx.actions.push(Action::JumpPerformed);
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
     // Sticky-day chip state (native Teams shows the visible day in the
     // header region while scrolled). Stored only for the header's NEXT
     // frame — one-frame lag, same contract as conv_at_bottom. Repaint on
@@ -2058,10 +2211,18 @@ fn bubble_parts(
                                 ));
                             }
                             if do_pin {
-                                sink.borrow_mut().push(Action::TogglePinMessage {
-                                    chat_id: ctx.chat_id.clone(),
-                                    message_id: m.id.clone(),
-                                });
+                                // Pin button on an ALREADY-pinned message
+                                // jumps to it instead of unpinning (the
+                                // user report's ask); unpin lives in the
+                                // header's pinned-messages menu.
+                                if ctx.pinned.contains(&m.id) {
+                                    sink.borrow_mut().push(Action::JumpToMessage(m.id.clone()));
+                                } else {
+                                    sink.borrow_mut().push(Action::TogglePinMessage {
+                                        chat_id: ctx.chat_id.clone(),
+                                        message_id: m.id.clone(),
+                                    });
+                                }
                             }
                             if do_edit {
                                 // Marker text, not the plain projection:
@@ -2666,6 +2827,7 @@ mod tests {
                             pending: &[],
                             receipts: &empty2(),
                             pinned: &[],
+                            jump_target: None,
                             can_call: false,
                             call_label: None,
                             textures: &textures,
@@ -2787,6 +2949,7 @@ mod tests {
                     pending: &[],
                     receipts: &empty2(),
                     pinned: &[],
+                    jump_target: None,
                     can_call: false,
                     call_label: None,
                     textures: &textures,
@@ -2903,6 +3066,7 @@ mod tests {
                 pending: &[],
                 receipts: &empty2(),
                 pinned: &[],
+                jump_target: None,
                 can_call: false,
                 call_label: None,
                 textures: &textures,
