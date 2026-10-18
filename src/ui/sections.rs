@@ -1310,10 +1310,10 @@ fn file_type_tint(pal: &Palette, name: &str) -> egui::Color32 {
         "ppt" | "pptx" | "odp" => pal.accent,
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" => pal.accent_hover,
         "zip" | "tar" | "gz" | "7z" | "rar" => pal.secondary,
-        // Extensionless (OneDrive wiki/page objects — "SharedServices -
-        // Monitoring" among them) read as documents, not gray unknowns:
-        // the lone gray icon in a colored list scanned as the gap
-        // (battery round-5 P3 tail).
+        // Unknown/extensionless names (OneDrive wiki/page objects —
+        // "SharedServices - Monitoring" among them) read as documents,
+        // not gray unknowns: the lone gray icon in a colored list
+        // scanned as the gap (battery round-5 P3 tail).
         _ => pal.link,
     }
 }

@@ -618,7 +618,17 @@ fn pipe_cell_cap(ui: &Ui, tbl: &PipeTable, cols: usize, size: f32) -> usize {
     let spacing = PIPE_COL_GAP * cols.saturating_sub(1) as f32;
     let est_natural: f32 = col_chars.iter().map(|&c| c as f32 * size * PIPE_CHAR_W).sum::<f32>()
         + spacing;
-    if budget <= 0.0 || est_natural <= budget * 0.95 {
+    // Wide-glyph content (CJK, emoji) runs ~1.0x size per char, not the
+    // 0.62 Latin average — the estimate would err NARROW, skip the real
+    // measurement, and let the table escape (a self-latching overflow:
+    // the escaped row inflates every later row's available width).
+    // Non-ASCII anywhere: straight to the measured path.
+    let has_wide = tbl
+        .header
+        .iter()
+        .chain(tbl.rows.iter().flatten())
+        .any(|c| c.chars().any(|ch| !ch.is_ascii()));
+    if budget <= 0.0 || (!has_wide && est_natural <= budget * 0.95) {
         return NATURAL_CAP;
     }
     // Borderline or wide: measure the real per-column widths before
@@ -637,7 +647,10 @@ fn pipe_cell_cap(ui: &Ui, tbl: &PipeTable, cols: usize, size: f32) -> usize {
             .mesh_bounds
             .width();
     }
-    if natural <= budget * 1.10 {
+    // 3% grace: keeps the k8s right-sizing card (natural ~1.02x its
+    // budget) at full cells; wide pastes still shrink. A wide grace let
+    // borderline tables escape their slot (red-team P2).
+    if natural <= budget * 1.03 {
         return NATURAL_CAP;
     }
     let total_chars: f32 = col_chars.iter().map(|&c| c as f32).sum::<f32>().max(1.0);
