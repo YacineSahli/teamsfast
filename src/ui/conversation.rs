@@ -369,15 +369,31 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         if let Some(user) = ctx.typing_user {
             // Truncate to what's left of the header row: with the call/
             // files/latest controls present, a long name overflowed ON TOP
-            // of them and clipped at the pane edge (battery P1).
+            // of them and clipped at the pane edge (battery P1). Prefer
+            // the first name over a mid-word ellipsis when that fits.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let full = format!("{user} is typing…");
+                let first = format!(
+                    "{} is typing…",
+                    user.split_whitespace().next().unwrap_or(user)
+                );
+                let small = egui::FontId::proportional(12.0);
+                let w = |t: &str| {
+                    ui.painter()
+                        .layout_no_wrap(t.to_owned(), small.clone(), ctx.pal.link)
+                        .mesh_bounds
+                        .width()
+                };
+                let label = if w(&full) <= ui.available_width() {
+                    full
+                } else if w(&first) <= ui.available_width() {
+                    first
+                } else {
+                    full
+                };
                 ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("{user} is typing…"))
-                            .small()
-                            .color(ctx.pal.link),
-                    )
-                    .truncate(),
+                    egui::Label::new(RichText::new(label).small().color(ctx.pal.link))
+                        .truncate(),
                 );
             });
         }
