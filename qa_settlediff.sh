@@ -28,9 +28,13 @@ APP=$!
 shot() { ffmpeg -y -loglevel error -f x11grab -video_size "${SIZE}" -i :78 \
   -frames:v 1 "$1" 2>/dev/null; }
 
+# Load-robust timing (run-7): the first content frame of a DEBUG build
+# can take ~3s under desktop load (user's Firefox at 200% CPU stretched
+# it past the old 5s sample — three false DIFFERS verdicts, each with a
+# blank t1 body). 8s/12s clears that while still catching real drift.
 sleep 0.7; shot "$OUT/t0.png"   # cached archive paint
-sleep 4.3; shot "$OUT/t1.png"   # network page settled
-sleep 3.0; shot "$OUT/t2.png"   # still settled (idle)
+sleep 7.3; shot "$OUT/t1.png"   # network page settled
+sleep 4.0; shot "$OUT/t2.png"   # still settled (idle)
 kill "$APP" 2>/dev/null; sleep 0.3; kill "$XV" 2>/dev/null
 cp ~/.local/state/teamsfast/teamsfast.log "$OUT/app.log" 2>/dev/null
 
