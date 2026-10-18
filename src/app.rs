@@ -2552,6 +2552,11 @@ impl TeamsFastApp {
         // A jump in flight for the chat being LEFT is stale (its scroll
         // driver would hijack this chat's view; adversarial review P1).
         self.jump_target = None;
+        // A reaction picker/popup bound to the chat being LEFT is stale
+        // — its React would fire with THIS chat's id against the old
+        // chat's message (misdirected wire call; review P2).
+        self.reaction_picker = None;
+        self.reaction_popup = None;
         // Paint immediately from RAM when this chat was viewed recently —
         // the backend refresh then reconciles when it lands. Without this
         // the pane blanked until the worker round-tripped, which read as
@@ -4623,6 +4628,7 @@ impl eframe::App for TeamsFastApp {
                 pal: &self.palette,
                 overlays_open: self.new_chat.open
                     || self.forward.is_some()
+                    || self.reaction_picker.is_some()
                     || self.settings_ui.open
                     || self.join_open
                     || self.team_dialog.open,

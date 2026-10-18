@@ -18,11 +18,9 @@ use ost::api::MessageInfo;
 use std::collections::{HashMap, HashSet};
 use crate::theme::RichTextBold;
 
-// The wire-true six (teams-core REACTION_EMOJI): 🎉 is NOT sendable
-// through the classic gate — it errored on click once reactions went
-// live (run-8). Arbitrary unicode SENDS work server-side (stored as
-// 1f389_partypopper-style keys) but the receive parser only maps the
-// classic keys today; a wider picker lands with that parser.
+// The classic six (teams-core REACTION_EMOJI order). The wire accepts
+// ANY unicode emoji (Graph setReaction, live-verified run-8; wider
+// reactions live in the picker's "+" grid and in favorites).
 const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "😠"];
 
 /// The hover bar's quick set: the user's favorites (settings), or the
@@ -87,6 +85,7 @@ pub fn reaction_picker_window(
     let mut out = Vec::new();
     let mut close = false;
     egui::Window::new("React")
+        .order(egui::Order::Foreground)
         .open(open)
         .collapsible(false)
         .resizable(false)
@@ -124,6 +123,10 @@ pub fn reaction_picker_window(
                                     close = true;
                                 }
                                 let starred = favorites.iter().any(|f| f == e);
+                                // Star gold: one deliberate hardcoded tint
+                                // (presence-green precedent) — semantic
+                                // "saved" color, readable on both themes;
+                                // not worth a Palette ripple.
                                 let star = egui::RichText::new(if starred { "★" } else { "☆" })
                                     .size(11.0)
                                     .color(if starred {
@@ -2379,8 +2382,8 @@ fn bubble_parts(
         const BAR_H: f32 = 36.0;
         // First-frame guesses include the "+" picker chip (26px) since
         // run-8; later frames use the measured width.
-        const BAR_W_INCOMING: f32 = 443.0;
-        const BAR_W_OWN: f32 = 507.0;
+        const BAR_W_INCOMING: f32 = 445.0;
+        const BAR_W_OWN: f32 = 509.0;
         // Measured bar size from the previous frame (content-sized and
         // stable). Anchoring with the real width keeps the bar's right
         // edge aligned to the bubble's.
