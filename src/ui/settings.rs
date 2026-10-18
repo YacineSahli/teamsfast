@@ -119,7 +119,26 @@ pub fn settings_window(
                 SettingsTab::About,
             ];
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            // Fixed-height row slot: an auto-sized popup derives its
+            // height from this row, and a horizontal row can't grow past
+            // the parent's available rect — so an available_height cap
+            // fed the tab rail's ~190px back into the scroll and half
+            // the General tab lived below an invisible fold (the round-5/6
+            // "phantom scrollbar" was that real, unread overflow). Claim
+            // the row explicitly; the modal grows to the claim and the
+            // scroll fills it.
+            let scroll_h = (ui.input(|i| i.content_rect().height()) * 0.58).clamp(220.0, 490.0);
+            let (row_rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), scroll_h),
+                egui::Sense::hover(),
+            );
+            let mut row = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(row_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Min)),
+            );
+            let ui = &mut row;
+            {
                 let mut tab = st.tab;
                 // Left rail: full-width rows, active = accent-tinted well +
                 // accent text (the app's rail idiom, matches the section
@@ -160,13 +179,10 @@ pub fn settings_window(
                 // one reads as dead.
                 st.tab = tab;
                 ui.add_space(14.0);
-                egui::ScrollArea::vertical()
+                let scroll_out = egui::ScrollArea::vertical()
                     .id_salt("settings_content")
-                    .auto_shrink(false)
-                    // Cap below the popup area's full height: an uncapped
-                    // scroll expands to the modal's max and the last row
-                    // renders sliced at the frame edge.
-                    .max_height((ui.available_height() - 14.0).max(120.0))
+                    .auto_shrink([false, true])
+                    .max_height(scroll_h)
                     .show(ui, |ui| {
                         // ScrollArea content INHERITS the parent layout —
                         // this scroll lives inside a horizontal row, so its
@@ -184,7 +200,13 @@ pub fn settings_window(
                             _ => about(ui, pal),
                         });
                     });
-            });
+                if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+                    eprintln!(
+                        "SETSCROLL viewport={:?} content_h={:.0}",
+                        scroll_out.inner_rect, scroll_out.content_size.y,
+                    );
+                }
+            }
         }
     });
     if resp.should_close() {
