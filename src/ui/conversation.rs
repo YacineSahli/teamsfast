@@ -20,6 +20,17 @@ use crate::theme::RichTextBold;
 
 const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 
+/// The hover bar's quick set: the user's favorites (settings), or the
+/// shipped default six while unset. Constrained to single-grapheme
+/// emoji the reaction wire knows (workstream F).
+fn quick_set(favorites: &[String]) -> Vec<String> {
+    if favorites.is_empty() {
+        QUICK_REACTIONS.iter().map(|s| s.to_string()).collect()
+    } else {
+        favorites.to_vec()
+    }
+}
+
 /// UI-intent actions produced by views, applied by `App`.
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -235,6 +246,8 @@ pub struct ConvCtx<'a> {
     /// Message id the view should scroll to (jump-to-message); the row
     /// loop consumes it when the target row is laid out.
     pub jump_target: Option<&'a str>,
+    /// User's favorite reaction emoji (settings; empty = default six).
+    pub reaction_favorites: &'a [String],
     /// STABLE 1:1-callability facts only (chat id shape — spaces 1:1 that
     /// is not a meeting thread). Transient data (the roster) must not
     /// gate button PRESENCE: while the roster is pending the buttons
@@ -2101,7 +2114,8 @@ fn bubble_parts(
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
-                            for e in QUICK_REACTIONS {
+                            let quick = quick_set(ctx.reaction_favorites);
+                            for e in &quick {
                                 // The emoji must live INSIDE the button:
                                 // Button::image. (Button::new of a
                                 // pre-added widget paints the emoji on
@@ -2828,6 +2842,7 @@ mod tests {
                             receipts: &empty2(),
                             pinned: &[],
                             jump_target: None,
+                            reaction_favorites: &[],
                             can_call: false,
                             call_label: None,
                             textures: &textures,
@@ -2950,6 +2965,7 @@ mod tests {
                     receipts: &empty2(),
                     pinned: &[],
                     jump_target: None,
+                    reaction_favorites: &[],
                     can_call: false,
                     call_label: None,
                     textures: &textures,
@@ -3067,6 +3083,7 @@ mod tests {
                 receipts: &empty2(),
                 pinned: &[],
                 jump_target: None,
+                reaction_favorites: &[],
                 can_call: false,
                 call_label: None,
                 textures: &textures,
@@ -3149,6 +3166,16 @@ mod tests {
         // Mixed: only lines lacking the prefix get one.
         let (t, _, _) = splice_bullets("- a\nb", 0, 5);
         assert_eq!(t, "- a\n- b");
+    }
+
+    /// Favorites plumbing: empty = default six; explicit list wins
+    /// verbatim (the picker that edits it is capture-gated — the wire
+    /// probe 404'd even for known types).
+    #[test]
+    fn quick_set_favorites_override() {
+        use super::quick_set;
+        assert_eq!(quick_set(&[]), ["👍", "❤️", "😂", "😮", "😢", "🎉"]);
+        assert_eq!(quick_set(&["👍".into(), "🎉".into()]), ["👍", "🎉"]);
     }
 
     /// Hover-bar anchoring (workstream D): below the strip when it fits,

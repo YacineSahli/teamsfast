@@ -298,6 +298,10 @@ pub struct Settings {
     /// Launch with the window hidden to the tray.
     #[serde(default)]
     pub start_in_tray: bool,
+    /// Favorite reaction emoji (the hover bar's quick set). Empty = the
+    /// shipped default six.
+    #[serde(default)]
+    pub reaction_favorites: Vec<String>,
     /// Start automatically at login (~/.config/autostart entry).
     #[serde(default)]
     pub autostart: bool,
@@ -354,6 +358,7 @@ impl Default for Settings {
             skip_focused: true,
             zoom: 1.0,
             start_in_tray: false,
+            reaction_favorites: Vec::new(),
             autostart: false,
             close_to_tray: true,
             unread_badges: true,

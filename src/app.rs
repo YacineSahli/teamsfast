@@ -4557,6 +4557,7 @@ impl eframe::App for TeamsFastApp {
                     .as_ref()
                     .filter(|(c, _, _)| c == &chat_id)
                     .map(|(_, id, _)| id.as_str()),
+                reaction_favorites: &self.settings.reaction_favorites,
                 // STABLE facts only: chat id shape. Presence must not
                 // depend on transient state — the roster decides
                 // enabled-ness in the header (disabled while loading,
