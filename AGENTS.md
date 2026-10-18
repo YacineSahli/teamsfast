@@ -232,6 +232,28 @@ remaining Phase 2 item.
   phase watch reads connected). Banner and stage share it; counting from
   placement showed two different durations on screen at once.
 
+### egui 0.36, part 4 (run-7 scroll/stick forensics)
+- `stick_to_bottom` re-pins the offset EVERY frame while the (private)
+  `scroll_stuck_to_end` flag is set — only REPEATED explicit
+  `ui.scroll_to_rect` calls escape it (an explicit adjustment skips the
+  end-of-frame re-pin and suppresses the stuck recompute). Raw
+  `State.offset` writes oscillate against the re-pin forever (probe:
+  offset alternating 0↔max per frame).
+- NEVER write `st.offset.y = f32::MAX` pre-begin: begin does NOT clamp;
+  `round_ui` overflows ±MAX to ∓inf, every row culls (blank frame), and
+  the stick re-pin then computes NaN — `f32::max(NaN, 0.0) == 0.0` parks
+  the view at the TOP of history with the stick lost permanently.
+- `scroll_to_rect` centers the rect's CENTER; a landing check that
+  centers the TOP never passes (permanent repaint busy loop — pixel-
+  stable, so settlediff hides it).
+- QA env hooks that arm at a wall-clock delay must pump their own
+  repaints: a quiet chat produces no frames on the event-driven loop.
+- `str::find` returns a BYTE offset — never feed it into a char cursor
+  (teams-core: `` `éé` `` in a message panicked build_message_html and
+  killed the backend thread; rt.block_on has no catch_unwind).
+- sqlcipher CLI prints `ok` BEFORE result rows — `$( )` capture includes
+  it (a seeded pin id became "ok\n<id>").
+
 ### Wayland window control (user's session is Wayland)
 - winit 0.30 Wayland: `set_visible` is a NO-OP, `set_minimized(false)`
   warns "Unminimizing is ignored", `focus_window` is literally `{}` — an
