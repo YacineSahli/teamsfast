@@ -198,7 +198,44 @@ pub enum Piece {
 /// enclosing `[` and the closing `)`, accept only when the paren part is
 /// an absolute http(s) URL with no whitespace. Unbalanced or non-link
 /// text passes through untouched; the scan always advances.
+/// Collapse Jira WIKI attachments `!name.png|width=620,alt="…"!` to
+/// their filename: an `!…!` run counts only when its content carries a
+/// `|` AND a `width=`/`alt=` param — ordinary exclamatory sentences
+/// ("Wow! Great!") never match. Returns the input unchanged when no
+/// run matches.
+fn collapse_jira_attachments(t: &str) -> String {
+    if !t.contains('!') || !t.contains("width=") && !t.contains("alt=") {
+        return t.to_string();
+    }
+    let mut out = String::with_capacity(t.len());
+    let bytes = t.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'!' {
+            if let Some(close) = t[i + 1..].find('!') {
+                let inner = &t[i + 1..i + 1 + close];
+                if inner.contains('|')
+                    && (inner.contains("width=") || inner.contains("alt="))
+                    && let Some(name_end) = inner.find('|')
+                {
+                    out.push_str(&inner[..name_end]);
+                    i = i + 1 + close + 1;
+                    continue;
+                }
+            }
+        }
+        let ch = t[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 pub fn split_markdown_links(t: &str) -> Vec<Piece> {
+    split_markdown_links_inner(&collapse_jira_attachments(t))
+}
+
+fn split_markdown_links_inner(t: &str) -> Vec<Piece> {
     let bytes = t.as_bytes();
     let mut out: Vec<Piece> = Vec::new();
     let mut plain_start = 0;
@@ -222,6 +259,28 @@ pub fn split_markdown_links(t: &str) -> Vec<Piece> {
             let url = &t[i + 2..i + 2 + close_rel];
             let is_http = url.starts_with("http://") || url.starts_with("https://");
             let has_ws = url.bytes().any(|b| b.is_ascii_whitespace());
+            // IMAGE syntax `![alt](…)`: Jira connectors post attachments
+            // as `![filename](width=620,alt="…")` — the paren part is
+            // media params, not a URL, and the whole thing rendered as
+            // literal bracket soup. http urls keep a clickable link
+            // (image link); param urls collapse to the alt text; empty
+            // alt drops entirely.
+            let is_image = open > plain_start && t[..open].ends_with('!');
+            if is_image {
+                let alt = t[open + 1..i].to_string();
+                let body = &t[plain_start..open - 1];
+                if !body.is_empty() {
+                    out.extend(scan_emphasis(body));
+                }
+                if is_http && !has_ws {
+                    out.push(Piece::MdLink { text: alt, url: url.to_string() });
+                } else if !alt.is_empty() {
+                    out.push(Piece::Plain(alt));
+                }
+                plain_start = i + 2 + close_rel + 1;
+                i = plain_start;
+                continue;
+            }
             if !is_http || has_ws {
                 i += 2;
                 continue;
@@ -2698,5 +2757,67 @@ mod bullet_pipe_tests {
         assert!(collect_pipe_run(&prose, 0).is_none());
         // ...but the bare run behind it still groups.
         assert!(collect_pipe_run(&prose, 3).is_some());
+    }
+}
+
+#[cfg(test)]
+mod markdown_image_tests {
+    use super::{split_markdown_links, Piece};
+
+    fn plains(t: &str) -> Vec<String> {
+        split_markdown_links(t)
+            .into_iter()
+            .map(|p| match p {
+                Piece::Plain(s) => s,
+                Piece::Bold(s) => format!("<b>{s}>"),
+                Piece::Italic(s) => format!("<i>{s}>"),
+                Piece::MdLink { text, url } => format!("<link {text}|{url}>"),
+            })
+            .collect()
+    }
+
+    /// Jira attachment markup: `![filename](width=…,alt="…")` collapses
+    /// to the filename; http image urls stay clickable; empty alt drops;
+    /// plain links are untouched.
+    #[test]
+    fn image_markup_collapses_to_alt() {
+        // The real Jira shape (run-8 battery crops).
+        assert_eq!(
+            plains("see ![shot_651.mp4](width=1219, alt=\"x.mp4\") attached"),
+            vec!["see ", "shot_651.mp4", " attached"]
+        );
+        // http image url → clickable link with the alt as label.
+        assert_eq!(
+            plains("![logo](https://x.example/l.png)"),
+            vec!["<link logo|https://x.example/l.png>"]
+        );
+        // Empty alt with non-url params drops entirely.
+        assert_eq!(plains("a ![](width=620,alt=\"i.png\") b"), vec!["a ", " b"]);
+        // Plain links unaffected.
+        assert_eq!(
+            plains("see [docs](https://e.com/x) now"),
+            vec!["see ", "<link docs|https://e.com/x>", " now"]
+        );
+        // Emphasis before the image still parses.
+        assert_eq!(
+            plains("**bold** then ![f.png](width=1)"),
+            vec!["<b>bold>", " then ", "f.png"]
+        );
+        // Jira WIKI syntax `!name.png|width=…,alt="…"!` collapses to the
+        // filename; exclamatory sentences never match.
+        // The wiki collapse runs before piece splitting — joined
+        // output is the contract, not the piece boundaries.
+        assert_eq!(
+            plains("see !Image-x (guid-9f).png|width=620,alt=\"y\"! bye").join(""),
+            "see Image-x (guid-9f).png bye"
+        );
+        assert_eq!(
+            plains("Wow! Great work! Really."),
+            vec!["Wow! Great work! Really."]
+        );
+        assert_eq!(
+            plains("!Audio settings (359d8a2d).png|width=568!").join(""),
+            "Audio settings (359d8a2d).png"
+        );
     }
 }
