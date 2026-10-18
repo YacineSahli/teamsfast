@@ -1530,8 +1530,13 @@ fn splice_wrap(
     };
 
     // Multi-line selection: per-line wrap (or per-line unwrap when every
-    // spanned line already carries the exact pair).
-    if chars[a..b].contains(&'\n') {
+    // spanned line already carries the exact pair). The CODE-FENCE pair
+    // ("```\n" / "\n```") is excluded — fences are the one MULTI-line
+    // construct on the wire (one <pre> spanning lines); splitting them
+    // per line emitted one fence per line and the tail past
+    // WIRE_FENCE_MAX_BLOCKS rendered as literal backticks (review P1).
+    let single_line_markers = !open.contains('\n') && !close.contains('\n');
+    if single_line_markers && chars[a..b].contains(&'\n') {
         // Intersections of the selection with each line's content.
         let mut lines: Vec<(usize, usize)> = Vec::new(); // [s,e) char ranges
         let mut ls = a;
@@ -1585,6 +1590,16 @@ fn splice_wrap(
                     None => (ns, ne),
                     Some((x, _)) => (x, ne),
                 });
+            } else if outside_wrapped(&(s, e)) || self_wrapped(&(s, e)) {
+                // MIXED selection: already-wrapped lines stay as they are
+                // — re-wrapping them made literal `****` soup (review P2;
+                // native toolbars format only the unformatted lines).
+                out.extend(chars[cursor..e].iter());
+                cursor = e;
+                sel = Some(match sel {
+                    None => (s, e),
+                    Some((x, _)) => (x, (e as isize + delta) as usize),
+                });
             } else {
                 out.extend(chars[cursor..s].iter());
                 out.push_str(open);
@@ -1630,7 +1645,11 @@ fn splice_wrap(
     // (native "press B inside bold text unbolds" — wrapping again
     // double-marks and renders literally). A stack walk finds the
     // INNERMOST enclosing pair — the markers are ambiguous (`**` is both
-    // open and close), so "last marker before the selection" is wrong:
+    // open and close), so "last marker before the selection" is wrong.
+    // Pairing is FLAT (toggle) for symmetric markers, deliberately: the
+    // wire's own line scanner pairs them the same way, so an unwrap
+    // removes exactly what the renderer showed as bold (`**a **b** c**`
+    // nests in the source but renders flat on the wire).
     // in `**a** and **b**` that marker is a CLOSE, and removing it fused
     // the two pairs into one.
     let line_start = chars[..a].iter().rposition(|&c| c == '\n').map_or(0, |i| i + 1);
@@ -1641,7 +1660,11 @@ fn splice_wrap(
         }
         (s..e).any(|p| pat_at(p, open) || pat_at(p, close))
     };
-    if !has_marker(a, b) {
+    // A caret-only selection (a == b) must NOT unwrap — pressing the
+    // shortcut to START typing bold inside an existing bold run deleted
+    // the pair's markers instead (review P2). Empty selections keep the
+    // insert-empty-pair behaviour below.
+    if a < b && !has_marker(a, b) {
         let mut stack: Vec<usize> = Vec::new();
         let mut i = line_start;
         let mut enclosing: Option<(usize, usize)> = None; // (open, close)
@@ -3500,5 +3523,43 @@ mod splice_p3_tests {
         let (t4, a4, b4) = splice_wrap("**hi**", 0, 6, "**", "**");
         assert_eq!(t4, "hi");
         assert_eq!((a4, b4), (0, 2));
+    }
+}
+
+/// Adversarial-review fixes: fences stay one block on multi-line
+/// selections, mixed multi-line selections only wrap the unformatted
+/// lines, and a caret inside a pair does not strip it.
+#[cfg(test)]
+mod splice_review_tests {
+    use super::splice_wrap;
+
+    #[test]
+    fn fence_multiline_stays_one_block() {
+        // The code-block button's fence pair spans lines: a multi-line
+        // selection must NOT be split into one fence per line.
+        let (t, _, _) = splice_wrap("ab\ncd", 0, 5, "```\n", "\n```");
+        assert_eq!(t, "```\nab\ncd\n```");
+    }
+
+    #[test]
+    fn mixed_multiline_wraps_only_plain_lines() {
+        // Line 1 already bold, line 2 plain: select-all + Bold formats
+        // ONLY line 2 (re-wrapping line 1 made `****` soup).
+        let (t, _, _) = splice_wrap("**ab**\ncd", 0, 9, "**", "**");
+        assert_eq!(t, "**ab**\n**cd**");
+        // And the fully-wrapped case still unwraps everything.
+        let (t2, _, _) = splice_wrap("**ab**\n**cd**", 0, 13, "**", "**");
+        assert_eq!(t2, "ab\ncd");
+    }
+
+    #[test]
+    fn caret_inside_pair_keeps_pair() {
+        // Ctrl+B with a caret (no selection) inside bold inserts an empty
+        // pair instead of deleting the existing formatting. Neutral spot
+        // (a caret glued to existing markers keeps the pre-existing
+        // insert-there behaviour — soup either way, unchanged).
+        let (t, a, b) = splice_wrap("a **b** c", 8, 8, "**", "**");
+        assert_eq!(t, "a **b** ****c");
+        assert_eq!((a, b), (10, 10), "caret sits between the new markers");
     }
 }

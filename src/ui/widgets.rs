@@ -1167,7 +1167,22 @@ fn label_breaking_long_tokens(ui: &mut Ui, t: &str) -> egui::Response {
     // next full line (red-team P2-3).
     let wrap_w = ui.max_rect().width().max(1.0);
     let mut last = None;
-    for (run, pathological) in pathological_runs(t) {
+    let runs = pathological_runs(t);
+    // A huge paste (thousands of runs) would render one label per word
+    // every frame; past the cap degrade to the old whole-piece
+    // break-anywhere job — readability of pathological pastes matters
+    // less than the frame budget (review P3).
+    if runs.len() > 400 {
+        let mut job = egui::text::LayoutJob::simple(
+            t.to_owned(),
+            font_id,
+            ui.visuals().text_color(),
+            wrap_w,
+        );
+        job.wrap.break_anywhere = true;
+        return ui.add(egui::Label::new(job).selectable(false));
+    }
+    for (run, pathological) in runs {
         if pathological {
             let mut job = egui::text::LayoutJob::simple(
                 run.to_owned(),
@@ -1477,10 +1492,31 @@ pub fn shorten_link_text(text: &str) -> String {
     )
 }
 
+/// Whether the first non-empty seg from `from` starts with whitespace
+/// (a LineBreak counts): decides if a Mention's trailing pad space is
+/// still needed after boundary-space preservation.
+fn plain_next_starts_ws(segs: &[Seg], from: usize) -> bool {
+    for nx in &segs[from.min(segs.len())..] {
+        match nx {
+            Seg::Text(t) | Seg::Bold(t) | Seg::Italic(t) | Seg::Strike(t)
+            | Seg::Code(t) | Seg::Link { text: t, .. } => {
+                if t.is_empty() {
+                    continue;
+                }
+                return t.starts_with(char::is_whitespace);
+            }
+            // Chips pad both sides anyway; a break/quote starts a new line.
+            Seg::Mention { .. } | Seg::LineBreak | Seg::Quote(_) => return true,
+            Seg::Image { .. } => return false,
+        }
+    }
+    true
+}
+
 /// Plain-text projection of segments (for previews / quoted snippets).
 pub fn segs_to_plain(segs: &[Seg]) -> String {
     let mut out = String::new();
-    for s in segs {
+    for (i, s) in segs.iter().enumerate() {
         match s {
             Seg::Text(t) | Seg::Bold(t) | Seg::Italic(t) | Seg::Strike(t) | Seg::Code(t) => {
                 out.push_str(t)
@@ -1495,8 +1531,12 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
                 out.push_str(name);
                 // Full-width trailing space: the thin space (U+2009) read
                 // as fused with the next word in one-line previews
-                // ("TimmermansIt seems…").
-                out.push(' ');
+                // ("TimmermansIt seems…"). Skipped when the first
+                // following non-empty run already starts with whitespace
+                // (preserved boundary spaces made "Bob  hello" — P3).
+                if !plain_next_starts_ws(segs, i + 1) {
+                    out.push(' ');
+                }
             }
             Seg::Link { text, .. } => out.push_str(text),
             // Quotes are block-level: the text after one starts a fresh
