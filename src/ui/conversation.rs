@@ -1285,6 +1285,38 @@ fn insert_newline(draft: &mut String, ctx: &egui::Context, field_id: egui::Id) {
 // formatting: the draft stays plain text carrying markdown-ish markers;
 // teams-core's build_message_html turns them into wire HTML on send.
 
+/// Vertical anchor for the hover action bar (workstream D: dock UNDER the
+/// message). Priority: below the bubble + reserved reaction strip (never
+/// covers chips/timestamp); not enough room at the viewport bottom →
+/// above the bubble (the old resting place); bubble clipped at the
+/// viewport top (tall card mid-scroll) → tooltip-style above the
+/// pointer, else clamped in-view under the bubble.
+fn hover_bar_anchor_y(
+    bubble: egui::Rect,
+    strip_h: f32,
+    bar_h: f32,
+    clip: egui::Rect,
+    pointer_y: Option<f32>,
+) -> f32 {
+    let below_y = bubble.bottom() + strip_h + 4.0;
+    if below_y + bar_h <= clip.bottom() - 4.0 {
+        return below_y;
+    }
+    if bubble.top() - bar_h - 4.0 >= clip.top() + 2.0 {
+        return bubble.top() - bar_h - 4.0;
+    }
+    if bubble.top() < clip.top() + 2.0 {
+        return pointer2_anchor(pointer_y, bar_h, clip, bubble);
+    }
+    (bubble.bottom() + 6.0).min(clip.bottom() - bar_h - 4.0)
+}
+
+fn pointer2_anchor(pointer_y: Option<f32>, bar_h: f32, clip: egui::Rect, bubble: egui::Rect) -> f32 {
+    pointer_y
+        .map(|p| (p - bar_h - 10.0).max(clip.top() + 4.0))
+        .unwrap_or_else(|| (bubble.bottom() + 6.0).min(clip.bottom() - bar_h - 4.0))
+}
+
 /// Splice `open`/`close` around chars [a,b) — TOGGLING OFF when the exact
 /// markers already wrap that span (native toolbar behaviour: press again
 /// to remove). Returns the new text and the char span to select after
@@ -1819,9 +1851,15 @@ fn bubble_parts(
             egui::pos2(r.right() + by, r.bottom() + by),
         )
     };
-    let in_bubble = pointer2
-        .map(|p| expand(bubble_rect, 2.0).contains(p))
-        .unwrap_or(false);
+    // The hover target includes the reserved reaction strip below the
+    // bubble (it is part of the message row): the bar now docks BELOW
+    // the strip, and without bridging it the pointer crossing the strip
+    // fell into a dead zone and closed the bar mid-move.
+    let hover_zone = egui::Rect::from_min_max(
+        egui::pos2(bubble_rect.left() - 2.0, bubble_rect.top() - 2.0),
+        egui::pos2(bubble_rect.right() + 2.0, bubble_rect.bottom() + REACT_STRIP_H + 6.0),
+    );
+    let in_bubble = pointer2.map(|p| hover_zone.contains(p)).unwrap_or(false);
     let in_bar = pointer2
         .zip(bar_rect_prev)
         .map(|(p, r)| expand(r, 8.0).contains(p))
@@ -1865,21 +1903,19 @@ fn bubble_parts(
         let anchor_x = (bubble_rect.right() - bar_w)
             .max(min_x)
             .min(clip.right() - bar_w - 8.0);
-        // Prefer above the bubble with a 4px gap. The old hardcoded 44px
-        // offset was smaller than the real bar height, so the bar dug into
-        // the bubble's first text line. When the bubble is clipped at the
-        // viewport top (tall card), anchor tooltip-style just above the
-        // pointer — the below-fallback covered the NEXT message's first
-        // line there.
-        let anchor_y = if bubble_rect.top() < clip.top() + 2.0 {
-            pointer2
-                .map(|p| (p.y - bar_h - 10.0).max(clip.top() + 4.0))
-                .unwrap_or_else(|| (bubble_rect.bottom() + 6.0).min(clip.bottom() - bar_h - 4.0))
-        } else if bubble_rect.top() - bar_h - 4.0 >= clip.top() + 2.0 {
-            bubble_rect.top() - bar_h - 4.0
-        } else {
-            (bubble_rect.bottom() + 6.0).min(clip.bottom() - bar_h - 4.0)
-        };
+        // Anchor BELOW the message: the reserved reaction strip already
+        // lives under every bubble, so the bar docks under the STRIP —
+        // it never covers chips or the timestamp (user report: the bar
+        // hanging over the header side of a message read as intruding
+        // into the chrome while scrolling). Fallbacks keep the bar on
+        // screen (see hover_bar_anchor_y).
+        let anchor_y = hover_bar_anchor_y(
+            bubble_rect,
+            REACT_STRIP_H,
+            bar_h,
+            clip,
+            pointer2.map(|p| p.y),
+        );
         let anchor = egui::pos2(anchor_x, anchor_y);
         let actions_sink: std::rc::Rc<std::cell::RefCell<Vec<Action>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -2949,6 +2985,30 @@ mod tests {
         // Mixed: only lines lacking the prefix get one.
         let (t, _, _) = splice_bullets("- a\nb", 0, 5);
         assert_eq!(t, "- a\n- b");
+    }
+
+    /// Hover-bar anchoring (workstream D): below the strip when it fits,
+    /// above the bubble at the viewport bottom, tooltip at the pointer
+    /// when the bubble is clipped at the top.
+    #[test]
+    fn hover_bar_anchor_priority() {
+        use super::hover_bar_anchor_y;
+        let clip = egui::Rect::from_min_max(egui::pos2(0.0, 100.0), egui::pos2(700.0, 700.0));
+        let bubble = egui::Rect::from_min_max(egui::pos2(50.0, 300.0), egui::pos2(400.0, 380.0));
+        // Room below: dock under bubble + strip.
+        let y = hover_bar_anchor_y(bubble, 18.0, 36.0, clip, None);
+        assert_eq!(y, 380.0 + 18.0 + 4.0);
+        // Near the viewport bottom: fall back above the bubble.
+        let low = egui::Rect::from_min_max(egui::pos2(50.0, 600.0), egui::pos2(400.0, 660.0));
+        let y = hover_bar_anchor_y(low, 18.0, 36.0, clip, None);
+        assert_eq!(y, 600.0 - 36.0 - 4.0);
+        // Bubble clipped at the viewport top: tooltip above the pointer.
+        let tall = egui::Rect::from_min_max(egui::pos2(50.0, 0.0), egui::pos2(400.0, 660.0));
+        let y = hover_bar_anchor_y(tall, 18.0, 36.0, clip, Some(200.0));
+        assert_eq!(y, 200.0 - 36.0 - 10.0);
+        // Same shape without a pointer: clamp in view under the bubble.
+        let y = hover_bar_anchor_y(tall, 18.0, 36.0, clip, None);
+        assert_eq!(y, (660.0f32 + 6.0).min(700.0 - 36.0 - 4.0));
     }
 
     /// Regression: the multiline composer. Enter sends; Shift+Tab and
