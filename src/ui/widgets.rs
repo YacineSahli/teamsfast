@@ -647,10 +647,14 @@ fn pipe_cell_cap(ui: &Ui, tbl: &PipeTable, cols: usize, size: f32) -> usize {
             .mesh_bounds
             .width();
     }
-    // 3% grace: keeps the k8s right-sizing card (natural ~1.02x its
-    // budget) at full cells; wide pastes still shrink. A wide grace let
-    // borderline tables escape their slot (red-team P2).
-    if natural <= budget * 1.03 {
+    // 10% grace: the k8s right-sizing card's natural width lands in the
+    // (1.03, 1.10] band of its budget — at 3% its cells truncated
+    // ("management-…", "512Mi → 384…"; vision-verified) — so the wider
+    // band is load-bearing. Residual: an OWN message with a table at the
+    // slot edge can overhang ~10% (rare content; degrades that row's
+    // anchor, self-heals on relayout; the wide-glyph latch is closed
+    // above).
+    if natural <= budget * 1.10 {
         return NATURAL_CAP;
     }
     let total_chars: f32 = col_chars.iter().map(|&c| c as f32).sum::<f32>().max(1.0);
