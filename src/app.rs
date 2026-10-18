@@ -1748,6 +1748,28 @@ impl TeamsFastApp {
                     if self.chats.is_empty() || self.offline.is_some() {
                         self.chats = chats;
                     }
+                    // A conversation opened before any list landed (launch
+                    // hook, notification click) shows its RAW id until the
+                    // live list happens to include it — and old meeting
+                    // threads often fall OUTSIDE the live top-40, so the
+                    // id never heals (battery d05: raw meeting id 10s in,
+                    // while a sibling run whose live list carried the
+                    // thread healed instantly). The cached snapshot knows
+                    // the name — heal the title here exactly like the
+                    // Event::Chats path does.
+                    if let Some(sel) = self.selected.clone() {
+                        if let Some(c) = self.chats.iter().find(|c| c.id == sel) {
+                            let name = if c.name.is_empty() || c.name == "[Direct message]" {
+                                "Direct message".to_string()
+                            } else {
+                                c.name.clone()
+                            };
+                            if !self.selected_title.starts_with("# ") && self.selected_title != name
+                            {
+                                self.selected_title = name;
+                            }
+                        }
+                    }
                 }
                 Event::Chats(mut chats) => {
                     // Keep roster-resolved names from this session.
@@ -1913,9 +1935,9 @@ impl TeamsFastApp {
                             "qa-table-chat",
                             "QA Bot",
                             "line one line two line three Workload Container Action",
-                            "<p>line one<br>line two<br>line three</p><p>before the table<br>||Workload||Container||Action||<br>|qa-default|api|*Reduce*<br>|qa-default|ast...</p>".into(),
+                            "<p>line one<br>line two<br>line three</p><p>before the table<br>||Workload||Container||Action||<br>|qa-default|api|*Reduce*<br>|qa-default|media-gateway|*Reduce*</p>".into(),
                         ));
-                        let card_json = r#"{"summary":"k8s right-sizing (QA)","attachments":[{"content":{"type":"AdaptiveCard","body":[{"type":"TextBlock","wrap":true,"text":" Resource request/limit right-sizing findings (7-day Grafana p95/max lookback)\n\nContainers where usage already exceeds the current request are marked *Increase* rather than reduced.\n\n 1. QA Production\n\n||Workload||Container||CPU req → suggested||Mem req → suggested||Action||\n|qa-default|api|0.500 → 0.20|512Mi → 384Mi|Reduce|\n|qa-default|management-api|0.200 → 0.05|500Mi → 384Mi|Reduce|\n|qa-default|ast..."}]}}]}"#;
+                        let card_json = r#"{"summary":"k8s right-sizing (QA)","attachments":[{"content":{"type":"AdaptiveCard","body":[{"type":"TextBlock","wrap":true,"text":" Resource request/limit right-sizing findings (7-day Grafana p95/max lookback)\n\nContainers where usage already exceeds the current request are marked *Increase* rather than reduced.\n\n 1. QA Production\n\n||Workload||Container||CPU req → suggested||Mem req → suggested||Action||\n|qa-default|api|0.500 → 0.20|512Mi → 384Mi|Reduce|\n|qa-default|management-api|0.200 → 0.05|500Mi → 384Mi|Reduce|\n|qa-default|media-gateway|0.310 → 0.15|256Mi → 192Mi|Reduce|"}]}}]}"#;
                         let b64 = base64::engine::general_purpose::STANDARD
                             .encode(card_json.as_bytes());
                         self.messages.push(qa(

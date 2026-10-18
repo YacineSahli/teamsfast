@@ -1069,9 +1069,24 @@ fn strip_block_noise(segs: Vec<Seg>) -> Vec<Seg> {
                 }
                 let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
                 if collapsed.is_empty() {
-                    None
+                    // Whitespace-only BETWEEN INLINE tags (`</em> <b>`) is
+                    // a real word separator — split_whitespace would glue
+                    // the neighbours ("it"+"item" → "itItem"). Keep one
+                    // space, unless the run spans a newline: that is the
+                    // `\r\n` between block tags, whose separation the
+                    // LineBreak already carries.
+                    if t.contains('\n') {
+                        None
+                    } else {
+                        Some(Seg::Text(" ".into()))
+                    }
                 } else {
-                    Some(Seg::Text(collapsed))
+                    // Leading/trailing whitespace is equally a separator
+                    // against neighbouring inline pieces — the collapse
+                    // must not eat it ("</em> item" → Text(" item")).
+                    let lead = if t.starts_with(char::is_whitespace) { " " } else { "" };
+                    let trail = if t.ends_with(char::is_whitespace) { " " } else { "" };
+                    Some(Seg::Text(format!("{lead}{collapsed}{trail}")))
                 }
             }
             other => Some(other),
@@ -1117,34 +1132,56 @@ fn has_pathological_token(t: &str) -> bool {
     t.split_whitespace().any(|w| w.chars().count() > 48)
 }
 
+/// Whitespace runs of a text piece (`split_inclusive` keeps each word's
+/// trailing space), each flagged whether it needs mid-token breaking.
+fn pathological_runs(t: &str) -> Vec<(&str, bool)> {
+    t.split_inclusive(char::is_whitespace)
+        .map(|r| (r, r.trim().chars().count() > 48))
+        .collect()
+}
+
 /// Plain label that breaks over-long tokens mid-word instead of
 /// overflowing. egui 0.36's `Label` Wrap mode never sets
 /// `wrap.break_anywhere`; a hand-built LayoutJob is the only access.
+///
+/// `break_anywhere` applies to the WHOLE galley, not just the long token —
+/// arming it for a piece because ONE >48-char Jira media token exists
+/// wrapped EVERY word at char level ("have" → "h|ave", battery d01). So a
+/// pathological piece is split into whitespace runs: plain words render as
+/// ordinary labels (word-boundary wrap), and only a >48-char run gets the
+/// break-anywhere job.
 fn label_breaking_long_tokens(ui: &mut Ui, t: &str) -> egui::Response {
-    if has_pathological_token(t) {
-        let font_id = ui
-            .style()
-            .text_styles
-            .get(&egui::TextStyle::Body)
-            .cloned()
-            .unwrap_or_else(|| egui::FontId::proportional(14.0));
-        // Wrap at the CONTAINER width, not the remaining line: this label
-        // follows earlier pieces on a wrapped row, and available_width()
-        // there is the current line's leftover — wrapping there produced
-        // a tall per-character column. The over-wide galley moves to the
-        // next full line (red-team P2-3).
-        let wrap_w = ui.max_rect().width().max(1.0);
-        let mut job = egui::text::LayoutJob::simple(
-            t.to_owned(),
-            font_id,
-            ui.visuals().text_color(),
-            wrap_w,
-        );
-        job.wrap.break_anywhere = true;
-        ui.add(egui::Label::new(job).selectable(false))
-    } else {
-        ui.label(RichText::new(t))
+    if !has_pathological_token(t) {
+        return ui.label(RichText::new(t));
     }
+    let font_id = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Body)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(14.0));
+    // Wrap at the CONTAINER width, not the remaining line: this label
+    // follows earlier pieces on a wrapped row, and available_width()
+    // there is the current line's leftover — wrapping there produced
+    // a tall per-character column. The over-wide galley moves to the
+    // next full line (red-team P2-3).
+    let wrap_w = ui.max_rect().width().max(1.0);
+    let mut last = None;
+    for (run, pathological) in pathological_runs(t) {
+        if pathological {
+            let mut job = egui::text::LayoutJob::simple(
+                run.to_owned(),
+                font_id.clone(),
+                ui.visuals().text_color(),
+                wrap_w,
+            );
+            job.wrap.break_anywhere = true;
+            last = Some(ui.add(egui::Label::new(job).selectable(false)));
+        } else {
+            last = Some(ui.label(RichText::new(run)));
+        }
+    }
+    last.unwrap_or_else(|| ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()))
 }
 
 pub fn render_segments(
@@ -2491,3 +2528,60 @@ mod split_cells_tests {
     }
 }
 
+
+#[cfg(test)]
+mod seg_text_tests {
+    use super::{parse_html, pathological_runs, Seg};
+
+    /// The inline-tag boundary space survives normalization: `<em>it</em>
+    /// item` must render "it item", not "itItem" (battery d04 — the
+    /// whitespace collapse ate the leading space of the plain run).
+    #[test]
+    fn inline_tag_boundary_space_survives() {
+        let segs = parse_html("<ul><li><em>it</em> item</li><li><strong>bold</strong> item</li></ul>");
+        let mut saw = 0;
+        for w in segs.windows(2) {
+            match (&w[0], &w[1]) {
+                (Seg::Italic(a), Seg::Text(b)) if a == "it" && b == " item" => saw |= 1,
+                (Seg::Bold(a), Seg::Text(b)) if a == "bold" && b == " item" => saw |= 2,
+                _ => {}
+            }
+        }
+        assert_eq!(saw, 3, "both styled→plain boundaries keep their space, got {segs:?}");
+    }
+
+    /// Whitespace-ONLY text between inline pieces keeps ONE space (it is
+    /// a real word separator), but a newline-carrying run (block-tag
+    /// noise) still collapses away — the LineBreak carries that
+    /// separation. (A space INSIDE a styled run, `<b> </b>`, survives in
+    /// the Bold seg itself — normalization never touches styled segs.)
+    #[test]
+    fn whitespace_only_inline_keeps_space_block_drops() {
+        let segs = parse_html("<p><b>a</b> <i>c</i></p>");
+        assert!(
+            segs.iter().any(|s| matches!(s, Seg::Text(t) if t == " ")),
+            "inline space-only run must survive, got {segs:?}"
+        );
+        let blocky = parse_html("<p>a</p>\r\n<p>b</p>");
+        assert!(
+            !blocky.iter().any(|s| matches!(s, Seg::Text(t) if t.trim().is_empty())),
+            "newline whitespace noise must drop, got {blocky:?}"
+        );
+    }
+
+    /// Only the >48-char run is flagged for mid-token breaking; every
+    /// other word keeps word-boundary wrapping, and the runs reassemble
+    /// the input exactly (split_inclusive keeps the spaces attached).
+    #[test]
+    fn pathological_runs_flag_only_long_tokens() {
+        let long = "!Image-20260713-195357-1ba703a6-c5e5.png|width=620";
+        let t = format!("they log in to the computer {long} now ");
+        let runs = pathological_runs(&t);
+        assert_eq!(runs.iter().filter(|(_, p)| *p).count(), 1, "exactly the long token flagged");
+        assert!(runs.iter().any(|(r, _)| *r == "they "), "trailing space stays attached");
+        let joined: String = runs.iter().map(|(r, _)| *r).collect();
+        assert_eq!(joined, t, "runs reassemble the input verbatim");
+        // Sanity: a normal sentence never trips the whole-piece gate.
+        assert!(runs.iter().all(|(r, p)| !*p || r.contains(".png|")));
+    }
+}
