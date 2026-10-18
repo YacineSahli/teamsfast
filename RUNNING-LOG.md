@@ -358,3 +358,30 @@ NEXT: harvest soak (≥2h); day-2 menu = the reaction-wire 404 mystery
 picker), composer P3 polish (multi-line B/I, partial-marker
 double-wrap, pipes in <li>), straddle-frame polish if a safe mechanism
 appears, user-gated: live formatted send.
+
+## Run 8 day 1 (2026-10-18 night→19) — GREEN at 397cae3
+
+HEAD a1942a9 → 397cae3: 4 commits, 95→104 tests, 0 warnings, core
+PUSHED 276fa6d (Graph reactions). Soak #5 INVALID (externally killed at
+24.5min, evidence clobbered by a 24s manual test.sh run; RSS fell and
+sat flat — no leak signature). Soak #6 RUNNING (/tmp/soak9, setsid —
+session teardown killed #5).
+
+- BATTERY (13 dark + 8 light, 4 critics + pixel triage): run-7 surfaces
+  all PASS. Two P2 claims disproven cheaply (QA seed mimicked data loss;
+  1× icon miscounts — high-zoom crops settle both). Real fixes:
+  per-run wrap (char-level breaking killed readability), inline-space
+  glue ("itItem"), ChatsCached title heal (raw meeting id forever).
+- REACTION WIRE UNBLOCKED: native /reactions 404s for everything;
+  Graph setReaction/unsetReaction with UNICODE emoji payload works —
+  live add/unset round-trip verified on an own message; arbitrary
+  unicode accepted, stored as 1f389_partypopper keys (picker+parser =
+  next-run unit). Default quick set realigned (🎉→😠).
+- COMPOSER P3s: per-line multi-line wrap, inner unbold (close-first
+  stack walk), pipe tables regroup across bullet sentinels.
+- ADVERSARIAL REVIEW of the day's diff: fence-per-line P1 + 2 P2s +
+  3 P3s fixed same-session (397cae3).
+
+NEXT: harvest soak #6 (≥2h); wide picker + 1f389_* receive parser;
+app-side react-click verification; RECTLOG probe of the under-composer
+timestamp; user-gated: web-client captures, live formatted send.

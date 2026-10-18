@@ -294,6 +294,16 @@ remaining Phase 2 item.
   enables it on the `ost` dep.
 
 ### QA harness quirks
+- Vision critics MISIDENTIFY/MISCOUNT small glyphs at 1× zoom (a
+  "missing Copy button" and a "4-icon bar" were both wrong — high-zoom
+  ffmpeg crops of the exact region settle it in one pass). Also: a QA
+  SEED that mimics a rendering bug (a truncated table row) will fool
+  every critic — keep seeds truthful.
+- A soak app launched as a session background task DIES with the
+  session (run-8 post-mortem: soak #5 reaped at session end; log
+  evidence then clobbered by any later instance). Launch soaks under
+  `setsid` (detached process group) with a sampler that exits when the
+  app PID dies.
 - Xvfb reports a 0mm display via XRandR → winit caps the window at
   1100x760 regardless of TEAMSFAST_SIZE. Shoot QA at 1100x760 for full
   paint; black bands at 1240x820 are the harness, never the app.
@@ -387,6 +397,17 @@ remaining Phase 2 item.
 - `fastframe_emoji::get()` must be called after `emoji::setup()`.
 
 ### Protocol / ost
+- REACTIONS (run-8, live-verified): the native chat-service
+  `/v1/users/ME/conversations/{c}/messages/{m}/reactions` 404s for EVERY
+  type (better-teams' vendored ost carries the same unverified guess —
+  their ledger admits it). The working write path is Graph
+  `POST /v1.0/chats/{enc}/messages/{id}/setReaction` /
+  `unsetReaction` with `{"reactionType": EMOJI}` — the UNICODE EMOJI,
+  not the word (ASCII 'like' → 400). Arbitrary unicode is accepted and
+  stored under codepoint-name emotions keys ("1f389_partypopper"); the
+  classic six keep word keys. Graph GET of a single message is
+  scope-blocked (ChatMessage.Send without Chat.Read) — verify via the
+  native read. teams-core 276fa6d.
 - parse_html (2026-10-16 run 3): `<br>` flushes text AND pushes
   LineBreak; block opens (`<p>`/`<div>`) FLUSH before pushing their
   LineBreak. Both were broken from day one (br = flush-only with an
