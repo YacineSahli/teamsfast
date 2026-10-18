@@ -197,6 +197,19 @@ remaining Phase 2 item.
   until it was a full-height empty slab). Wrap the r2l row in
   `ui.horizontal(…)` — or make it the last element (the join dialog only
   ever survived because its r2l row is last). Probe-verified 2026-10-15.
+- `scroll_area::State::offset` does NOT reflect the rendered position
+  (egui animates a private `offset_target`; see the prepend race) —
+  derive at-bottom/visibility signals from observable geometry (e.g.
+  the last row's screen bottom vs the ScrollArea viewport), never from
+  State::offset. Also: `stick_to_bottom` re-pins a programmatic offset
+  drive on every content change — under live traffic SCROLLBENCH's
+  sweep never moved the view until the bench disabled the stick.
+- Auto-sized popup modals derive height from CONTENT, and a horizontal
+  row cannot exceed the parent's available rect — an available_height
+  cap on a ScrollArea inside such a row feeds the row's own height back
+  into the scroll (the settings modal showed half its General tab below
+  an invisible fold this way). Claim the row explicitly:
+  allocate_exact_size + new_child(UiBuilder::max_rect).
 - Hit-testing detail: a click-sense widget allocated AFTER a hover-sense
   one at overlapping rects wins (month pills over hover cells work), but
   egui hit-tests against the PREVIOUS frame's rects — a test that renders
