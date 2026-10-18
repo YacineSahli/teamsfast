@@ -173,6 +173,7 @@ pub enum Seg {
     Text(String),
     Bold(String),
     Italic(String),
+    Strike(String),
     Code(String),
     Link { text: String, url: String },
     /// An @-mention. `mri` arrives inline on `<at id="…">`; the span-index
@@ -755,8 +756,9 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                 flush(&mut text, &mut segs);
                 segs.push(Seg::LineBreak);
             }
-            "b" | "strong" | "i" | "em" | "u" | "pre" | "code" | "a" | "at" | "img" | "blockquote"
-            | "span" | "div" | "p" | "ol" | "ul" | "li" | "h1" | "h2" | "h3" => {
+            "b" | "strong" | "i" | "em" | "u" | "s" | "del" | "strike" | "pre" | "code" | "a"
+            | "at" | "img" | "blockquote" | "span" | "div" | "p" | "ol" | "ul" | "li" | "h1"
+            | "h2" | "h3" => {
                 if closing {
                     // Closing block tags break the line like their opens
                     // (the open's break fires BEFORE its text, so without
@@ -795,6 +797,12 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                             let (inner, next) = take_until(rest, &format!("</{}>", base));
                             flush(&mut text, &mut segs);
                             segs.push(Seg::Italic(decode_entities(&strip_tags(&inner))));
+                            rest = next;
+                        }
+                        "s" | "del" | "strike" => {
+                            let (inner, next) = take_until(rest, &format!("</{}>", base));
+                            flush(&mut text, &mut segs);
+                            segs.push(Seg::Strike(decode_entities(&strip_tags(&inner))));
                             rest = next;
                         }
                         "pre" | "code" => {
@@ -859,6 +867,14 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                             // at the front (strip_block_noise then dropped them).
                             flush(&mut text, &mut segs);
                             segs.push(Seg::LineBreak);
+                            // List items carry their bullet: our own bullet
+                            // sends go out as <ul><li> (run-7 composer
+                            // formatting) and native Teams lists read the
+                            // same shape — without the glyph the item text
+                            // renders as a bare broken line.
+                            if base == "li" {
+                                segs.push(Seg::Text("• ".into()));
+                            }
                         }
                         _ => {}
                     }
@@ -1045,6 +1061,12 @@ fn strip_block_noise(segs: Vec<Seg>) -> Vec<Seg> {
         .into_iter()
         .filter_map(|seg| match seg {
             Seg::Text(t) => {
+                // The <li> bullet keeps its trailing space verbatim — the
+                // whitespace collapse exists for block-tag boundaries and
+                // would glue the glyph to the item text ("•one").
+                if t == "• " {
+                    return Some(Seg::Text(t));
+                }
                 let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
                 if collapsed.is_empty() {
                     None
@@ -1223,6 +1245,10 @@ pub fn render_segments(
                     ui.label(RichText::new(t).italics());
                     row_has_content = true;
                 }
+                Seg::Strike(t) => {
+                    ui.label(RichText::new(t).strikethrough());
+                    row_has_content = true;
+                }
                 Seg::Code(t) => {
                     row_has_content = true;
                     // Chip/block colours derive from the palette — hardcoded
@@ -1390,7 +1416,9 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
     let mut out = String::new();
     for s in segs {
         match s {
-            Seg::Text(t) | Seg::Bold(t) | Seg::Italic(t) | Seg::Code(t) => out.push_str(t),
+            Seg::Text(t) | Seg::Bold(t) | Seg::Italic(t) | Seg::Strike(t) | Seg::Code(t) => {
+                out.push_str(t)
+            }
             // Mentions render as padded chips in the UI; in PLAIN text
             // (previews, snippets) a chip needs its own spaces — the
             // source often omits them ("…comment<at>Name</at>").
@@ -1416,6 +1444,109 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
             Seg::Image { .. } => out.push_str("[image]"),
             Seg::LineBreak => out.push('\n'),
         }
+    }
+    out.trim_end_matches('\u{2009}').to_string()
+}
+
+/// Segments → composer MARKER text (the reverse of the wire conversion):
+/// editing a formatted message re-enters the SAME markers the toolbar
+/// uses, so saving an untouched edit preserves the formatting instead of
+/// collapsing it to plain text. Inline code keeps backticks; multi-line
+/// code becomes a ``` fence; links become `[text](url)`; list bullets
+/// (the "• " Text segs the parser injects) become "- " prefixes.
+pub fn segs_to_markers(segs: &[Seg]) -> String {
+    // The parser's whitespace normalization strips the spaces that
+    // surrounded styled tags in the wire HTML ("a <b>c</b>" → Text("a") +
+    // Bold("c")), so styled↔anything boundaries re-insert a separator —
+    // without it the round-trip fuses words ("a**c**" → "ac" bold-less).
+    let styled = |s: &Seg| {
+        matches!(
+            s,
+            Seg::Bold(_)
+                | Seg::Italic(_)
+                | Seg::Strike(_)
+                | Seg::Code(_)
+                | Seg::Link { .. }
+                | Seg::Mention { .. }
+                | Seg::Quote(_)
+                | Seg::Image { .. }
+        )
+    };
+    let mut out = String::new();
+    let mut prev_styled = false;
+    for seg in segs {
+        let cur_styled = styled(seg);
+        let starts_ws = match seg {
+            Seg::Text(t) => t.starts_with(char::is_whitespace),
+            Seg::Quote(t) => t.starts_with(char::is_whitespace),
+            _ => false,
+        };
+        if (cur_styled || prev_styled)
+            && !out.is_empty()
+            && !out.ends_with(char::is_whitespace)
+            && !starts_ws
+            && !matches!(seg, Seg::LineBreak)
+            && !out.ends_with('\n')
+            && !matches!(seg, Seg::Text(t) if t == "• ")
+        {
+            out.push(' ');
+        }
+        match seg {
+            Seg::Text(t) => {
+                // Parser-injected bullet glyphs become wire "- " markers.
+                if t == "• " {
+                    out.push_str("- ");
+                } else {
+                    out.push_str(t);
+                }
+            }
+            Seg::Bold(t) => {
+                out.push_str("**");
+                out.push_str(t);
+                out.push_str("**");
+            }
+            Seg::Italic(t) => {
+                out.push('_');
+                out.push_str(t);
+                out.push('_');
+            }
+            Seg::Strike(t) => {
+                out.push_str("~~");
+                out.push_str(t);
+                out.push_str("~~");
+            }
+            Seg::Code(t) => {
+                if t.contains('\n') || t.chars().count() > 48 {
+                    out.push_str("```\n");
+                    out.push_str(t);
+                    out.push_str("\n```");
+                } else {
+                    out.push('`');
+                    out.push_str(t);
+                    out.push('`');
+                }
+            }
+            Seg::Link { text, url } => {
+                out.push('[');
+                out.push_str(text);
+                out.push_str("](");
+                out.push_str(url);
+                out.push(')');
+            }
+            Seg::Mention { name, .. } => out.push_str(name),
+            Seg::Image { url } => out.push_str(url),
+            Seg::Quote(t) => {
+                for (i, line) in t.split('\n').enumerate() {
+                    if i > 0 {
+                        out.push('\n');
+                    }
+                    out.push_str("> ");
+                    out.push_str(line);
+                }
+            }
+            Seg::LineBreak => out.push('\n'),
+        }
+        prev_styled = cur_styled;
     }
     out.trim_end_matches('\u{2009}').to_string()
 }
@@ -1850,6 +1981,47 @@ mod br_tests {
             other => panic!("expected Bold, got {other:?}"),
         }
         assert_eq!(segs.len(), 1, "nothing may leak past the bold close");
+    }
+
+    // Strike + list items: the shapes our own formatted sends produce
+    // (run-7 composer formatting; <s> from the wire, <li> bullets).
+    #[test]
+    fn strike_and_list_items_parse() {
+        use super::segs_to_plain;
+        let segs = parse_html("<p>a <s>gone</s> b</p>");
+        assert!(segs.iter().any(|s| matches!(s, Seg::Strike(t) if t == "gone")));
+        // <ul><li> items each carry their bullet glyph after the break.
+        let segs = parse_html("<p>intro:</p><ul><li>one</li><li>two</li></ul>");
+        let plain = segs_to_plain(&segs);
+        assert!(
+            plain.contains("• one"),
+            "bullet glyph missing: {plain:?} / segs {segs:?}"
+        );
+        assert!(plain.contains("• two"), "second bullet missing: {plain:?}");
+        // segs_to_plain keeps strike text (previews stay readable).
+        assert!(segs_to_plain(&parse_html("<s>x</s>")).contains('x'));
+    }
+
+    // Editing round-trip: formatted wire HTML re-enters the composer as
+    // the SAME markers the toolbar writes (an untouched edit-save must
+    // preserve formatting instead of collapsing to plain text).
+    #[test]
+    fn segs_to_markers_round_trip() {
+        use super::segs_to_markers;
+        let markers = segs_to_markers(&parse_html(
+            "<p><strong>b</strong> <em>i</em> <s>g</s> <code>c</code></p>",
+        ));
+        assert_eq!(markers, "**b** _i_ ~~g~~ `c`");
+        let markers = segs_to_markers(&parse_html(
+            r#"<p><a href="https://x.io">docs</a> and <pre>l1
+l2</pre></p>"#,
+        ));
+        assert_eq!(markers, "[docs](https://x.io) and ```\nl1\nl2\n```");
+        let markers = segs_to_markers(&parse_html("<ul><li>one</li></ul>"));
+        assert_eq!(markers, "- one");
+        // Line breaks survive as newlines.
+        let markers = segs_to_markers(&parse_html("<p>a</p><p>b</p>"));
+        assert_eq!(markers, "\na\nb".trim_start_matches('\n'));
     }
 
     // XHTML self-closing INLINE tags are empty — "<b/>rest" must not

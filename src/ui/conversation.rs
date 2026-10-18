@@ -194,9 +194,6 @@ pub enum Action {
     /// The conversation view applied the prepend scroll adjustment —
     /// clears App's one-shot flag.
     PrependAnchored,
-    /// The conversation view consumed the full-replace bottom pin —
-    /// clears App's one-shot flag.
-    BottomPinApplied,
 }
 
 /// An own message on its way out (or failed, awaiting Retry) — the view
@@ -235,12 +232,6 @@ pub struct ConvCtx<'a> {
     /// First page of this conversation is still in flight (no cached
     /// content painted) — the pane shows a centered loader.
     pub conv_loading: bool,
-    /// The app just full-replaced the open conversation's page while the
-    /// view was at the bottom: pin the scroll to the new bottom THIS
-    /// frame (stick_to_bottom re-pins only at ScrollArea::end, so the
-    /// replace frame otherwise renders the grown content at the stale
-    /// offset — a full-pane blank straddle frame, the visible "blink").
-    pub pin_bottom_next: bool,
     /// Active-call banner text (None when idle).
     pub call_label: Option<&'a str>,
     pub textures: &'a std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
@@ -519,29 +510,16 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         // keep the frames coming (QA hook only).
         ui.ctx().request_repaint();
     }
-    // Same-frame bottom pin after a full page replace (ConvCtx::
-    // pin_bottom_next): stick_to_bottom re-pins only at ScrollArea::end,
-    // so the replace frame renders the grown content at the STALE offset —
-    // a mid-content blank straddle frame (the visible open/refresh blink;
-    // video forensics: cached page → blank+divider → final). Pinning the
-    // state before begin lands the view at the new bottom this frame.
-    // Gated on the PREVIOUS frame's at-bottom: a mid-read replace must
-    // not yank the user to the bottom.
-    if ctx.pin_bottom_next {
-        let prev_bottom: bool = ui
-            .ctx()
-            .data_mut(|d| d.get_temp(egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str())))
-            .unwrap_or(true);
-        if prev_bottom {
-            let state_id = ui.make_persistent_id(egui::IdSalt::new(CONV_SCROLL_SALT));
-            if let Some(mut st) = egui::scroll_area::State::load(ui.ctx(), state_id) {
-                // MAX clamps to the new content max at the next begin.
-                st.offset.y = f32::MAX;
-                ui.ctx().data_mut(|d| d.insert_temp(state_id, st));
-            }
-        }
-        ctx.actions.push(Action::BottomPinApplied);
-    }
+    // Same-frame bottom pin after a full page replace: DROPPED (adversarial
+    // review, empirically verified vs egui 0.36.2). Writing the state
+    // offset BEFORE begin cannot work: begin does NOT clamp (content laid
+    // at −offset; f32::MAX overflows round_ui to −inf), every row culls,
+    // and the stick re-pin then computes NaN — which f32::max collapses
+    // to 0, parking the view at the TOP of history with the stick lost
+    // (unrecoverable except by hand). The new content's max offset is
+    // unknowable before layout, so the replace frame keeps the old
+    // offset and the STICK re-pins one frame later (a single mid-content
+    // straddle frame — acceptable, self-correcting).
     // Screen-space bottom of the FINAL row — the observable at-bottom
     // signal for the header's "⇩ Latest" pill (egui's State.offset tracks
     // the committed offset, not the rendered offset_target; see the
@@ -892,10 +870,51 @@ fn pending_bubble(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, p: &PendingBubble) {
                 // pending→confirmed swap never changes the bubble's width.
                 ui.set_max_width(slot_w.max(24.0));
                 ui.set_min_width(24.0);
-                ui.add(
-                    egui::Label::new(RichText::new(&p.text).color(ctx.pal.text))
-                        .selectable(false),
-                );
+                // Lite-render the draft's markers (bold/italic/links) the
+                // way incoming connector markdown renders — the raw
+                // markers showed as literal asterisks for the send's
+                // lifetime.
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let pieces = crate::ui::widgets::split_markdown_links(&p.text);
+                    for piece in pieces {
+                        match piece {
+                            crate::ui::widgets::Piece::Plain(t) => {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(t).color(ctx.pal.text),
+                                    )
+                                    .selectable(false),
+                                );
+                            }
+                            crate::ui::widgets::Piece::Bold(t) => {
+                                ui.add(
+                                    egui::Label::new(RichText::new(t).bold().color(ctx.pal.text))
+                                        .selectable(false),
+                                );
+                            }
+                            crate::ui::widgets::Piece::Italic(t) => {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(t).italics().color(ctx.pal.text),
+                                    )
+                                    .selectable(false),
+                                );
+                            }
+                            crate::ui::widgets::Piece::MdLink { text, url } => {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(text)
+                                            .underline()
+                                            .color(ctx.pal.link),
+                                    )
+                                    .selectable(false),
+                                )
+                                .on_hover_text(url);
+                            }
+                        }
+                    }
+                });
             });
             // Status/actions row under the bubble, right-aligned.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
@@ -1007,6 +1026,79 @@ pub fn conversation_composer(
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::symmetric(8, 7))
         .show(ui, |ui| {
+            // Format toolbar (markdown-ish markers in the draft;
+            // build_message_html turns them into wire HTML on send).
+            // Native-Teams-style: hidden until the format toggle opens it,
+            // so the composer's resting height is unchanged.
+            let fmt_key = egui::Id::new("composer_fmt_open");
+            let mut fmt_open: bool = ui
+                .ctx()
+                .data_mut(|d| d.get_temp(fmt_key))
+                .unwrap_or_else(|| crate::app::qa_flag("TEAMSFAST_FMTBAR"));
+            if fmt_open {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    fmt_wrap_btn(ui, draft, RichText::new("B").bold(), "**", "**", "Bold (**, Ctrl+B)");
+                    fmt_wrap_btn(ui, draft, RichText::new("I").italics(), "_", "_", "Italic (_, Ctrl+I)");
+                    fmt_wrap_btn(
+                        ui,
+                        draft,
+                        RichText::new("S").strikethrough(),
+                        "~~",
+                        "~~",
+                        "Strikethrough (~~)",
+                    );
+                    fmt_wrap_btn(
+                        ui,
+                        draft,
+                        RichText::new("</>").monospace(),
+                        "`",
+                        "`",
+                        "Inline code (`)",
+                    );
+                    fmt_wrap_btn(
+                        ui,
+                        draft,
+                        RichText::new("{;}").monospace(),
+                        "```\n",
+                        "\n```",
+                        "Code block (```)",
+                    );
+                    // Bullet: prefixes the spanned lines (toggle).
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("•").size(14.0))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE)
+                                .min_size(egui::vec2(26.0, 22.0)),
+                        )
+                        .on_hover_text("Bulleted list (-)")
+                        .clicked()
+                    {
+                        composer_apply(draft, ui.ctx(), splice_bullets);
+                    }
+                    // Link: [selection]() with the caret dropped between
+                    // the parens for the URL paste.
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("🔗").size(13.0))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE)
+                                .min_size(egui::vec2(26.0, 22.0)),
+                        )
+                        .on_hover_text("Link [text](url)")
+                        .clicked()
+                    {
+                        composer_apply(draft, ui.ctx(), |t, a, b| {
+                            let (out, _na, nb) = splice_wrap(t, a, b, "[", "]()");
+                            // nb = inner end; the "(" sits at nb+1, so the
+                            // caret lands right after it.
+                            (out, nb + 2, nb + 2)
+                        });
+                    }
+                });
+                ui.add_space(4.0);
+            }
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
                 // Attach (Lucide paperclip, ghost style, animated hover).
@@ -1018,6 +1110,24 @@ pub fn conversation_composer(
                 if attach.clicked() {
                     ctx.actions.push(Action::Attach);
                 }
+                // Format toggle (native Teams' "A" format pane).
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("A").size(14.0).bold())
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(if fmt_open {
+                                Stroke::new(1.0, ctx.pal.accent)
+                            } else {
+                                Stroke::NONE
+                            })
+                            .min_size(egui::vec2(26.0, 24.0)),
+                    )
+                    .on_hover_text("Formatting")
+                    .clicked()
+                {
+                    fmt_open = !fmt_open;
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(fmt_key, fmt_open));
                 ui.add_space(2.0);
 
                 // Input: the TextEdit's OWN frame does the styling —
@@ -1046,6 +1156,7 @@ pub fn conversation_composer(
                     .is_some_and(|id| ui.memory(|m| m.focused() == Some(id)));
                 let mut send = false;
                 let mut newline = false;
+                let mut wrap: Option<(&'static str, &'static str)> = None;
                 if field_focused {
                     ui.input_mut(|i| {
                         // consume_key matches logically (extra Shift is
@@ -1064,7 +1175,22 @@ pub fn conversation_composer(
                                 i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
                                 send = true;
                             }
+                        } else if i.key_pressed(egui::Key::B)
+                            && i.modifiers.matches_exact(egui::Modifiers::CTRL)
+                        {
+                            i.consume_key(egui::Modifiers::CTRL, egui::Key::B);
+                            wrap = Some(("**", "**"));
+                        } else if i.key_pressed(egui::Key::I)
+                            && i.modifiers.matches_exact(egui::Modifiers::CTRL)
+                        {
+                            i.consume_key(egui::Modifiers::CTRL, egui::Key::I);
+                            wrap = Some(("_", "_"));
                         }
+                    });
+                }
+                if let Some((open, close)) = wrap {
+                    composer_apply(draft, ui.ctx(), |t, a, b| {
+                        splice_wrap(t, a, b, open, close)
                     });
                 }
                 ui.vertical(|ui| {
@@ -1152,6 +1278,180 @@ fn insert_newline(draft: &mut String, ctx: &egui::Context, field_id: egui::Id) {
         }
     } else {
         draft.push('\n');
+    }
+}
+
+// ---------------------------------------------------------------- composer
+// formatting: the draft stays plain text carrying markdown-ish markers;
+// teams-core's build_message_html turns them into wire HTML on send.
+
+/// Splice `open`/`close` around chars [a,b) — TOGGLING OFF when the exact
+/// markers already wrap that span (native toolbar behaviour: press again
+/// to remove). Returns the new text and the char span to select after
+/// (the inner text when wrapping, the collapsed point when unwrapping).
+/// All indices are CCursor (character) positions.
+fn splice_wrap(
+    text: &str,
+    a: usize,
+    b: usize,
+    open: &str,
+    close: &str,
+) -> (String, usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if a > b || b > n {
+        return (text.to_string(), a, b);
+    }
+    let oc = open.chars().count();
+    let cc = close.chars().count();
+    // Toggle off: exact markers already surround [a,b).
+    if a >= oc && b + cc <= n {
+        let before: String = chars[a - oc..a].iter().collect();
+        let after: String = chars[b..b + cc].iter().collect();
+        if before == open && after == close {
+            let mut out: String = chars[..a - oc].iter().collect();
+            out.extend(chars[a..b].iter());
+            out.extend(chars[b + cc..].iter());
+            return (out, a - oc, b - oc);
+        }
+    }
+    let mut out: String = chars[..a].iter().collect();
+    out.push_str(open);
+    out.extend(chars[a..b].iter());
+    out.push_str(close);
+    out.extend(chars[b..].iter());
+    (out, a + oc, b + oc)
+}
+
+/// Prefix every line spanned by chars [a,b) with "- " — TOGGLING OFF
+/// when every spanned line already carries the prefix. Returns the new
+/// text and the char span covering the same logical content (all CCursor
+/// character positions, like the rest of the composer machinery).
+fn splice_bullets(text: &str, a: usize, b: usize) -> (String, usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if a > b || b > n {
+        return (text.to_string(), a, b);
+    }
+    // Line starts touched by the selection: a line [s, end) counts when
+    // the selection overlaps it — or CONTAINS the caret (a == b).
+    let mut lines: Vec<usize> = Vec::new();
+    let mut s = 0usize;
+    for i in 0..=n {
+        if i == n || chars[i] == '\n' {
+            let end = i;
+            let overlaps = if a == b {
+                s <= a && a <= end
+            } else {
+                a < end && b > s
+            };
+            if overlaps && end > s {
+                lines.push(s);
+            }
+            s = i + 1;
+        }
+    }
+    if lines.is_empty() {
+        return (text.to_string(), a, b);
+    }
+    let prefixed = |s: usize| chars.get(s) == Some(&'-') && chars.get(s + 1) == Some(&' ');
+    let all_prefixed = lines.iter().all(|&s| prefixed(s));
+    let mut result: Vec<char> = Vec::with_capacity(n + 2 * lines.len());
+    let (mut da, mut db) = (0i32, 0i32); // signed: +2 per added prefix, -2 per removed
+    let mut i = 0usize;
+    while i < n {
+        let at_touched_line = (i == 0 || chars[i - 1] == '\n') && lines.contains(&i);
+        if at_touched_line && all_prefixed && prefixed(i) {
+            if i <= a {
+                da -= 2;
+            }
+            if i < b {
+                db -= 2;
+            }
+            i += 2; // drop this line's "- "
+            continue;
+        }
+        if at_touched_line && !all_prefixed && !prefixed(i) {
+            if i <= a {
+                da += 2;
+            }
+            if i < b {
+                db += 2;
+            }
+            result.push('-');
+            result.push(' ');
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    let out_len = result.len();
+    let clamp = |v: i32| v.clamp(0, out_len as i32) as usize;
+    (
+        result.into_iter().collect(),
+        clamp(a as i32 + da),
+        clamp(b as i32 + db),
+    )
+}
+
+/// Apply a pure splice function at the composer's cursor/selection, then
+/// restore focus and select the returned span (so a second press toggles
+/// the markers off, and typing over a wrap replaces the inner text).
+fn composer_apply(
+    draft: &mut String,
+    ctx: &egui::Context,
+    splice: impl Fn(&str, usize, usize) -> (String, usize, usize),
+) {
+    let Some(field_id) = ctx
+        .data_mut(|d| d.get_temp(egui::Id::new("teamsfast_composer_field")))
+    else {
+        return;
+    };
+    let mut state =
+        egui::widgets::text_edit::TextEditState::load(ctx, field_id).unwrap_or_default();
+    let (a, b) = match state.cursor.char_range() {
+        Some(r) => {
+            let c = r.as_sorted_char_range();
+            (c.start.0, c.end.0)
+        }
+        None => {
+            let n = draft.chars().count();
+            (n, n)
+        }
+    };
+    let (new_text, na, nb) = splice(draft, a, b);
+    *draft = new_text;
+    let range = if na == nb {
+        egui::text::CCursorRange::one(egui::text::CCursor::new(na))
+    } else {
+        egui::text::CCursorRange::two(egui::text::CCursor::new(na), egui::text::CCursor::new(nb))
+    };
+    state.cursor.set_char_range(Some(range));
+    state.store(ctx, field_id);
+    ctx.memory_mut(|m| m.request_focus(field_id));
+}
+
+/// One ghost toolbar button that wraps the selection with a marker pair.
+fn fmt_wrap_btn(
+    ui: &mut egui::Ui,
+    draft: &mut String,
+    label: RichText,
+    open: &str,
+    close: &str,
+    tip: &str,
+) {
+    if ui
+        .add(
+            egui::Button::new(label.size(12.5))
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::NONE)
+                .min_size(egui::vec2(26.0, 22.0)),
+        )
+        .on_hover_text(tip)
+        .clicked()
+    {
+        let o = open.to_string();
+        let c = close.to_string();
+        composer_apply(draft, ui.ctx(), move |t, a, b| splice_wrap(t, a, b, &o, &c));
     }
 }
 
@@ -1728,7 +2028,11 @@ fn bubble_parts(
                                 });
                             }
                             if do_edit {
-                                let current = crate::ui::widgets::segs_to_plain(
+                                // Marker text, not the plain projection:
+                                // saving an untouched edit must preserve
+                                // the formatting (the wire builder turns
+                                // markers back into HTML).
+                                let current = crate::ui::widgets::segs_to_markers(
                                     &parse_html(&m.raw),
                                 );
                                 sink.borrow_mut().push(Action::StartEdit {
@@ -2336,7 +2640,6 @@ mod tests {
                             overlays_open: false,
                             prepend_adjust: None,
                             conv_loading: false,
-                            pin_bottom_next: false,
                             actions: &mut actions,
                         };
                         reaction_strip(ui, &mut ctx, m, false, 400.0, true);
@@ -2458,7 +2761,6 @@ mod tests {
                     overlays_open: false,
                     prepend_adjust: None,
                     conv_loading: false,
-                    pin_bottom_next: false,
                     actions: &mut actions,
                 };
                 conversation_messages(ui, &mut ctx);
@@ -2575,7 +2877,6 @@ mod tests {
                 overlays_open: false,
                 prepend_adjust: None,
                 conv_loading: false,
-                pin_bottom_next: false,
                 actions: &mut actions,
             };
             conversation_composer(ui, &mut ctx, draft);
@@ -2610,6 +2911,44 @@ mod tests {
             events,
             ..Default::default()
         }
+    }
+
+    /// Composer formatting splices: wrap/toggle-off, char-index safety on
+    /// multi-byte text, and bullet line prefixing (run-7 workstream C).
+    #[test]
+    fn composer_splice_wrap_and_bullets() {
+        use super::{splice_bullets, splice_wrap};
+        // Wrap a selection.
+        let (t, a, b) = splice_wrap("hello world", 0, 5, "**", "**");
+        assert_eq!(t, "**hello** world");
+        assert_eq!((a, b), (2, 7)); // inner span selected for toggling
+        // Toggle off the same span.
+        let (t2, a2, b2) = splice_wrap(&t, a, b, "**", "**");
+        assert_eq!(t2, "hello world");
+        assert_eq!((a2, b2), (0, 5));
+        // Empty selection inserts an empty pair with the caret between
+        // the markers ("a``b" → caret at char 2, between the backticks).
+        let (t, a, b) = splice_wrap("ab", 1, 1, "`", "`");
+        assert_eq!(t, "a``b");
+        assert_eq!((a, b), (2, 2));
+        // Multi-byte safety: indices are CHAR positions.
+        let (t, a, b) = splice_wrap("héllo wörld", 1, 5, "_", "_");
+        assert_eq!(t, "h_éllo_ wörld");
+        assert_eq!((a, b), (2, 6));
+        // Bullets: prefix each spanned line (toggle).
+        let (t, a, b) = splice_bullets("one\ntwo\nthree", 0, 7);
+        assert_eq!(t, "- one\n- two\nthree");
+        // Span still covers the words (prefixes excluded), native-style.
+        assert_eq!((a, b), (2, 11));
+        // Toggle off selects the lines again, markers gone.
+        let (t2, _, _) = splice_bullets(&t, 0, 11);
+        assert_eq!(t2, "one\ntwo\nthree");
+        // Caret on a line prefixes just that line.
+        let (t, _, _) = splice_bullets("a\nb", 2, 2);
+        assert_eq!(t, "a\n- b");
+        // Mixed: only lines lacking the prefix get one.
+        let (t, _, _) = splice_bullets("- a\nb", 0, 5);
+        assert_eq!(t, "- a\n- b");
     }
 
     /// Regression: the multiline composer. Enter sends; Shift+Tab and

@@ -545,11 +545,6 @@ pub struct TeamsFastApp {
     /// with no cached content) — the conversation pane paints a centered
     /// loader until it lands.
     conv_loading: bool,
-    /// The worker just full-replaced the open conversation's page: the
-    /// view pins the scroll to the new bottom THIS frame (stick_to_bottom
-    /// re-pins one frame late — the replace frame renders the grown
-    /// content at the stale offset, the visible blank-straddle blink).
-    pin_bottom_next: bool,
     /// Remote/local video textures for the stage (recreated on size change).
     remote_video_tex: Option<egui::TextureHandle>,
     local_video_tex: Option<egui::TextureHandle>,
@@ -917,6 +912,8 @@ pub(crate) fn qa_flag(key: &str) -> bool {
                 "TEAMSFAST_CALGEOM",
                 "TEAMSFAST_CHATFILES",
                 "TEAMSFAST_SCROLLUP",
+                "TEAMSFAST_FMTBAR",
+                "TEAMSFAST_FMT",
             ] {
                 m.insert(k, std::env::var(k).as_deref() == Ok("1"));
             }
@@ -1195,7 +1192,6 @@ impl TeamsFastApp {
             qa_msgs_seen: HashMap::new(),
             prepend_adjust: None,
             conv_loading: false,
-            pin_bottom_next: false,
             remote_video_tex: None,
             local_video_tex: None,
             fake_video: std::env::var("TEAMSFAST_FAKEVIDEO").as_deref() == Ok("1"),
@@ -1376,7 +1372,17 @@ impl TeamsFastApp {
         }
         while let Ok(ev) = self.events.try_recv() {
             match ev {
-                Event::Status(s) => self.status = s,
+                Event::Status(s) => {
+                    // The offline guard answers gated commands (e.g.
+                    // OpenChat while offline) with a Status note and no
+                    // reply event — the conversation loader must not spin
+                    // forever on it (adversarial review P2: stuck spinner
+                    // + a permanent 250ms wake loop).
+                    if self.conv_loading {
+                        self.conv_loading = false;
+                    }
+                    self.status = s;
+                }
                 Event::SearchUnavailable(note) => {
                     self.search_note = Some(note);
                     self.searching = false;
@@ -1388,6 +1394,10 @@ impl TeamsFastApp {
                     self.status = "Offline — showing cached data".into();
                     self.error = None;
                     self.state = State::Ready;
+                    // Offline mid-open: no reply event will ever clear the
+                    // conversation loader (same class as the Status-gate
+                    // fix — stuck spinner + permanent tick wake).
+                    self.conv_loading = false;
                     // Retry the session periodically; on success Ready fires.
                 }
                 Event::SelfId(id) => self.self_id = Some(id),
@@ -1824,13 +1834,11 @@ impl TeamsFastApp {
                         merge_message_tail(&mut self.messages, messages);
                     } else {
                         self.messages = messages;
-                        // Full replace while the view sits at the bottom:
-                        // stick_to_bottom re-pins one frame LATE, so this
-                        // frame would render the grown content at the
-                        // stale offset (a mid-content blank straddle — the
-                        // visible refresh blink). Arm the same-frame pin;
-                        // the view gates it on the previous at-bottom.
-                        self.pin_bottom_next = true;
+                        // Full replace: the view keeps the old offset and
+                        // stick_to_bottom re-pins at frame end (one
+                        // mid-content straddle frame — a pre-begin state
+                        // write cannot fix this; see the pin post-mortem
+                        // in conversation.rs).
                     }
                     // A page for the open chat landed: the loader (if any)
                     // is done.
@@ -1886,6 +1894,29 @@ impl TeamsFastApp {
                             "k8s right-sizing (QA)",
                             format!(r#"<Swift b64="{b64}"/>"#),
                         ));
+                    }
+                    // QA hook: TEAMSFAST_FMT=1 seeds one synthetic message
+                    // whose raw HTML is EXACTLY what build_message_html
+                    // emits for a formatted composer draft — the incoming
+                    // render side of the formatting round-trip, screenshot-
+                    // verifiable without sending a real message.
+                    if qa_flag("TEAMSFAST_FMT")
+                        && !self.messages.is_empty()
+                        && !self.messages.iter().any(|m| m.id == "qa-fmt")
+                    {
+                        let now_ts = "2026-10-16T21:30:00.000Z".to_string();
+                        self.messages.push(MessageInfo {
+                            id: "qa-fmt".into(),
+                            sender_mri: "8:orgid:00000000-0000-0000-0000-0000000000f2".into(),
+                            sender: "QA Bot".into(),
+                            timestamp: now_ts,
+                            content: "formatted round trip".into(),
+                            // build_message_html("see [docs](https://example.com/x) and:\n- **bold** item\n- _it_ item\n~~gone~~ `x=1`\n```\ncode line\n```")
+                            raw: "<p>see <a href=\"https://example.com/x\">docs</a> and:</p><ul><li><strong>bold</strong> item</li><li><em>it</em> item</li></ul><p><s>gone</s> <code>x=1</code></p><pre>code line</pre>".into(),
+                            reactions: Vec::new(),
+                            reply_to: None,
+                            client_message_id: None,
+                        });
                     }
                     // QA hook: TEAMSFAST_REACT=1 seeds synthetic reactions
                     // on NETWORK full-replaces only (event 2+ per chat —
@@ -2460,7 +2491,11 @@ impl TeamsFastApp {
             self.messages = cached.messages;
             self.members = cached.members;
             self.older_link = cached.older_link;
-            self.conv_loading = false;
+            // A parked entry with NO messages is the ghost of an abandoned
+            // first open (switched away before the page landed) — treating
+            // it as a hit would show the empty void with no loader
+            // (adversarial review P3).
+            self.conv_loading = self.messages.is_empty();
         } else {
             self.messages.clear();
             self.members.clear();
@@ -2923,7 +2958,6 @@ impl TeamsFastApp {
             }
             Action::Status(text) => self.status = text,
             Action::PrependAnchored => self.prepend_adjust = None,
-            Action::BottomPinApplied => self.pin_bottom_next = false,
             Action::ShowContact { mri, name } => {
                 self.contact = Some((mri, name));
             }
@@ -4481,7 +4515,6 @@ impl eframe::App for TeamsFastApp {
                 actions: &mut actions,
                 prepend_adjust: self.prepend_adjust.clone(),
                 conv_loading: self.conv_loading,
-                pin_bottom_next: self.pin_bottom_next,
             };
             egui::Panel::bottom("composer").show(ui, |ui| {
                 conversation::conversation_composer(ui, &mut ctx, &mut self.draft);
