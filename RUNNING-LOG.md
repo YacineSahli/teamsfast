@@ -211,3 +211,103 @@ disproved the vision x-ranges).
 Pending next: A2 image-size audit (image_sizes persisted; guess 340x200
 on first-ever view), A6 load-older prepend anchor (needs a QA auto-click
 hook), light battery, adversarial review, checkpoint.
+
+## Day-1 checkpoint (2026-10-18 ~00:40) — GREEN
+
+Workstream A COMPLETE: f25fffe (red-team+rhythm) on top of 42932af,
+9451037, 4b32967, 12b87ab, 3e496bf. 84/84. Settle byte-diff IDENTICAL
+dark+light. Report + memory written. NEXT (day 2): §3.B manual battery
+wave (12+ surfaces incl. light), §3.C backlog (month chip ellipsis, week
+hour-gutter, chat-table parse cache, is_sep_row corpus check), §3.D
+Wayland raise design note + soak #3 after layout work. Stop any soak
+before QA (gotcha).
+
+## Day-1 part-2 close (2026-10-18 ~02:15) — GREEN
+
+Battery round 5: 16 shots → 3 critics → 7 verified fix commits (e7c7e44
+typing/header/chips, 04111f7 week fixed gutter, 003e8ca pill ellipsis,
+a2d1c9a files dedupe, 94bf29c+0eba22f dialogs, c85bcc3 ring). §3.C done
+(week gutter, month ellipsis, is_sep_row corpus-checked, table cache
+deferred). Wayland raise design note in docs/drafts/ (LOCAL). Soak #3
+RUNNING overnight (/tmp/soak6 — app.pid + soak.log; display :79).
+Day-2 menu: own-avatar column wobble fix, adaptive typing label,
+full-day-diff adversarial review, §3.E stretch, harvest soak.
+Day total: 14 commits, 82→84 tests.
+
+## DAY 1 CLOSED (2026-10-18 ~02:30) — GREEN at d807b4c
+
+Full-day red-team done (15th commit batch): panic-free width math
+(sub-66px panes crashed clamp!), per-chat prepend key, exact +K reserve,
+qa_flag hot env reads. Settlediff IDENTICAL re-confirmed at EOD.
+Day 1 totals: 15 commits (3e496bf..d807b4c), 82→84 tests, 0 app
+warnings, soak #3 alive (230MB). Memory + report current. Day-2 resume:
+harvest soak, own-avatar column wobble, adaptive typing label, §3.E
+stretch (docs/drafts polish only). BETWEEN DAYS: re-read §1-2, pgrep,
+kill soak before log-heavy QA.
+
+## Day 2 start (2026-10-18 ~02:20) — own-avatar wobble: DEFERRED after 4 verified-broken attempts
+
+The ±12px own-avatar wobble (battery P2): tried fixed slot + cap
+(avatar ✓ but bubbles stretched to cap — render_segments'
+horizontal_wrapped expands to available), fixed slot + r2l allocate
+(bubbles anchored 121px PAST the pane — allocate_ui inside r2l
+mis-anchors over-wide children), set_max_width(measured) (re-anchors
+the region LEFT on this egui — avatars vanished), allocate_ui +
+top_down(Max) (identical broken rects — the anchor is dominated by
+something upstream not yet isolated). All 4 shot+rect-verified broken;
+REVERTED to d807b4c (pre-attempt state, verified). The wobble stays
+deferred — the egui layout primitive needed is a right-anchored
+shrink-to-fit that this stack doesn't compose cleanly from
+allocate_ui/with_layout/set_max_width. Next attempt should instrument
+the SLOT allocation rect itself first (my probes always measured
+downstream of it).
+
+Soak #3: running since 01:33 (harvest after 03:33). Tree green at
+d807b4c; 84/84; no day-2 commits yet.
+
+## Day-2 close (2026-10-18 03:50) — GREEN at 1ef606d
+
+Soak #3 PASS (2h flat). Typing fallback + activity @you committed.
+Avatar wobble deferred (4 broken attempts documented above). Final
+suite: 7 settlediffs IDENTICAL (one mid-window DIFFERS = real chat
+activity, pixel-located + re-run clean). 84/84, 0 warnings. NEXT
+STRETCH: avatar wobble with slot-rect instrumentation, header-wrap,
+P3 chrome, user-gated items.
+
+## Run 6 day 1 (2026-10-18) — GREEN at a9c59d2 (soak #4 running)
+
+HEAD 1ef606d → a9c59d2: 11 commits, 84→86 tests, 0 warnings, core
+7ceef15 untouched.
+- OWN-ROW FIX (the run-5 deferred item): 397466e had left-anchored own
+  messages since Oct 6 (avatar wobble + pending/confirmed jump). Fix =
+  computed leading space (slot cancels) + content-aware slots + RECTOWN
+  probe; pipe tables adaptive cap (+red-team: wide-glyph measure, 3%
+  grace). All gates green (settlediff IDENTICAL d+l, vision 5/5+3/3).
+- Battery round 6: typing P1 (fallback bug), scroll-gated Latest pill
+  (at-bottom signal; State.offset trap; SCROLLBENCH WAS INERT — fixed),
+  own-link AA, light chips edge (clip-rect ate the Inside stroke),
+  activity mentions AA, Join parity (disabled buttons use inactive
+  visuals wholesale — scoped), ring below chip, grouped gutter 43.
+  HIDDEN: settings "phantom thumb" = half the General tab below an
+  invisible fold (rail-derived modal height) — real height budget now.
+- C: offline coverage NON-ISSUE (80/80 in DB; viewport artifact).
+- False positive #13 (disabled modal_primary reads secondary).
+- Soak #4 running since 11:52 (/tmp/soak7). POST-SOAK TODO: k8s card
+  re-shot (grace 1.03), light battery spot, soak harvest + log grep,
+  memory note, commit RUNNING-LOG.
+- Wayland raise DEFERRED (own-session item; soak blocks the live run).
+
+## Run 6 day 1 CLOSE (2026-10-18 13:58) — GREEN at grace-revert commit
+
+- Soak #4 PASS: 117 samples / 1.9h, RSS last-hour band 40 KB (no leak);
+  threads 60-62, fds 48-53; log = 2 known Xvfb quirks + 1 benign trouter
+  max-age reconnect; 0 panics, 0 app warnings.
+- Post-soak: k8s card re-shot caught a REAL regression from the 3% grace
+  (cells truncated) → reverted to 10% (vision PASS full cells); settlediff
+  IDENTICAL re-confirmed.
+- Day totals: 13 commits (13ecaa0..HEAD), 84→86 tests, 0 warnings,
+  teams-core untouched. Memory + report + AGENTS gotchas updated.
+- NEXT RUN: Wayland raise (own session, design note current); possibly
+  re-cite cull-margin perf with the FIXED bench; user-gated items
+  unchanged (mid-scroll prepend manual pass, benchmarks, capture-gated
+  shapes, light-canvas rebaseline).
