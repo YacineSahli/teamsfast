@@ -694,26 +694,13 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         let _ = bar;
     }
-    // The separator doubles as the anchor line for the sticky-day chip
-    // (native Teams pins the visible day in the header region while the
-    // view is scrolled up). The chip itself paints after the ScrollArea —
-    // later paint wins over the topmost message's clipped sliver.
-    let sep_line = ui.separator().rect;
-    let sticky_day: Option<String> = {
-        // One-frame lag like the "⇩ Latest" pill: the at-bottom flag and
-        // the topmost visible day are computed AFTER the scroll area.
-        let at_bottom_prev: bool = ui
-            .ctx()
-            .data_mut(|d| d.get_temp(egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str())))
-            .unwrap_or(true);
-        if at_bottom_prev {
-            None
-        } else {
-            ui.ctx()
-                .data_mut(|d| d.get_temp(egui::Id::new("conv_top_day").with(ctx.chat_id.as_str())))
-                .flatten()
-        }
-    };
+    // Header rule. (A sticky-day chip used to straddle this line while the
+    // view was scrolled up — the user filed it twice as "timestamp appears
+    // in the title": the run-7 "should be hidden under" report meant day
+    // labels scroll UNDER the header and clip, nothing pinned above the
+    // message area. The separators already clip at the ScrollArea, so the
+    // whole chip machinery is gone.)
+    ui.separator();
 
     // Oldest at the top, newest pinned to the bottom — Teams style.
     // (History note: a non-zero ScrollArea offset once painted blank here;
@@ -775,8 +762,6 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // the committed offset, not the rendered offset_target; see the
     // prepend-adjust note for the same trap).
     let mut last_row_bottom = f32::NEG_INFINITY;
-    // Day of the topmost VISIBLE row (feeds the header's sticky-day chip).
-    let mut top_day: Option<String> = None;
     // Jump-to-message: the row loop records the target row's rect; the
     // state-write below centers it (scroll_to_rect alone loses to the
     // stick's content-change re-pin — the SCROLLUP lesson).
@@ -837,20 +822,6 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             let known: Option<egui::Vec2> = ui.ctx().data_mut(|d| d.get_temp(row_id));
             let top = ui.cursor().top();
             last_row_bottom = last_row_bottom.max(top + known.map(|k| k.y).unwrap_or(40.0));
-            // Topmost visible row's day: the first row whose extent reaches
-            // past the viewport's top edge (rows above it end above it).
-            // Runs before the cull so culled rows above the view are
-            // skipped by the geometry test, not by the branch. `last_day`
-            // is already this row's day — separators paint ahead of the
-            // first row of each day. Empty label = unparseable timestamp
-            // (format_day_label's failure shape): capture nothing — the
-            // chip would paint an empty pill.
-            if top_day.is_none() && !last_day.is_empty() {
-                let h_est = known.map(|k| k.y).unwrap_or(40.0);
-                if top + h_est > clip.top() {
-                    top_day = Some(last_day.clone());
-                }
-            }
             if let Some(sz) = known
                 && (top > clip.bottom() + CULL_MARGIN
                     || top + sz.y < clip.top() - CULL_MARGIN)
@@ -1012,7 +983,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
     // jump affordance only when the view is scrolled up). offset is
     // content-relative from the top, so "at bottom" is offset + viewport
     // reaching the content height.
-    let at_bottom = {
+    {
         let key = egui::Id::new("conv_at_bottom").with(ctx.chat_id.as_str());
         let prev: Option<bool> = ui.ctx().data_mut(|d| d.get_temp(key));
         // 40px slack: stick_to-bottom parks the last row's bottom AT the
@@ -1030,8 +1001,7 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
             ui.ctx().request_repaint();
         }
         ui.ctx().data_mut(|d| d.insert_temp(key, at_bottom));
-        at_bottom
-    };
+    }
     // Jump driver: repeat-write the scroll state until the target row
     // is centered on a STABLE frame (content not growing — the stick
     // re-pins on every content change and would eat a one-shot). This is
@@ -1053,22 +1023,6 @@ pub fn conversation_messages(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>) {
         } else {
             ui.ctx().request_repaint();
         }
-    }
-    // Sticky-day chip state (native Teams shows the visible day in the
-    // header region while scrolled). Stored only for the header's NEXT
-    // frame — one-frame lag, same contract as conv_at_bottom. Repaint on
-    // change so the chip tracks day boundaries on the event-driven loop.
-    {
-        let day_key = egui::Id::new("conv_top_day").with(ctx.chat_id.as_str());
-        let new_day = if at_bottom { None } else { top_day };
-        let prev: Option<String> = ui.ctx().data_mut(|d| d.get_temp(day_key));
-        if prev != new_day {
-            ui.ctx().request_repaint();
-        }
-        ui.ctx().data_mut(|d| d.insert_temp(day_key, new_day));
-    }
-    if let Some(day) = sticky_day.as_deref() {
-        crate::ui::widgets::sticky_day_chip(ui.painter(), ctx.pal, sep_line, day);
     }
 
     // First-page loader: opening a chat with no cached content left the
