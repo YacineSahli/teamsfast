@@ -1,0 +1,120 @@
+{
+ "date": "2026-10-19",
+ "machine": "7.2.9-201.fc44.x86_64",
+ "tfast": "v0.1.3-183-g9307012",
+ "tfl": "2.26.0 (extracted AppImage, --disable-gpu --no-sandbox, fresh HOME)",
+ "runs": [
+  {
+   "app": "tfast",
+   "run": 1,
+   "first_paint_ms": 321,
+   "pss_kb": 156517,
+   "children": 0,
+   "pss_kb_samples": [
+    156517,
+    156517,
+    156517,
+    156517,
+    156517
+   ]
+  },
+  {
+   "app": "tfl",
+   "run": 1,
+   "first_paint_ms": 318,
+   "pss_kb": 402594,
+   "children": 5,
+   "pss_kb_samples": [
+    402599,
+    402594,
+    402598,
+    402558,
+    402562
+   ]
+  },
+  {
+   "app": "tfl",
+   "run": 2,
+   "first_paint_ms": 326,
+   "pss_kb": 404378,
+   "children": 5,
+   "pss_kb_samples": [
+    404406,
+    404406,
+    404370,
+    404378,
+    404374
+   ]
+  },
+  {
+   "app": "tfast",
+   "run": 2,
+   "first_paint_ms": 321,
+   "pss_kb": 156975,
+   "children": 0,
+   "pss_kb_samples": [
+    156975,
+    156975,
+    156975,
+    156973,
+    156973
+   ]
+  },
+  {
+   "app": "tfast",
+   "run": 3,
+   "first_paint_ms": 318,
+   "pss_kb": 156407,
+   "children": 0,
+   "pss_kb_samples": [
+    156408,
+    156407,
+    156407,
+    156407,
+    156407
+   ]
+  },
+  {
+   "app": "tfl",
+   "run": 3,
+   "first_paint_ms": 317,
+   "pss_kb": 401713,
+   "children": 5,
+   "pss_kb_samples": [
+    401713,
+    401714,
+    401716,
+    401649,
+    401649
+   ]
+  },
+  {
+   "app": "tfl",
+   "run": 4,
+   "first_paint_ms": 322,
+   "pss_kb": 404411,
+   "children": 5,
+   "pss_kb_samples": [
+    404412,
+    404411,
+    404406,
+    404406,
+    404411
+   ]
+  },
+  {
+   "app": "tfast",
+   "run": 4,
+   "first_paint_ms": 318,
+   "pss_kb": 156958,
+   "children": 0,
+   "pss_kb_samples": [
+    156956,
+    156958,
+    156960,
+    156956,
+    156960
+   ]
+  }
+ ]
+}
