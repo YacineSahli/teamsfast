@@ -1,6 +1,7 @@
 mod app;
 pub mod autostart;
 mod backend;
+pub mod control;
 mod debug;
 mod emoji;
 mod model;

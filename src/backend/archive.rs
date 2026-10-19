@@ -33,7 +33,10 @@ pub fn default_paths() -> (PathBuf, PathBuf) {
 
 /// The keyring entry, when the secret service is reachable at all.
 fn keyring_entry() -> Result<keyring::Entry> {
-    keyring::Entry::new("teamsfast", "archive-key").context("open keyring entry")
+    // Profile-suffixed (TEAMSFAST_PROFILE): each account's archive key
+    // gets its own keyring slot; default stays "archive-key".
+    let user = format!("archive-key{}", crate::control::profile_suffix());
+    keyring::Entry::new("teamsfast", &user).context("open keyring entry")
 }
 
 /// Store `key` in the keyring and verify a readback before the caller may

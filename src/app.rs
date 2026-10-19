@@ -477,6 +477,9 @@ pub struct TeamsFastApp {
     search_note: Option<String>,
 
     new_chat: NewChatState,
+    /// A `calluser` control verb is waiting for its 1:1 chat to land
+    /// (Event::CreateChatOk) before placing the call.
+    call_after_create: bool,
 
     trouter_on: bool,
     pending_open_refresh: bool,
@@ -1158,6 +1161,7 @@ impl TeamsFastApp {
             search_query: String::new(),
             search_note: None,
             new_chat: NewChatState::default(),
+            call_after_create: false,
             trouter_on: false,
             pending_open_refresh: false,
             last_open_refresh: Instant::now() - Duration::from_secs(10),
@@ -1360,6 +1364,58 @@ impl TeamsFastApp {
 
     // ---------------------------------------------------------------- events
 
+    /// Drain control verbs queued by the single-instance claim handler
+    /// (`teamsfast --ctl`, the E2E call harness's actuator). Mapped to
+    /// the same Actions/Commands the UI buttons use — no parallel paths.
+    fn apply_control_verbs(&mut self) {
+        for verb in crate::control::take_control_verbs() {
+            let Some(parsed) = crate::control::parse_control_verb(&verb) else {
+                continue;
+            };
+            log::info!("CALLQA verb={verb}");
+            match parsed {
+                crate::control::ControlVerb::Ping => {}
+                crate::control::ControlVerb::Call { chat_id, video } => {
+                    let action = if video {
+                        crate::ui::conversation::Action::StartVideoCall(chat_id)
+                    } else {
+                        crate::ui::conversation::Action::StartCall(chat_id)
+                    };
+                    self.apply(action);
+                }
+                crate::control::ControlVerb::CallUser { upn } => {
+                    // The chat arrives via Event::CreateChatOk; the flag
+                    // makes that event place the call (cold-start path —
+                    // no prior chat between the two rig accounts).
+                    self.call_after_create = true;
+                    self.cmd
+                        .send(crate::backend::Command::CreateOneToOne(upn))
+                        .ok();
+                }
+                crate::control::ControlVerb::Echo => {
+                    self.cmd
+                        .send(crate::backend::Command::TestCall { video: false })
+                        .ok();
+                }
+                crate::control::ControlVerb::Answer => {
+                    self.apply(crate::ui::conversation::Action::AcceptIncoming);
+                }
+                crate::control::ControlVerb::Decline => {
+                    self.apply(crate::ui::conversation::Action::DeclineIncoming);
+                }
+                crate::control::ControlVerb::HangUp => {
+                    self.apply(crate::ui::conversation::Action::HangUp);
+                }
+                crate::control::ControlVerb::Mute(on) => {
+                    if let Some(media) = self.call_media.as_ref() {
+                        let _ = media.mic_on.send(on);
+                        log::info!("CALLQA mute={on}");
+                    }
+                }
+            }
+        }
+    }
+
     fn drain_events(&mut self) {
         // Share-thread completions first: a Started that races a call-end
         // in the same frame must not leave a stop hook behind.
@@ -1487,6 +1543,9 @@ impl TeamsFastApp {
                     has_video,
                     raw,
                 } => {
+                    log::info!(
+                        "CALLQA phase=ringing caller={caller_name} video={has_video}"
+                    );
                     self.incoming = Some(IncomingRing {
                         name: caller_name,
                         mri: caller_mri,
@@ -1497,6 +1556,7 @@ impl TeamsFastApp {
                     self.start_ringer();
                 }
                 Event::CallGone => {
+                    log::info!("CALLQA phase=caller_gone");
                     // Caller cancelled while ringing: drop the banner. The
                     // accepted-call case stays manual until the callback
                     // shapes are capture-verified (see NOTES).
@@ -1565,6 +1625,7 @@ impl TeamsFastApp {
                     }
                 }
                 Event::CallEnded(summary) => {
+                    log::info!("CALLQA phase=ended summary={summary:?}");
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
                     self.play_end_beep();
@@ -1581,6 +1642,7 @@ impl TeamsFastApp {
                     self.status = summary;
                 }
                 Event::CallFailed(e) => {
+                    log::info!("CALLQA phase=failed error={e:?}");
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
                     self.play_end_beep();
@@ -2142,7 +2204,13 @@ impl TeamsFastApp {
                         row.name = "New chat".into();
                     }
                     self.chats.insert(0, row);
-                    self.open_chat(chat.id);
+                    let chat_id = chat.id.clone();
+                    self.open_chat(chat_id.clone());
+                    if self.call_after_create {
+                        self.call_after_create = false;
+                        log::info!("CALLQA action=call_after_create");
+                        self.apply(crate::ui::conversation::Action::StartCall(chat_id));
+                    }
                 }
                 Event::ImageReady { url, rgba, size } => {
                     self.pending_images.remove(&url);
@@ -3079,6 +3147,7 @@ impl TeamsFastApp {
                 self.cmd.send(Command::TestCall { video: false }).ok();
             }
             Action::AcceptIncoming => {
+                log::info!("CALLQA action=accept");
                 self.call_has_camera = false;
                 self.stop_ringer();
                 if let Some(ring) = self.incoming.take() {
@@ -3086,6 +3155,7 @@ impl TeamsFastApp {
                 }
             }
             Action::DeclineIncoming => {
+                log::info!("CALLQA action=decline");
                 self.stop_ringer();
                 if let Some(ring) = self.incoming.take() {
                     self.cmd.send(Command::DeclineIncoming(ring.raw)).ok();
@@ -3261,6 +3331,7 @@ impl TeamsFastApp {
                 theme::save_settings(&self.settings);
             }
             Action::HangUp => {
+                log::info!("CALLQA action=hangup");
                 self.cmd.send(Command::HangUp).ok();
             }
         }
@@ -3722,6 +3793,7 @@ impl eframe::App for TeamsFastApp {
         if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
             eprintln!("ROOT max_rect={:?}", ui.max_rect());
         }
+        self.apply_control_verbs();
         self.drain_events();
         self.sync_tray(ui);
         self.update_logic(ui);
@@ -4019,7 +4091,11 @@ impl eframe::App for TeamsFastApp {
                 .map(|m| m.phase.borrow().to_string())
                 .unwrap_or_default();
             if phase_probe.starts_with("connected") {
+                let fresh = self.call_connected_at.is_none();
                 self.call_connected_at.get_or_insert(Instant::now());
+                if fresh {
+                    log::info!("CALLQA phase=connected");
+                }
             }
             let secs = self.call_connected_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
             let mm = secs / 60;

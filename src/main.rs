@@ -84,12 +84,49 @@ fn init_logging(log_path: &std::path::Path, panic_path: &std::path::Path) {
 /// Handle of the running window, for focusing from a second launch.
 static APP_CTX: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
 
+
 fn main() -> eframe::Result<()> {
     // Incoming calls must ring in the UI, never auto-answer. teams-core's
     // trouter loop answers invitations unless this is set (the documented
     // embedder switch); set it before any thread spawns (set_var is racy
     // with concurrent getenv).
     unsafe { std::env::set_var("TEAMS_MANUAL_CALLS", "1") };
+
+    // Multi-account profile: select teams-core's keyring/config profile
+    // BEFORE any thread can load credentials. The launcher pairs this
+    // with per-profile XDG_{CONFIG,STATE,DATA}_HOME so files split too.
+    if !teamsfast::control::profile_suffix().is_empty() {
+        let p = std::env::var("TEAMSFAST_PROFILE").unwrap_or_default();
+        ost::config::set_active_profile(p.trim());
+    }
+
+    // `--ctl <verb>`: send a control verb to the running instance (same
+    // profile + binary scope) and print its reply. Exit code 0 = "ok".
+    if let Some(pos) = std::env::args().position(|a| a == "--ctl") {
+        // The whole rest of the line is one verb ("call <id>", "mute on").
+        let verb: String = std::env::args()
+            .skip(pos + 1)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if verb.is_empty() {
+            eprintln!("usage: teamsfast --ctl <verb>   (ping | call <chat_id> | videocall <chat_id> | calluser <upn> | echo | answer | decline | hangup | mute on|off)");
+            std::process::exit(2);
+        }
+        let mut slot = fastframe_instance::Slot::new(&format!("teamsfast{}", teamsfast::control::profile_suffix()));
+        if let Ok(exe) = std::env::current_exe() {
+            slot = slot.scoped(exe.to_string_lossy().as_ref());
+        }
+        match slot.send(&verb) {
+            Ok(reply) => {
+                println!("{reply}");
+                std::process::exit(if reply == "ok" { 0 } else { 1 });
+            }
+            Err(e) => {
+                eprintln!("no running TeamsFast answered ({e})");
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Update plumbing first: run the install helper when asked, and take
     // the update flags off the command line before anything else parses.
@@ -112,9 +149,14 @@ fn main() -> eframe::Result<()> {
     // Single instance: a second GUI launch hands "show" to the running
     // copy (which focuses itself) and exits. Scoped per binary so the dev
     // build and the installed copy don't evict each other; QA runs
-    // (TEAMSFAST_SIZE set) bypass the guard entirely.
-    if std::env::var_os("TEAMSFAST_SIZE").is_none() {
-        let mut slot = fastframe_instance::Slot::new("teamsfast");
+    // (TEAMSFAST_SIZE set, no profile) bypass the guard entirely. A
+    // PROFILED run always claims its own slot (teamsfast-<profile>):
+    // it cannot collide with the default instance, and the E2E rig's
+    // --ctl channel needs the claim to exist.
+    if std::env::var_os("TEAMSFAST_SIZE").is_none()
+        || !teamsfast::control::profile_suffix().is_empty()
+    {
+        let mut slot = fastframe_instance::Slot::new(&format!("teamsfast{}", teamsfast::control::profile_suffix()));
         if let Ok(exe) = std::env::current_exe() {
             slot = slot.scoped(exe.to_string_lossy().as_ref());
         }
@@ -129,6 +171,16 @@ fn main() -> eframe::Result<()> {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
+                return Some("ok".to_owned());
+            }
+            // Control verbs (E2E call rig): queue for the app to drain on
+            // the UI thread, wake the frame loop, confirm to the sender.
+            if !request.is_empty()
+                && let Some(ctx) = APP_CTX.get()
+                && teamsfast::control::is_control_verb(request)
+            {
+                teamsfast::control::push_control_verb(request);
                 ctx.request_repaint();
                 return Some("ok".to_owned());
             }
