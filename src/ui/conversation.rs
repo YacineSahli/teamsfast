@@ -3108,8 +3108,12 @@ fn reaction_strip(
     );
     // Chips beyond what fits must never paint over the neighboring
     // column — clip the strip to its reserved rect (width-capped chips +
-    // this clip are the two guards; red-team P1-1).
-    strip.set_clip_rect(anchor);
+    // this clip are the two guards; red-team P1-1). SHRINK, never SET:
+    // rows above the viewport still render inside the cull margin, and a
+    // set clip discards the ScrollArea viewport bound — their timestamps
+    // then painted up into the chat header and top bar while scrolling
+    // (user report x3; live-reproduced via SCROLLBENCH sweep 2026-10-19).
+    strip.shrink_clip_rect(anchor);
     // 8px: 3px read as one glued clump between timestamp and chips.
     strip.spacing_mut().item_spacing.x = 8.0;
     if own {
@@ -3578,6 +3582,95 @@ mod tests {
         assert!(effective_at_bottom(true, true, None));
         // Plain scroll: geometry rules.
         assert!(!effective_at_bottom(false, false, Some(true)));
+    }
+
+    /// Rows above the scroll viewport still render inside the cull
+    /// margin; their reserved strip must not paint above the viewport
+    /// top. A `set_clip_rect(anchor)` on the strip child used to discard
+    /// the ScrollArea clip, so timestamps painted up into the chat
+    /// header and app top bar while scrolling (user report x3,
+    /// live-reproduced 2026-10-19). The strip clips to anchor ∩ viewport.
+    #[test]
+    fn reaction_strip_never_paints_above_viewport() {
+        crate::emoji::setup();
+        let empty: HashMap<String, String> = HashMap::new();
+        let textures: HashMap<String, (egui::TextureHandle, [usize; 2])> = HashMap::new();
+        let image_sizes: HashMap<String, [usize; 2]> = HashMap::new();
+        let mut pending_images: HashSet<String> = HashSet::new();
+        let mut emoji_textures: HashMap<String, egui::TextureHandle> = HashMap::new();
+        let m = test_message();
+        let mut actions = Vec::new();
+
+        let egui_ctx = crate::theme::test_ctx();
+        // Simulate the scroll viewport: the strip row sits 40px ABOVE the
+        // visible top (rows there still lay out inside the cull margin).
+        let viewport = egui::Rect::from_min_max(
+            egui::pos2(300.0, 100.0),
+            egui::pos2(1100.0, 700.0),
+        );
+        let mut out = egui_ctx.run_ui(egui::RawInput::default(), |root| {
+            root.set_clip_rect(viewport);
+            let mut ui = root.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(egui::Rect::from_min_max(
+                        egui::pos2(300.0, 40.0),
+                        egui::pos2(1100.0, 120.0),
+                    ))
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            let mut ctx = ConvCtx {
+                chat_name: "Chat".into(),
+                chat_id: "19:chat@thread.v2".into(),
+                messages: std::slice::from_ref(&m),
+                members: &empty,
+                self_name: "Me".into(),
+                self_id: Some("other-id"),
+                older_link: None,
+                loading_older: false,
+                typing_user: None,
+                edit: None,
+                reply: None,
+                uploads: &[],
+                pending: &[],
+                receipts: &empty2(),
+                pinned: &[],
+                jump_target: None,
+                reaction_favorites: &[],
+                can_call: false,
+                call_label: None,
+                textures: &textures,
+                image_sizes: &image_sizes,
+                pending_images: &mut pending_images,
+                emoji_textures: &mut emoji_textures,
+                pal: &Palette::dark(),
+                overlays_open: false,
+                prepend_adjust: None,
+                conv_loading: false,
+                actions: &mut actions,
+            };
+            // last_of_group => meta_line paints the timestamp inside the
+            // strip — exactly the text that used to leak.
+            reaction_strip(&mut ui, &mut ctx, &m, false, 900.0, true);
+        });
+        out.textures_delta.clear();
+        let paint = egui_ctx.tessellate(out.shapes, out.pixels_per_point);
+        let above: Vec<egui::Pos2> = paint
+            .iter()
+            .flat_map(|clipped| match &clipped.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => mesh
+                    .vertices
+                    .iter()
+                    .map(|v| v.pos)
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .filter(|p| p.y < viewport.top() - 0.5 && p.x > viewport.left())
+            .collect();
+        assert!(
+            above.is_empty(),
+            "strip painted {} vertices above the viewport top (leak into the header band)",
+            above.len()
+        );
     }
 
     /// The no-shift invariant, unit level: the reserved reaction strip
