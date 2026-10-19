@@ -534,3 +534,34 @@ than the "different protocol" verdict suggested:
   conversations GET (X-SkypeToken). Awaiting the user's approval run;
   success ⇒ two free personal accounts = the A<->B messaging rig
   (calls = the next probe after that).
+
+## 2026-10-19 PERSONAL ACCOUNTS: VIABLE, live-verified (core efa7baa)
+
+The user's push ("we really cannot do anything with personal
+accounts?") was right. Full chain verified live with a hotmail account
+(examples/personal_probe.rs, one device-code approval, RT now saved at
+/tmp/tfl_personal_rt = approval-free iteration):
+1. v2 CONSUMERS device code with scope
+   service::api.fl.spaces.skype.com::MBI_SSL (the consumer web
+   client's own authzResource, mined from its JS bundles) — approve at
+   microsoft.com/link (NOT login.microsoft.com/device — v2 codes read
+   'did not work' on the v1 page).
+2. POST teams.live.com/api/auth/v1.0/authz/consumer → 200. FLAT shape:
+   skypeToken{skypetoken,skypeid:"live:<handle>",signinname,expiresIn},
+   regionGtms, consumerLicenseDetails, regionSettings
+   (isFederationEnabled:true).
+3. Consumer hosts (the full map): chatService msgapi.teams.live.com,
+   chatServiceAfd teams.live.com/api/chatsvc/consumer, CALLING
+   api.cc.skype.com, presence presence.teams.live.com, middleTier
+   teams.live.com/api/mt, search msgsearch.skype.com.
+4. GET msgapi.teams.live.com/v1/users/ME/conversations → 200, 5 real
+   conversations, X-SkypeToken auth — the native API speaks consumer.
+Dead ends on record: ESTS v2 scopes reject spaces.skype.com for this
+client; v1 mints it but authz 40110s those tokens; v1 cannot mint
+service:: (AADSTS500011); v2 RT is single-audience.
+NEXT (ordered): (a) teams-core consumer login/config wiring (profile
+personal flag + the flat authz parse + host overrides), (b) app
+TEAMSFAST_PROFILE+personal → qa profiles on personal accounts → the
+A<->B MESSAGING rig with two free accounts, (c) registration+trouter+
+send probes, (d) the CALLING probe on api.cc.skype.com (consumer 1:1
+calls are licensed per consumerLicenseDetails).
