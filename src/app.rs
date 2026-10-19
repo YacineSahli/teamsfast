@@ -5427,11 +5427,15 @@ impl eframe::App for TeamsFastApp {
         if let Some((pmsg, anchor)) = self.reaction_picker.clone() {
             let mut open = true;
             let mut emap = std::mem::take(&mut self.emoji_textures);
+            // Picker stars reflect the full favorite STATE (defaults +
+            // user picks), not the stored user list alone.
+            let fav_state =
+                crate::ui::conversation::favorite_state(&self.settings.reaction_favorites);
             let actions = crate::ui::conversation::reaction_picker_window(
                 ui,
                 anchor,
                 &mut open,
-                &self.settings.reaction_favorites,
+                &fav_state,
                 &mut emap,
             );
             self.emoji_textures = emap;

@@ -21,17 +21,31 @@ use crate::theme::RichTextBold;
 // The classic six (teams-core REACTION_EMOJI order). The wire accepts
 // ANY unicode emoji (Graph setReaction, live-verified run-8; wider
 // reactions live in the picker's "+" grid and in favorites).
-const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "😠"];
+/// Default favorites: always starred, never evicted. Favoriting a new
+/// emoji ADDS to these — the first custom star used to swap the whole
+/// quick set for that one emoji (user report).
+pub const DEFAULT_FAVORITES: &[&str] = &["👍", "❤️", "😂", "😮", "😢", "😠"];
 
-/// The hover bar's quick set: the user's favorites (settings), or the
-/// shipped default six while unset. Constrained to single-grapheme
-/// emoji the reaction wire knows (workstream F).
-fn quick_set(favorites: &[String]) -> Vec<String> {
-    if favorites.is_empty() {
-        QUICK_REACTIONS.iter().map(|s| s.to_string()).collect()
-    } else {
-        favorites.to_vec()
+/// Full favorite STATE (picker stars): defaults plus every stored user
+/// pick, deduped, untruncated. (Dedup matters: settings saved before the
+/// defaults became pinned may still list them.)
+pub fn favorite_state(user: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = DEFAULT_FAVORITES.iter().map(|s| s.to_string()).collect();
+    for e in user {
+        if !v.iter().any(|x| x == e) {
+            v.push(e.clone());
+        }
     }
+    v
+}
+
+/// The hover bar's quick set: defaults + user picks, truncated to
+/// FAVORITES_CAP total so the pill never outgrows its strip. Defaults
+/// are never the ones truncated away.
+fn quick_set(favorites: &[String]) -> Vec<String> {
+    let mut v = favorite_state(favorites);
+    v.truncate(FAVORITES_CAP);
+    v
 }
 
 /// Curated picker grid shown by the "+" chip in the hover bar: the
@@ -47,12 +61,17 @@ pub const PICKER_REACTIONS: &[&str] = &[
 ];
 
 /// Favorites cap: the quick set is a QUICK set — beyond this the hover
-/// bar fills the whole strip.
+/// bar fills the whole strip. Doubles as the STORED user-pick cap (the
+/// oldest custom star falls off; defaults live in code and never evict).
 pub const FAVORITES_CAP: usize = 8;
 
-/// Toggle one emoji in the favorites list (append, or remove when
-/// present; oldest drops off the front at the cap).
+/// Toggle one emoji in the STORED user-favorites list. Defaults are
+/// pinned favorites — toggling one is a no-op (its star renders filled
+/// via `favorite_state` regardless of storage).
 pub fn toggle_favorite(favorites: &mut Vec<String>, emoji: &str) {
+    if DEFAULT_FAVORITES.contains(&emoji) {
+        return;
+    }
     if let Some(i) = favorites.iter().position(|x| x == emoji) {
         favorites.remove(i);
     } else {
@@ -3492,10 +3511,22 @@ mod tests {
     /// verbatim (the picker that edits it is capture-gated — the wire
     /// probe 404'd even for known types).
     #[test]
-    fn quick_set_favorites_override() {
+    fn quick_set_defaults_plus_user_never_replaced() {
         use super::quick_set;
         assert_eq!(quick_set(&[]), ["👍", "❤️", "😂", "😮", "😢", "😠"]);
-        assert_eq!(quick_set(&["👍".into(), "🎉".into()]), ["👍", "🎉"]);
+        // Starring one custom emoji ADDS to the defaults — the first
+        // custom star used to replace the whole quick set.
+        assert_eq!(
+            quick_set(&["🎉".into()]),
+            ["👍", "❤️", "😂", "😮", "😢", "😠", "🎉"]
+        );
+        // Display cap: defaults always kept, overflow drops the extra
+        // user picks (they stay starred in the picker via favorite_state).
+        let many: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let qs = quick_set(&many);
+        assert_eq!(qs.len(), super::FAVORITES_CAP);
+        assert_eq!(&qs[..6], ["👍", "❤️", "😂", "😮", "😢", "😠"]);
+        assert_eq!(&qs[6..], ["a", "b"]);
     }
 
     /// Hover-bar anchoring (workstream D): below the strip when it fits,
@@ -3704,18 +3735,35 @@ mod picker_tests {
     #[test]
     fn favorites_toggle_adds_removes_and_caps() {
         let mut f: Vec<String> = vec![];
+        // Defaults are pinned favorites: toggling them never touches
+        // storage (their star comes from favorite_state).
         toggle_favorite(&mut f, "👍");
+        assert!(f.is_empty());
         toggle_favorite(&mut f, "🎉");
-        assert_eq!(f, ["👍", "🎉"]);
-        // Re-toggle removes.
-        toggle_favorite(&mut f, "👍");
         assert_eq!(f, ["🎉"]);
-        // Cap: oldest falls off the front.
+        // Re-toggle removes.
+        toggle_favorite(&mut f, "🎉");
+        assert!(f.is_empty());
+        // Cap: oldest USER pick falls off the front; defaults never do.
         for e in ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"] {
             toggle_favorite(&mut f, e);
         }
         assert_eq!(f.len(), super::FAVORITES_CAP);
-        assert_eq!(f[0], "a2", "oldest dropped");
+        assert_eq!(f[0], "a2", "oldest user pick dropped");
+        // Full state keeps the defaults in front regardless of storage.
+        let st = super::favorite_state(&f);
+        assert_eq!(&st[..6], ["👍", "❤️", "😂", "😮", "😢", "😠"]);
+        assert_eq!(st.len(), 6 + super::FAVORITES_CAP);
+    }
+
+    /// Pre-change settings may store a default emoji as a user pick —
+    /// favorite_state must dedupe, and the display cap never lets the
+    /// dupes crowd out real picks.
+    #[test]
+    fn favorite_state_dedupes_legacy_default_entries() {
+        let legacy: Vec<String> = ["👍".into(), "🎉".into()].into();
+        let st = super::favorite_state(&legacy);
+        assert_eq!(st, ["👍", "❤️", "😂", "😮", "😢", "😠", "🎉"]);
     }
 
     /// The picker's buttons must actually fire (the hover bar shipped
