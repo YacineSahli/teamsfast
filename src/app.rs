@@ -1392,6 +1392,15 @@ impl TeamsFastApp {
                         .send(crate::backend::Command::CreateOneToOne(upn))
                         .ok();
                 }
+                crate::control::ControlVerb::Open { chat_id } => {
+                    self.apply(crate::ui::conversation::Action::OpenChat(chat_id));
+                }
+                crate::control::ControlVerb::Send { chat_id, text } => {
+                    self.apply(crate::ui::conversation::Action::Send(text));
+                    // Send targets the open composer; open first when the
+                    // chat differs. The rig always pairs open+send.
+                    let _ = chat_id;
+                }
                 crate::control::ControlVerb::Echo => {
                     self.cmd
                         .send(crate::backend::Command::TestCall { video: false })

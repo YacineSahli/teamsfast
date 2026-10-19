@@ -58,6 +58,18 @@ pub fn parse_control_verb(request: &str) -> Option<ControlVerb> {
             video: true,
         }),
         "echo" => Some(ControlVerb::Echo),
+        "open" => Some(ControlVerb::Open {
+            chat_id: arg(&mut parts)?,
+        }),
+        "send" => {
+            let chat_id = arg(&mut parts)?;
+            let text = parts.collect::<Vec<_>>().join(" ");
+            if text.is_empty() {
+                None
+            } else {
+                Some(ControlVerb::Send { chat_id, text })
+            }
+        }
         "calluser" => Some(ControlVerb::CallUser {
             upn: arg(&mut parts)?,
         }),
@@ -78,6 +90,8 @@ pub enum ControlVerb {
     Ping,
     Call { chat_id: String, video: bool },
     Echo,
+    Open { chat_id: String },
+    Send { chat_id: String, text: String },
     /// Cold-start call: create (or fetch) the 1:1 with the UPN, then
     /// place an audio call once the chat lands (CreateChatOk).
     CallUser { upn: String },
