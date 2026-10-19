@@ -382,6 +382,16 @@ session teardown killed #5).
 - ADVERSARIAL REVIEW of the day's diff: fence-per-line P1 + 2 P2s +
   3 P3s fixed same-session (397cae3).
 
-NEXT: harvest soak #6 (≥2h); wide picker + 1f389_* receive parser;
-app-side react-click verification; RECTLOG probe of the under-composer
-timestamp; user-gated: web-client captures, live formatted send.
+SOAK #6 PASS (2h2m): last-hour RSS band 0 KB flat at 169MB after the
+login-burst decline (216→169MB); 0 panics/0 warnings; survived 12
+concurrent QA launches beside it (setsid + FORCE guard + mid-run log
+snapshot per the AGENTS pattern).
+
+STRETCH (same night): unicode reactions COMPLETE (core 002db2e pushed —
+1f389_* key parser + widened send gate; live probe parses 🎉 back); FULL
+PICKER SHIPPED (0150bc0 — grid + favorites editing, vision-verified both
+themes, click-tested); under-composer timestamp UNREPRODUCIBLE under
+RECTLOG (closed pending recurrence).
+
+NEXT: harvest soak #6 (≥2h); app-side react-click verification on a
+live peer; user-gated: web-client captures, live formatted send.
