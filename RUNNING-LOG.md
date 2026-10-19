@@ -582,3 +582,26 @@ sendmessage against the consumer host), (3) trouter consumer probe,
 (4) teams-core consumer wiring (login/config/authz parse/host
 overrides), (5) app personal profiles → qa_call_e2e pair on personal
 accounts, (6) calling probe api.cc.skype.com.
+
+## 2026-10-19 evening II — consumer CALL archaeology (big leaps)
+
+Both QA personal accounts live IN-APP (messaging E2E verified:
+send/receive/1:1 titles/peer names/self chips; consumer trouter
+pushes CONFIRMED — call-log EventMessages arrived on A).
+- epconv FOUND: api.flightproxy.skype.com/api/v2/epconv (work-twin
+  pattern; every conv.skype.com / appliance-8443 path 404s/timeouts).
+- IC3 Gateway is AAD-ONLY (AADSTS9002332 names app 93aca3ff…): the
+  consumer call credential is the SKYPE token — signaling's 8 Bearer
+  sites route through call_auth() (X-Skypetoken when consumer).
+- Gates fixed en route: 8:live: MRI extraction (skypeid claim),
+  GUID-thread callee via roster read, tenant = all-zeros (the
+  threads' own addedByTenantId).
+- RESULT: A→B call PLACES END-TO-END — epconv 201 (6992-byte
+  conversation), invite to 8:live:.cid.0123… 202, controller call-log
+  "outgoing twoParty target=B". callState=failed after ~0.3s: B's
+  endpoints look unreachable to the controller (B's trouter got NO
+  data frames ever, keepalives only, while A receives pushes fine).
+NEXT (the one remaining gap): why B's calling registration doesn't
+attract the invite — compare A/B registrar template responses,
+calling presence/capabilities post, CID-account routing. Then B
+answers → voice → video. Wire keys all in teams-core (pushed).
