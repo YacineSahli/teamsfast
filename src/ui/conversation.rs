@@ -48,18 +48,6 @@ fn quick_set(favorites: &[String]) -> Vec<String> {
     v
 }
 
-/// Curated picker grid shown by the "+" chip in the hover bar: the
-/// classic six plus common Teams fare. The wire accepts any of these
-/// (unicode setReaction, live-verified); favorites persist in settings.
-pub const PICKER_REACTIONS: &[&str] = &[
-    "👍", "❤️", "😂", "😮", "😢", "😠", "🎉", "🔥",
-    "👏", "🙏", "🚀", "💯", "✅", "❌", "👀", "🧠",
-    "🥰", "😍", "🤣", "😅", "😉", "😎", "🥳", "😭",
-    "😱", "🤯", "🤔", "🤨", "🥺", "😴", "🤮", "🤡",
-    "💪", "🫡", "🤝", "💖", "💜", "💙", "⚡", "🎯",
-    "🍿", "☕", "🍕", "🍻", "🎈", "🏆", "📌", "💀",
-];
-
 /// Favorites cap: the quick set is a QUICK set — beyond this the hover
 /// bar fills the whole strip. Doubles as the STORED user-pick cap (the
 /// oldest custom star falls off; defaults live in code and never evict).
