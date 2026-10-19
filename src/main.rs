@@ -122,7 +122,12 @@ fn main() -> eframe::Result<()> {
             if request == "show"
                 && let Some(ctx) = APP_CTX.get()
             {
+                // Same triple the tray "show" sends: Visible re-maps an
+                // X11-unmapped window, Minimized(false) attempts the
+                // Wayland restore (compositor-side; winit warns but is
+                // harmless where ignored), Focus raises where it can.
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 ctx.request_repaint();
                 return Some("ok".to_owned());
