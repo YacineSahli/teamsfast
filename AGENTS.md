@@ -10,6 +10,8 @@ for the full investigation and `README.md` for the user-facing summary.
 join AND incoming-call ringing.** Chat (send/reply/edit/delete/react/forward/pins,
 pending+retry bubbles, seen-by, unread badges, pinned/muted chats,
 per-chat notification levels, contact cards, ghost mode), Adaptive Cards,
+reaction picker with tabs + TENANT custom-emoji reactions (beta custom
+wire, live-verified run-9) + WYSIWYG composer,
 section rail (Chat/Teams+mgmt incl. channel rename-delete/Calendar+join/
 Files incl. per-chat shared files/ToDo/Planner/Shifts/OneNote/Activity),
 quiet hours, Meet now,
@@ -254,6 +256,28 @@ remaining Phase 2 item.
 - sqlcipher CLI prints `ok` BEFORE result rows — `$( )` capture includes
   it (a seeded pin id became "ok\n<id>").
 
+### egui 0.36, part 5 (run-9)
+- `TextEdit` WYSIWYG via `.layouter(FnMut(&Ui, &dyn TextBuffer, f32) ->
+  Arc<Galley>)`: the job must cover EVERY character contiguously
+  (caret/selection map by char range) — markers can be DIMED
+  (gamma_multiply 0.45), never dropped. LayoutSection exposes
+  `byte_range` (ByteIndex tuple `.0`), not text; VariationCoords reads
+  via `.as_ref()`. TextFormat in 0.36 has `italics: bool` (synthetic
+  oblique — real, pixel-measured ~6.5°), `strikethrough: Stroke`,
+  `background: Color32`.
+- `cargo test` does NOT rebuild `target/debug/teamsfast` (it builds
+  test harnesses under deps/) — after a fix that only tests exercise,
+  run `cargo build` before QA shots, or vision reports the OLD binary's
+  behavior (the italic false-alarm: scanner fixed, shot stale).
+- Two closures both needing `&mut ConvCtx` (image + custom-emoji
+  callbacks into render_segments) fight the borrow checker; the
+  callbacks run strictly sequentially, so a
+  `RefCell<&mut ConvCtx>` borrowed per call at the call site is the
+  sound pattern.
+- fastframe-instance is LIVE (9a34f63): per-exe slot, "show" verb, QA
+  bypass under TEAMSFAST_SIZE. `cargo run` beside the installed copy
+  intentionally coexists (scoped) — that is not a bug report.
+
 ### Wayland window control (user's session is Wayland)
 - winit 0.30 Wayland: `set_visible` is a NO-OP, `set_minimized(false)`
   warns "Unminimizing is ignored", `focus_window` is literally `{}` — an
@@ -397,6 +421,23 @@ remaining Phase 2 item.
 - `fastframe_emoji::get()` must be called after `emoji::setup()`.
 
 ### Protocol / ost
+- CUSTOM EMOJI (run-9, live-verified): reacting WITH tenant custom
+  emoji works via Graph BETA setReaction/unsetReaction
+  `{"reactionType":"custom","displayName":name}` (teams-core
+  send_custom_reaction_with_client) — v1.0 answers the SAME request 204
+  but SILENTLY DROPS the custom fields (no reaction lands; its own 400
+  names displayName/reactionId, so the validator knows them — the
+  deserializer doesn't). The native read then shows the emotion key
+  `"{displayName};{object_id}"` where object_id is the same `0-csea-…`
+  id a CustomEmoji img's `itemid` carries. The tenant DIRECTORY is
+  capture-gated: Graph /beta/teamwork/messaging/customEmojis 403s
+  (needs TeamworkCustomEmoji.Read, absent from the Teams web-client
+  token) and native directory guesses 404 — the picker's Custom tab
+  runs off a seen-index (message imgs + received custom reactions;
+  ui/widgets.rs custom_emoji_seen). CustomEmoji ASSETS (asyncgw
+  imgt2_anim) 401 anonymously — they ride the skype-token media path.
+  Edit round-trip: build_message_html passes the exact safe CustomEmoji
+  img tag through verbatim (strict itemtype/https/charset gate).
 - REACTIONS (run-8, live-verified): the native chat-service
   `/v1/users/ME/conversations/{c}/messages/{m}/reactions` 404s for EVERY
   type (better-teams' vendored ost carries the same unverified guess —
@@ -508,7 +549,9 @@ remaining Phase 2 item.
   only fills from unread/mentions, which headless runs usually lack.
   `TEAMSFAST_DRAFT="a|b"` seeds the composer draft (`|` = newline) for
   multi-line-composer QA (nothing sends).
-- `TEAMSFAST_TABLE=1` (pair with TEAMSFAST_OPEN) appends two synthetic
+- `TEAMSFAST_PICKER_TAB=<n>` presets the reaction picker's tab (Custom=4)
+  — pair with TEAMSFAST_PICKER (tab clicks are impossible headless).
+- `TEAMSFAST_TABLE=1` (pair with TEAMSFAST_OPEN) appends synthetic
   messages after the chat loads — a chat-HTML pipe table and a card with
   the real k8s-scan Jira payload; re-seeds after network full-replaces.
 - `TEAMSFAST_CALDUMP=1` logs every calendar meeting's date/start/dur/

@@ -395,3 +395,41 @@ RECTLOG (closed pending recurrence).
 
 NEXT: harvest soak #6 (≥2h); app-side react-click verification on a
 live peer; user-gated: web-client captures, live formatted send.
+
+## 2026-10-19 run 9 — user manual-pass items (929729c..ec32fad)
+Five user reports, all dispositioned same-session, 116/116 green
+throughout (teams-core at bc84fce, pushed):
+
+- A. "Timestamp still appears in title when scrolling" — root cause was
+  run-7's OWN sticky-day chip: the original report said "should be
+  hidden under", run-7 shipped interpretation (b) (pin the day IN the
+  header). Removed the whole chip machinery; separators scroll under
+  and clip. Vision-verified header band clean; settlediff IDENTICAL.
+- B. Picker favorites: defaults (classic six) are now PINNED favorites
+  — custom stars add to them instead of replacing the quick set
+  (favorite_state = defaults ∪ stored picks, deduped for legacy
+  settings; display cap 8 never truncates a default; toggling a
+  default is a no-op). Vision: five visible defaults gold-starred.
+- C. Custom emoji + tabs: directory endpoint CAPTURE-GATED (Graph beta
+  403 TeamworkCustomEmoji.Read; native guesses 404), BUT the custom
+  REACTION wire is live-verified: Graph beta
+  {"reactionType":"custom","displayName"} → 204 → emotions key
+  "name;0-csea-…" → unset clears (v1.0 answers 204 and drops the
+  fields — silent no-op trap). Shipped: inline CustomEmoji rendering
+  in messages (20px, authenticated fetch), custom reaction chips
+  (asset URL from objects host learned from message imgs), tabbed
+  picker (Favorites/Smileys/Gestures/Objects/Custom — Custom from a
+  seen-index, hidden while empty), ReactCustom action/command. Edit
+  round-trip preserved (strict tag passthrough in build_message_html).
+  teams-core: 2c4d7ce + bc84fce pushed.
+- D. WYSIWYG composer: styled galley over the marker model (bold
+  wght-700, synthetic italics, strikethrough, code chip; markers dimed
+  to 45% — every char stays in the job for caret mapping). 7 tests;
+  vision at 3x: bold 2x stroke weight, 13/13 italic stems lean, strike
+  exact, code chip. (First shot was a STALE binary — cargo test does
+  not rebuild the bin; noted in AGENTS.)
+- E. Single-instance: already live since 9a34f63 (per-exe slot, "show"
+  verb, QA bypass) — E2E re-verified (second launch exits 0 with the
+  message). Parity fix: the show handler now sends Minimized(false)
+  like the tray show. NOTE for the user: `cargo run` beside the
+  installed copy coexists BY DESIGN (per-exe scoping).
