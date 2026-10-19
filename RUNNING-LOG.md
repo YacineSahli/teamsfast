@@ -489,3 +489,28 @@ provisions each profile (device code; browser-agent can drive
 devicelogin if handed test credentials), then `pair` runs the real
 A→B flow and captures the gated payload shapes (caller-cancel,
 remote hang-up, video invitations).
+
+## 2026-10-19 evening autonomous pass (9307012..96be1fc, core bb1681a+5aad588)
+
+While the E2E second-account provisioning is pending:
+- teams-core: library error strings de-CLI'd ("Run 'teams-cli login'"
+  bailed straight into the GUI welcome screen, seen during rig QA);
+  fresh profiles now read "Not signed in. Sign in to continue."
+  (empty config ≠ expired session — verified by qa1 shot). PUSHED.
+- App lib warnings zeroed (splice tests module needed #[cfg(test)];
+  a duplicated #[test] had double-counted one test — 119 was really
+  118 unique).
+- BENCHMARKS SHIPPED (roadmap #4): scripts/bench.sh + docs/benchmarks.md
+  — 4 paired Xvfb runs vs teams-for-linux 2.26.0 (extracted AppImage):
+  median idle PSS 153.1MB / 1 process vs 394.0MB / 6 processes (2.6x),
+  first-window paint a 320ms tie. Method = zapfast's (PSS tree sum,
+  alternating order, identical first-paint detector). Honest caveats
+  documented: their figure is PRE-LOGIN (interactive sign-in pending =
+  one user-gated step for the post-login pair), our window 1100x760
+  (winit Xvfb cap) vs their 1280x800, --disable-gpu under headless X.
+- SOAK #7 running (setsid, RELEASE build, default profile, /tmp/soak7):
+  60s RSS sampler + a call driver doing one --ctl echo call every 10
+  min (exercises the control channel + call stack under the soak).
+  First call completed (connected→ended). Harvest next session; the
+  app log is volatile to later launches — CALLQA snapshots land in
+  /tmp/soak7/soak.log immediately per call.

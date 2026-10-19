@@ -576,6 +576,9 @@ remaining Phase 2 item.
   real production shapes, archive round-trips, formatters).
 - `./test.sh` — user-facing manual-test launcher (preserves the session
   log to `last-session.log`).
+- `scripts/bench.sh [runs]` — paired idle-RAM/first-paint benchmark vs
+  teams-for-linux (zapfast methodology; results in docs/benchmarks.md;
+  needs target/release + the extracted AppImage at /tmp/tfl-bench).
 - `./qa_shot.sh OUT.png [SIZE] [CHAT_ID]` — headless Xvfb screenshot;
   copy of the app log lands in `/tmp/qa_last_run.log`. Send to the vision
   agent for pixel QA (this loop caught every layout bug so far).
