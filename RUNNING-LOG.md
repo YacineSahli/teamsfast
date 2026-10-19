@@ -514,3 +514,23 @@ While the E2E second-account provisioning is pending:
   First call completed (connected→ended). Harvest next session; the
   app log is volatile to later launches — CALLQA snapshots land in
   /tmp/soak7/soak.log immediately per call.
+
+## 2026-10-19 personal-account reconnaissance (core edca813 PUSHED)
+
+User asked whether Teams PERSONAL accounts are truly useless. Answer
+after investigation: NOT settled-dead — the consumer path is closer
+than the "different protocol" verdict suggested:
+- teams-core ALREADY implements the consumer authz exchange
+  (teams.live.com/api/auth/v1.0/authz/consumer, auth/skype.rs) — every
+  call site just hardcodes personal=false.
+- Free probes (no sign-in needed): v2 device code REJECTS
+  api.spaces.skype.com for the consumer client/tenant (AADSTS70011);
+  graph/substrate/outlook v2 scopes ARE accepted → the client CAN mint
+  consumer tokens. The V1 device-code endpoint (resource= param) is
+  STILL ALIVE and accepts resource=api.spaces.skype.com AND
+  teams.live.com for the consumer client — v1 is the road in.
+- examples/personal_probe.rs runs the full chain behind ONE
+  device-code approval: v1 token → consumer authz → native
+  conversations GET (X-SkypeToken). Awaiting the user's approval run;
+  success ⇒ two free personal accounts = the A<->B messaging rig
+  (calls = the next probe after that).
