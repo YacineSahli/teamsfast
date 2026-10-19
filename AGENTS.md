@@ -257,6 +257,23 @@ remaining Phase 2 item.
   it (a seeded pin id became "ok\n<id>").
 
 ### egui 0.36, part 5 (run-9)
+- `Ui::set_clip_rect` REPLACES the clip — inside a ScrollArea that
+  DISCARDS the viewport bound. The reserved reaction strip did
+  `set_clip_rect(anchor)`; rows above the viewport still render inside
+  the 600px cull margin, so their group-meta timestamps (and chips)
+  painted at their true positions up into the chat header AND the app
+  top bar (bounded only by the central panel's clip) — the user's
+  thrice-filed "timestamps appear in the title when scrolling". Two
+  passes misdiagnosed it (run-7 shipped a sticky-day chip, run-9
+  removed it): the leak is a per-frame transient only visible while a
+  strip crosses/sits above the viewport top — static shots and coarse
+  sweeps never framed it. Caught by md5-hashing the header band of
+  EVERY frame of a 60fps SCROLLBENCH sweep on the tall Jira chat (two
+  one-frame bands, timestamps legible at y=53 and y=27). Fix (9a9267d):
+  `shrink_clip_rect(anchor)` = anchor ∩ viewport; regression test
+  tessellates a strip fully above the viewport and asserts zero
+  vertices above the clip (pre-fix: 38). Rule: inside a scroll, always
+  SHRINK (intersect) — never SET a clip to a content rect.
 - `TextEdit` WYSIWYG via `.layouter(FnMut(&Ui, &dyn TextBuffer, f32) ->
   Arc<Galley>)`: the job must cover EVERY character contiguously
   (caret/selection map by char range) — markers can be DIMED

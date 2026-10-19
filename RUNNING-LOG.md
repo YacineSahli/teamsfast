@@ -433,3 +433,33 @@ throughout (teams-core at bc84fce, pushed):
   message). Parity fix: the show handler now sends Minimized(false)
   like the tray show. NOTE for the user: `cargo run` beside the
   installed copy coexists BY DESIGN (per-exe scoping).
+
+## 2026-10-19 run-9 follow-up — item 1 REAL root cause (9a9267d)
+
+User: "1. is not fixed yet" (third report of timestamps appearing in
+the title while scrolling). The user's attached screenshots (found in
+the session image cache, 236x166 thumbnails) showed the exact
+phenomenon: a group-meta timestamp ("17:05, 15 Oct") painted INSIDE the
+chat-title band, baseline on the header rule, plus an avatar-only row.
+
+Root cause: `reaction_strip` did `strip.set_clip_rect(anchor)` — SET
+REPLACES the ScrollArea viewport bound. Rows above the viewport still
+render inside the 600px cull margin; their strips painted at true
+positions up to ~600px above the rule, bounded only by the central
+panel's clip (= into the chat header AND up against the app top bar —
+matching the original run-7 wording "chat header + app top bar").
+Run-7's "zero paint-over" forensics and my first static/sweep pass both
+missed it because the artifact is a per-frame transient only visible
+while a strip crosses/sits above the viewport top: hashing the header
+band of EVERY frame of a 60fps SCROLLBENCH sweep on the tall Jira chat
+(23,970px content, ~60 strips) found two one-frame bands — "12:06,
+7 Oct" at y=53 and "16:00, 1 Oct" at y=27 (grazing the top bar).
+The chip added in run-7 and removed in run-9 was a red herring both
+times.
+
+Fix: `shrink_clip_rect(anchor)` (anchor ∩ viewport) — keeps the
+red-team chip width-cap and restores the viewport bound. Regression
+`reaction_strip_never_paints_above_viewport`: strip fully above the
+viewport top must tessellate zero vertices above the clip (38 pre-fix).
+Live post-fix: same sweep → 0 transient bands. 117/117. AGENTS part-5
+gotcha added (never SET a clip to a content rect inside a scroll).
