@@ -544,6 +544,32 @@ remaining Phase 2 item.
   overrides. `--logs` prints the path. qa_shot.sh copies it to
   `/tmp/qa_last_run.log`.
 
+## E2E call rig (2026-10-19, live selftest PASS)
+
+- **Profiles**: `TEAMSFAST_PROFILE=<id>` selects teams-core's keyring/
+  config slot (`tokens-<id>`), suffixes the archive keyring entry and
+  the single-instance slot (`teamsfast-<id>`); default identifiers are
+  byte-identical to before. Files split via the launcher's per-profile
+  `XDG_{CONFIG,STATE,DATA}_HOME` (see qa_call_e2e.sh `launch()`). A
+  profiled run CLAIMS its slot even with TEAMSFAST_SIZE set (cannot
+  collide with the default instance; `--ctl` needs the claim).
+- **Control channel**: `teamsfast --ctl <verb>` (same profile + binary)
+  → claim handler → queue → `App::ui` drains each frame. Verbs: `ping`,
+  `call <chat_id>`, `videocall <chat_id>`, `calluser <upn>` (CreateOneToOne
+  then call on CreateChatOk), `echo`, `answer`, `decline`, `hangup`,
+  `mute on|off`. `--ctl` takes the WHOLE rest of the line as one verb.
+  `CALLQA` log lines mark verbs/actions/transitions (ringing, caller_
+  gone, connected, ended+summary, failed) — metadata only, no content.
+- `./qa_call_e2e.sh selftest` — one signed-in instance (default profile,
+  REFUSES if an instance is already running), echo-call E2E, asserts
+  from the redirected log under `/tmp/tf-<profile>/st/…` (NOT the
+  user's ~/.local/state log — every harness profile redirects XDG).
+  `login <profile>` — device-code provisioning shot. `pair <aP> <aUPN>
+  <bP> <bUPN>` — full A→B ring/answer/hold/mute/hangup flow.
+- Echo-service note: `echo` connects and flows RTP (1470 sent / 769
+  received over a 45s hold) but never rings or sends video — the
+  A↔B pair is the only way to exercise ringing/accept/remote-hangup.
+
 ## Testing / verification workflow
 
 - `cargo build && cargo test` (17 tests: click injection, live_parse on

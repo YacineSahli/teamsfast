@@ -463,3 +463,29 @@ red-team chip width-cap and restores the viewport bound. Regression
 viewport top must tessellate zero vertices above the clip (38 pre-fix).
 Live post-fix: same sweep → 0 transient bands. 117/117. AGENTS part-5
 gotcha added (never SET a clip to a content rect inside a scroll).
+
+## 2026-10-19 E2E call rig (7418f43 + harness) — selftest PASS
+
+User asked how to enable autonomous E2E call testing with two accounts.
+Account plan first chosen: M365 Developer sandbox — the user's
+application was then REJECTED by MS ("you don't currently qualify";
+the dev program has tightened since 2024). Revised options presented
+(Business trial tenant / federated second work account / dev-program
+retry). The RIG itself is account-independent and is now live:
+- TEAMSFAST_PROFILE → teams-core per-profile keyring slots (the layer
+  existed unused), + suffix on archive key + instance slot; files via
+  launcher XDG redirects. Verified: qa1 boots signed-out with isolated
+  archive/log/settings; profiled slot answers --ctl, default slot
+  finds nobody.
+- --ctl control verbs through the single-instance claim handler
+  (queue → App::ui drain → same Actions as the buttons). CALLQA
+  transition logs. calluser <upn> = cold-start (CreateOneToOne →
+  call on CreateChatOk).
+- qa_call_e2e.sh: selftest PASS live (ping→echo→connected→mute→
+  hangup→ended, "1470 packets sent / 769 received" on the 45s hold).
+  pair mode awaits two signed-in profiles.
+Next: the user picks the second-account path; then `login` mode
+provisions each profile (device code; browser-agent can drive
+devicelogin if handed test credentials), then `pair` runs the real
+A→B flow and captures the gated payload shapes (caller-cancel,
+remote hang-up, video invitations).
