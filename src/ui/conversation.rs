@@ -1662,6 +1662,36 @@ pub fn conversation_composer(
                         .auto_shrink([false, true])
                         .max_height(130.0)
                         .show(ui, |ui| {
+                            // WYSIWYG: the marker text model stays, but the
+                            // galley styles marker interiors (bold/italic/
+                            // strike/code chip) and dims the markers. Every
+                            // char remains in the job — caret mapping needs
+                            // contiguous ranges, so markers are quieted,
+                            // never hidden.
+                            let base_color = ctx.pal.text;
+                            let code_bg =
+                                crate::theme::tint_over(ctx.pal.panel, ctx.pal.text, 0.08);
+                            let base_size = ui
+                                .style()
+                                .text_styles
+                                .get(&egui::TextStyle::Body)
+                                .map(|f| f.size)
+                                .unwrap_or(14.0);
+                            let mut wysiwyg = move |ui: &egui::Ui,
+                                                     buf: &dyn egui::TextBuffer,
+                                                     wrap: f32|
+                                  -> std::sync::Arc<egui::Galley> {
+                                let mut job = composer_wysiwyg_job(
+                                    buf.as_str(),
+                                    base_color,
+                                    code_bg,
+                                    base_size,
+                                );
+                                job.wrap.max_width = wrap;
+                                job.wrap.break_anywhere = false;
+                                ui.ctx()
+                                    .fonts_mut(|f| f.layout_job(job))
+                            };
                             let field = ui.add(
                                 egui::TextEdit::multiline(draft)
                                     .id_salt("composer_field")
@@ -1672,7 +1702,8 @@ pub fn conversation_composer(
                                     })
                                     .desired_rows(1)
                                     .desired_width(ui.available_width())
-                                    .min_size(egui::vec2(0.0, 32.0)),
+                                    .min_size(egui::vec2(0.0, 32.0))
+                                    .layouter(&mut wysiwyg),
                             );
                             ui.ctx().data_mut(|d| d.insert_temp(field_key, field.id));
                             if newline && field.has_focus() {
@@ -2063,6 +2094,165 @@ fn splice_bullets(text: &str, a: usize, b: usize) -> (String, usize, usize) {
 /// Apply a pure splice function at the composer's cursor/selection, then
 /// restore focus and select the returned span (so a second press toggles
 /// the markers off, and typing over a wrap replaces the inner text).
+// ---------------------------------------------------- composer WYSIWYG
+//
+// The composer keeps its MARKER text model (**bold**, _italic_, ~~strike~~,
+// `code` — the send-side wire conversion) but the TextEdit lays out a
+// styled galley: marker pairs style their interior (wght-700 bold,
+// synthetic italics, strikethrough, monospace+tinted chip for code) and
+// the marker glyphs themselves render dimmed. Every character stays in
+// the job — egui's caret/selection mapping needs contiguous char
+// ranges, so markers cannot be hidden, only quieted. Styles are
+// LINE-scoped like the wire model (a ** pair never spans lines).
+
+/// Style flags for one run of composer text.
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+struct WysFlags {
+    bold: bool,
+    italic: bool,
+    strike: bool,
+    code: bool,
+    /// A marker token itself (dimmed).
+    marker: bool,
+}
+
+/// Split one line into (byte-range, flags) runs covering the whole line.
+/// Pure — unit-tested against the wire model's rules (line-scoped pairs,
+/// word-boundary underscores, unclosed markers literal).
+fn wysiwyg_scan_line(line: &str) -> Vec<(std::ops::Range<usize>, WysFlags)> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum M {
+        Bold,
+        Italic,
+        Strike,
+        Code,
+    }
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let n = chars.len();
+    // Byte offset of char index i (n = end of line).
+    let byte_at = |i: usize| if i >= n { line.len() } else { chars[i].0 };
+    let tok = |i: usize| -> Option<(M, usize)> {
+        let c = chars[i].1;
+        match c {
+            '*' if i + 1 < n && chars[i + 1].1 == '*' => Some((M::Bold, 2)),
+            '~' if i + 1 < n && chars[i + 1].1 == '~' => Some((M::Strike, 2)),
+            '`' => Some((M::Code, 1)),
+            '_' => Some((M::Italic, 1)),
+            _ => None,
+        }
+    };
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut runs: Vec<(std::ops::Range<usize>, WysFlags)> = Vec::new();
+    let mut flags = WysFlags::default();
+    let mut i = 0usize;
+    let mut run_start = 0usize;
+    while i < n {
+        let Some((m, len)) = tok(i) else {
+            i += 1;
+            continue;
+        };
+        let active = match m {
+            M::Bold => flags.bold,
+            M::Italic => flags.italic,
+            M::Strike => flags.strike,
+            M::Code => flags.code,
+        };
+        // Word-boundary rule for underscores: intraword `_` is literal
+        // (snake_case must not italicize). Opening needs a non-word char
+        // (or line start) before AND after the span; closing needs a
+        // non-word char (or line end) after.
+        // Underscore boundaries (mirrors the wire converter): opening
+        // needs a non-word char (or line start) BEFORE it; closing needs
+        // one AFTER (or line end). The span interior is unrestricted.
+        let word_ok = if m == M::Italic {
+            if active {
+                i + len >= n || !is_word(chars[i + len].1)
+            } else {
+                i == 0 || !is_word(chars[i - 1].1)
+            }
+        } else {
+            true
+        };
+        if !word_ok {
+            i += 1;
+            continue;
+        }
+        if !active {
+            // Opening only when the same marker closes later this line.
+            let mut closes = false;
+            let mut j = i + len;
+            while j < n {
+                if matches!(tok(j), Some((m2, _)) if m2 == m) {
+                    closes = true;
+                    break;
+                }
+                j += 1;
+            }
+            if !closes {
+                i += 1;
+                continue;
+            }
+        }
+        if run_start < i {
+            runs.push((byte_at(run_start)..byte_at(i), flags));
+        }
+        runs.push((byte_at(i)..byte_at(i + len), WysFlags { marker: true, ..flags }));
+        flags = match m {
+            M::Bold => WysFlags { bold: !flags.bold, ..flags },
+            M::Italic => WysFlags { italic: !flags.italic, ..flags },
+            M::Strike => WysFlags { strike: !flags.strike, ..flags },
+            M::Code => WysFlags { code: !flags.code, ..flags },
+        };
+        run_start = i + len;
+        i += len;
+    }
+    if run_start < n {
+        runs.push((byte_at(run_start)..line.len(), flags));
+    }
+    runs
+}
+
+/// The composer's WYSIWYG galley job: full multi-line text, styled per
+/// line. Colors/size are resolved by the caller (theme-aware).
+fn composer_wysiwyg_job(
+    text: &str,
+    base_color: egui::Color32,
+    code_bg: egui::Color32,
+    base_size: f32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for line in text.split_inclusive('\n') {
+        for (range, f) in wysiwyg_scan_line(line) {
+            let chunk = &line[range];
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut fmt = egui::TextFormat {
+                font_id: if f.code && !f.marker {
+                    egui::FontId::monospace(base_size)
+                } else {
+                    egui::FontId::proportional(base_size)
+                },
+                color: if f.marker { base_color.gamma_multiply(0.45) } else { base_color },
+                background: if f.code && !f.marker { code_bg } else { egui::Color32::TRANSPARENT },
+                ..Default::default()
+            };
+            if f.bold && !f.marker {
+                fmt.coords =
+                    egui::epaint::text::VariationCoords::new([(b"wght", 700.0)]);
+            }
+            if f.italic && !f.marker {
+                fmt.italics = true;
+            }
+            if f.strike && !f.marker {
+                fmt.strikethrough = egui::Stroke::new(1.0, fmt.color);
+            }
+            job.append(chunk, 0.0, fmt);
+        }
+    }
+    job
+}
+
 fn composer_apply(
     draft: &mut String,
     ctx: &egui::Context,
@@ -3907,6 +4097,118 @@ mod tests {
 /// and selections inside an existing pair unwrap it instead of
 /// double-wrapping (double markers render literally).
 #[cfg(test)]
+mod wysiwyg_tests {
+    use super::{composer_wysiwyg_job, wysiwyg_scan_line, WysFlags};
+
+    fn runs(line: &str) -> Vec<(String, WysFlags)> {
+        wysiwyg_scan_line(line)
+            .into_iter()
+            .map(|(r, f)| (line[r].to_string(), f))
+            .collect()
+    }
+
+    #[test]
+    fn bold_pair_styles_interior_and_dims_markers() {
+        let r = runs("a **bold** b");
+        assert_eq!(r.len(), 5);
+        assert_eq!(r[0].0, "a ");
+        assert!(!r[0].1.bold);
+        assert_eq!(r[1].0, "**");
+        assert!(r[1].1.marker);
+        assert_eq!(r[2].0, "bold");
+        assert!(r[2].1.bold);
+        assert_eq!(r[3].0, "**");
+        assert!(r[3].1.marker);
+        assert_eq!(r[4].0, " b");
+        assert!(!r[4].1.bold);
+    }
+
+    #[test]
+    fn underscores_respect_word_boundaries() {
+        // snake_case never italicizes.
+        let r = runs("file_name_here ok");
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].1.italic && !r[0].1.marker);
+        // A real phrase does.
+        let r = runs("see _this note_ end");
+        assert!(r.iter().any(|(t, f)| t == "this note" && f.italic));
+        assert!(r.iter().any(|(t, f)| t == "_" && f.marker));
+    }
+
+    #[test]
+    fn unclosed_marker_stays_literal() {
+        let r = runs("a ** b");
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].1.marker);
+    }
+
+    #[test]
+    fn styles_never_cross_lines() {
+        // The wire model is line-scoped; so is the display.
+        let r = runs("**a");
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].1.marker);
+        let r = runs("b**");
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].1.marker);
+    }
+
+    /// The exact run-9 QA draft line: underscore pair after a bold pair.
+    #[test]
+    fn qa_draft_line_italic_styles() {
+        let r = runs(r"**bold text** and _italic bit_ plus ~~struck~~ and \`code chip\`");
+        assert!(
+            r.iter().any(|(t, f)| t.contains("italic bit") && f.italic),
+            "italic span must style: {r:?}"
+        );
+        assert!(r.iter().any(|(t, f)| t == "_" && f.marker));
+    }
+
+    #[test]
+    fn code_strikes_and_multi_flags() {
+        let r = runs("x ~~gone~~ y `c` z");
+        assert!(r.iter().any(|(t, f)| t == "gone" && f.strike));
+        assert!(r.iter().any(|(t, f)| t == "c" && f.code));
+        // Nested flags combine.
+        let r = runs("**~~both~~**");
+        assert!(r.iter().any(|(t, f)| t == "both" && f.bold && f.strike));
+    }
+
+    #[test]
+    fn job_covers_every_char() {
+        // egui's caret mapping needs the sections to concatenate to the
+        // full text exactly.
+        let text = "a **b**\nc _d_ `e` é🔥\n~~f~~";
+        let job = composer_wysiwyg_job(
+            text,
+            egui::Color32::WHITE,
+            egui::Color32::BLACK,
+            14.0,
+        );
+        // Sections carry byte ranges into the job text.
+        let rebuilt: String = job
+            .sections
+            .iter()
+            .map(|s| text[s.byte_range.start.0..s.byte_range.end.0].to_string())
+            .collect();
+        assert_eq!(rebuilt, text);
+        assert!(job.sections.iter().any(|s| s
+            .format
+            .coords
+            .as_ref()
+            .iter()
+            .any(|(_t, v)| *v == 700.0)));
+        assert!(job
+            .sections
+            .iter()
+            .any(|s| s.format.strikethrough != egui::Stroke::NONE));
+        assert!(job
+            .sections
+            .iter()
+            .any(|s| s.format.background != egui::Color32::TRANSPARENT));
+    }
+}
+
 mod splice_p3_tests {
     use super::splice_wrap;
 
