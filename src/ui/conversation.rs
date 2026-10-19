@@ -4302,6 +4302,7 @@ mod wysiwyg_tests {
     }
 }
 
+#[cfg(test)]
 mod splice_p3_tests {
     use super::splice_wrap;
 

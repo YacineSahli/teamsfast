@@ -2853,7 +2853,6 @@ mod markdown_image_tests {
     /// Jira attachment markup: `![filename](width=…,alt="…")` collapses
     /// to the filename; http image urls stay clickable; empty alt drops;
     /// plain links are untouched.
-    #[test]
     /// Tenant custom emoji: the REAL wire shape (archive capture
     /// 2026-10-19) parses to an inline seg, plain-projects to :name:,
     /// and registers into the seen-index with the objects host.
