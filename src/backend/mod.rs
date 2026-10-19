@@ -663,16 +663,24 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             Command::StartLogin => {
                 send!(Event::Status("Requesting a sign-in code…".into()));
                 let tx_code = tx.clone();
-                let res = ost::auth::login_with_code_sink(true, move |url, code| {
+                let sink = move |url: &str, code: &str| {
                     // Show the code in the GUI (still printed by `login` for
                     // the terminal users via tracing).
                     let _ = tx_code.send(Event::LoginCode {
                         url: url.to_string(),
                         code: code.to_string(),
                     });
-                })
-                .await
-                .map_err(|e| format!("{e:#}"));
+                };
+                let personal = std::env::var("TEAMSFAST_PERSONAL").as_deref() == Ok("1");
+                let res = if personal {
+                    ost::auth::login_personal_with_code_sink(sink)
+                        .await
+                        .map_err(|e| format!("{e:#}"))
+                } else {
+                    ost::auth::login_with_code_sink(true, sink)
+                        .await
+                        .map_err(|e| format!("{e:#}"))
+                };
                 send!(Event::LoginResult(res));
                 match ready_session(&mut ses).await {
                     Ok((name, id)) => {
@@ -805,7 +813,24 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 media::download(&ses, &tx, &url, &name).await;
             }
             Command::CreateOneToOne(user) => {
-                directory::create_one_to_one(&ses, &tx, &user).await;
+                // Personal profiles take the peer's skypeid (or 8:live:
+                // MRI) directly — no AAD object-id resolution exists on
+                // consumer.
+                if ses.client.as_ref().is_some_and(|c| c.skypeid().is_some()) {
+                    match ses.client.as_ref() {
+                        Some(c) => match ost::api::create_one_to_one_personal(c, &user).await {
+                            Ok(chat) => {
+                                let _ = tx.send(Event::CreateChatOk(chat));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Event::Error(format!("new chat: {e:#}")));
+                            }
+                        },
+                        None => {}
+                    }
+                } else {
+                    directory::create_one_to_one(&ses, &tx, &user).await;
+                }
             }
             Command::CreateGroup { topic, members } => {
                 directory::create_group(&ses, &tx, &topic, &members).await;
@@ -1283,17 +1308,30 @@ async fn ready_session(ses: &mut Session) -> Result<(Option<String>, Option<Stri
     let c = TeamsClient::new().await.map_err(|e| format!("{e:#}"))?;
     ses.client = Some(c);
     match ses.client.as_ref() {
-        Some(c) => match ost::api::whoami_data(c).await {
-            Ok(me) => {
-                ses.self_id = Some(me.id.clone());
-                Ok((Some(me.display_name), ses.self_id.clone()))
+        Some(c) => {
+            // Personal profiles: identity is the 8:live:<skypeid> MRI
+            // from the authz (no Graph on consumer; own-message
+            // detection compares sender MRIs).
+            if let Some(id) = c.skypeid() {
+                let mri = format!("8:{id}");
+                ses.self_id = Some(mri.clone());
+                let name = ost::config::Config::load_cached()
+                    .ok()
+                    .and_then(|cfg| cfg.skypeid.map(|s| s.trim_start_matches("live:").to_string()));
+                return Ok((Some(name.unwrap_or_else(|| "Personal".into())), Some(mri)));
             }
-            Err(e) => {
-                log::warn!("whoami failed ({e:#}); using JWT oid for own-detection");
-                ses.self_id = cached_jwt_oid();
-                Ok((None, ses.self_id.clone()))
+            match ost::api::whoami_data(c).await {
+                Ok(me) => {
+                    ses.self_id = Some(me.id.clone());
+                    Ok((Some(me.display_name), ses.self_id.clone()))
+                }
+                Err(e) => {
+                    log::warn!("whoami failed ({e:#}); using JWT oid for own-detection");
+                    ses.self_id = cached_jwt_oid();
+                    Ok((None, ses.self_id.clone()))
+                }
             }
-        },
+        }
         None => Ok((None, None)),
     }
 }
