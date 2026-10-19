@@ -565,3 +565,20 @@ TEAMSFAST_PROFILE+personal → qa profiles on personal accounts → the
 A<->B MESSAGING rig with two free accounts, (c) registration+trouter+
 send probes, (d) the CALLING probe on api.cc.skype.com (consumer 1:1
 calls are licensed per consumerLicenseDetails).
+
+## 2026-10-19 rig accounts BOTH provisioned (approval-free now)
+
+- A: rig.a.autotest@example.com, skypeid live:rig-consumer-a,
+  hasTeamsLicense=true (RT: /tmp/tfl_personal_rt).
+- B: rig.b.autotest@example.com, skypeid live:.cid.0123456789abcdef (the
+  unmigrated CID form — a THIRD mri shape to handle), teamsFree tier
+  (chat + 1:1 calls included; no copilot/recording) (RT:
+  /tmp/tfl_personal_rt2).
+Both RTs verified refreshing approval-free into authz-200 + chat list
+(B: 0 conversations — fresh). NEXT SESSION UNIT ORDER: (1) create the
+A<->B 1:1 via POST msgapi.teams.live.com/v1/users/ME/conversations
+(members as skypeid MRIs), (2) send-path probe (the work-shape
+sendmessage against the consumer host), (3) trouter consumer probe,
+(4) teams-core consumer wiring (login/config/authz parse/host
+overrides), (5) app personal profiles → qa_call_e2e pair on personal
+accounts, (6) calling probe api.cc.skype.com.
