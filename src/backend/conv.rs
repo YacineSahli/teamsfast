@@ -331,6 +331,33 @@ pub async fn delete(ses: &Session, tx: &Sender<Event>, chat_id: &str, message_id
     }
 }
 
+/// Tenant custom-emoji reaction (Graph beta custom wire — live-verified
+/// 2026-10-19; see teams-core send_custom_reaction_with_client).
+pub async fn react_custom(
+    ses: &Session,
+    tx: &Sender<Event>,
+    chat_id: &str,
+    message_id: &str,
+    name: &str,
+) {
+    let Some(c) = client(ses) else {
+        return;
+    };
+    let res = ost::api::send_custom_reaction_with_client(c, chat_id, message_id, name).await;
+    match res {
+        Ok(()) => {
+            let _ = tx.send(Event::ActionOk {
+                chat_id: chat_id.to_string(),
+                action: MsgAction::Reacted,
+            });
+            refetch_tail(ses, tx, chat_id).await;
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("custom reaction: {e:#}")));
+        }
+    }
+}
+
 pub async fn react(
     ses: &Session,
     tx: &Sender<Event>,

@@ -180,6 +180,10 @@ pub enum Seg {
     /// shape (schema.skype.com/Mention) has none — the click handler falls
     /// back to resolving the name against the chat roster.
     Mention { name: String, mri: Option<String> },
+    /// Tenant custom emoji (`<img itemtype="…/CustomEmoji">` in message
+    /// HTML). INLINE content — renders at text height via the custom
+    /// callback, never a full block image; `name` is the img alt.
+    CustomEmoji { name: String, url: String },
     Image { url: String },
     Quote(String),
     LineBreak,
@@ -892,7 +896,21 @@ pub fn parse_html(raw: &str) -> Vec<Seg> {
                             rest = next;
                         }
                         "img" => {
-                            if let Some(url) = attr("src").or_else(|| attr("data-src")) {
+                            if lower.contains("schema.skype.com/customemoji") {
+                                // Tenant custom emoji: INLINE (20px), never
+                                // the block-image treatment. alt = tenant
+                                // display name; itemid = "name;0-csea-…".
+                                let url = attr("src")
+                                    .or_else(|| attr("data-src"))
+                                    .unwrap_or_default();
+                                let name = attr("alt")
+                                    .filter(|a| !a.is_empty())
+                                    .unwrap_or_else(|| "emoji".to_string());
+                                if !url.is_empty() {
+                                    flush(&mut text, &mut segs);
+                                    segs.push(Seg::CustomEmoji { name, url });
+                                }
+                            } else if let Some(url) = attr("src").or_else(|| attr("data-src")) {
                                 flush(&mut text, &mut segs);
                                 segs.push(Seg::Image { url });
                             }
@@ -988,6 +1006,11 @@ fn ensure_html_cached(raw: &str) -> (std::sync::Arc<Vec<Seg>>, std::sync::Arc<St
         return (e.segs.clone(), e.plain.clone());
     }
     let segs = std::sync::Arc::new(parse_html(raw));
+    for seg in segs.iter() {
+        if let Seg::CustomEmoji { name, url } = seg {
+            custom_emoji_seen(name, url);
+        }
+    }
     let plain = std::sync::Arc::new(segs_to_plain(&segs));
     if cache.len() >= 2048 {
         cache.clear(); // crude bound; a miss costs one parse
@@ -1007,6 +1030,90 @@ fn ensure_html_cached(raw: &str) -> (std::sync::Arc<Vec<Seg>>, std::sync::Arc<St
 /// render path; plain `parse_html` stays for one-off parses.
 pub fn parse_html_cached(raw: &str) -> std::sync::Arc<Vec<Seg>> {
     ensure_html_cached(raw).0
+}
+
+// --------------------------------------------------- tenant custom emoji
+//
+// The tenant custom-emoji DIRECTORY is capture-gated (Graph
+// /beta/teamwork/messaging/customEmojis needs TeamworkCustomEmoji.Read
+// which the Teams web-client token lacks; native directory guesses 404 —
+// probed live 2026-10-19). What we CAN know honestly: every custom emoji
+// the tenant actually uses — the imgs in message HTML (name + asset URL)
+// and received custom reactions (name + 0-csea object id; the asset URL
+// is reconstructable from the objects host). This process-wide index
+// feeds the reaction picker's Custom tab and provides the host for
+// reaction-chip assets.
+
+struct CustomEmojiSeen {
+    /// First-seen order: (name, asset url).
+    entries: Vec<(String, String)>,
+    /// Objects host learned from CustomEmoji img URLs (e.g.
+    /// "eu-prod.asyncgw.teams.microsoft.com") — needed to build asset
+    /// URLs for custom REACTIONS, which only carry the object id.
+    objects_host: Option<String>,
+}
+
+fn custom_emoji_seen_store(
+) -> &'static std::sync::Mutex<CustomEmojiSeen> {
+    static S: std::sync::OnceLock<std::sync::Mutex<CustomEmojiSeen>> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        std::sync::Mutex::new(CustomEmojiSeen {
+            entries: Vec::new(),
+            objects_host: None,
+        })
+    })
+}
+
+/// Record one seen tenant custom emoji (idempotent; first URL wins).
+/// `url` is the full asset URL (message img src, or a URL reconstructed
+/// for a custom reaction).
+pub fn custom_emoji_seen(name: &str, url: &str) {
+    if name.is_empty() || url.is_empty() {
+        return;
+    }
+    if let Some(host) = url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        && host.ends_with(".asyncgw.teams.microsoft.com")
+    {
+        let mut st = custom_emoji_seen_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if st.objects_host.is_none() {
+            st.objects_host = Some(host.to_string());
+        }
+        if !st.entries.iter().any(|(n, _)| n == name) {
+            st.entries.push((name.to_string(), url.to_string()));
+        }
+    }
+}
+
+/// Snapshot of the seen index (first-seen order).
+pub fn custom_emoji_entries() -> Vec<(String, String)> {
+    custom_emoji_seen_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entries
+        .clone()
+}
+
+/// Objects host learned from CustomEmoji img URLs — required to build
+/// asset URLs for received custom REACTIONS (they carry only the
+/// `0-csea-…` object id).
+pub fn custom_emoji_objects_host() -> Option<String> {
+    custom_emoji_seen_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .objects_host.clone()
+}
+
+/// Asset URL for a custom reaction's object id (None until some
+/// CustomEmoji img has taught us the tenant's objects host).
+pub fn custom_emoji_asset_url(object_id: &str) -> Option<String> {
+    custom_emoji_objects_host().map(|host| {
+        format!("https://{host}/v1/objects/{object_id}/views/imgt2_anim")
+    })
 }
 
 /// Cached [`segs_to_plain`] over the cached parse (previews, snippets,
@@ -1311,6 +1418,9 @@ pub fn render_segments(
     mut file: impl FnMut(&mut Ui, &str, &str),
     // An @-mention chip was clicked (name, inline mri if the wire had one).
     mut mention: impl FnMut(&mut Ui, &str, Option<&str>),
+    // Tenant custom emoji rendered INLINE at text height (name, asset
+    // url). Unlike `image` this never owns a line.
+    mut custom_emoji: impl FnMut(&mut Ui, &str, &str),
 ) {
     // Segments from `parse_html`/`parse_html_cached` are already
     // render-ready (normalized at parse time); no clone or re-normalize.
@@ -1522,6 +1632,12 @@ pub fn render_segments(
                     ui.end_row();
                     row_has_content = false;
                 }
+                Seg::CustomEmoji { name, url } => {
+                    // Tenant custom emoji: inline vocabulary, flows with
+                    // the sentence like a font glyph would.
+                    row_has_content = true;
+                    custom_emoji(ui, name, url);
+                }
                 Seg::LineBreak => {
                     if row_has_content {
                         ui.end_row();
@@ -1566,7 +1682,7 @@ fn plain_next_starts_ws(segs: &[Seg], from: usize) -> bool {
             }
             // Chips pad both sides anyway; a break/quote starts a new line.
             Seg::Mention { .. } | Seg::LineBreak | Seg::Quote(_) => return true,
-            Seg::Image { .. } => return false,
+            Seg::Image { .. } | Seg::CustomEmoji { .. } => return false,
         }
     }
     true
@@ -1607,6 +1723,13 @@ pub fn segs_to_plain(segs: &[Seg]) -> String {
                 }
             }
             Seg::Image { .. } => out.push_str("[image]"),
+            // Custom emoji are inline vocabulary — the tenant name is the
+            // closest plain form (":name:" reads like Slack shortcodes).
+            Seg::CustomEmoji { name, .. } => {
+                out.push(':');
+                out.push_str(name);
+                out.push(':');
+            }
             Seg::LineBreak => out.push('\n'),
         }
     }
@@ -1635,6 +1758,7 @@ pub fn segs_to_markers(segs: &[Seg]) -> String {
                 | Seg::Mention { .. }
                 | Seg::Quote(_)
                 | Seg::Image { .. }
+                | Seg::CustomEmoji { .. }
         )
     };
     let mut out = String::new();
@@ -1716,6 +1840,14 @@ pub fn segs_to_markers(segs: &[Seg]) -> String {
             }
             Seg::Mention { name, .. } => out.push_str(name),
             Seg::Image { url } => out.push_str(url),
+            // Round-trip safety: editing must not eat the tenant emoji.
+            // Re-emit the wire tag verbatim; build_message_html passes
+            // raw HTML through (edit path) — a marker form would lose it.
+            Seg::CustomEmoji { name, url } => {
+                out.push_str(&format!(
+                    "<img alt=\"{name}\" itemtype=\"http://schema.skype.com/CustomEmoji\" src=\"{url}\" style=\"width:20px; height:20px\">"
+                ))
+            }
             Seg::Quote(t) => {
                 for (i, line) in t.split('\n').enumerate() {
                     if i > 0 {
@@ -1989,6 +2121,7 @@ mod mention_tests {
                         sink.borrow_mut()
                             .push((name.to_string(), mri.map(str::to_string)));
                     },
+                    |_, _, _| {},
                 );
             });
             out.textures_delta.clear();
@@ -2336,7 +2469,9 @@ mod pipe_table_tests {
                 super::render_pipe_table(ui, &pal, &t1, egui::Id::new("tbl-a"), 13.0);
                 super::render_pipe_table(ui, &pal, &t2, egui::Id::new("tbl-b"), 13.0);
                 let segs = parse_html("|a|b|<br>|c|d|");
-                super::render_segments(ui, &segs, &pal, |_, _| false, |_, _, _| {}, |_, _, _| {});
+                super::render_segments(
+                    ui, &segs, &pal, |_, _| false, |_, _, _| {}, |_, _, _| {}, |_, _, _| {},
+                );
             });
             out.textures_delta.clear();
         }
@@ -2719,6 +2854,41 @@ mod markdown_image_tests {
     /// to the filename; http image urls stay clickable; empty alt drops;
     /// plain links are untouched.
     #[test]
+    /// Tenant custom emoji: the REAL wire shape (archive capture
+    /// 2026-10-19) parses to an inline seg, plain-projects to :name:,
+    /// and registers into the seen-index with the objects host.
+    #[test]
+    fn custom_emoji_seg_parse_plain_and_index() {
+        let raw = "<p><span><img alt=\"sadcat1\" itemid=\"sadcat1;0-csea-d6-11111111222233334444555566667777\" itemtype=\"http://schema.skype.com/CustomEmoji\" src=\"https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-csea-d6-11111111222233334444555566667777/views/imgt2_anim\" style=\"width:20px; height:20px\"></span></p>";
+        let segs = super::parse_html(raw);
+        assert_eq!(segs.len(), 1, "one inline seg, no block image: {segs:?}");
+        match &segs[0] {
+            super::Seg::CustomEmoji { name, url } => {
+                assert_eq!(name, "sadcat1");
+                assert!(url.contains("/v1/objects/0-csea-d6-"));
+            }
+            other => panic!("expected CustomEmoji, got {other:?}"),
+        }
+        assert_eq!(super::segs_to_plain(&segs), ":sadcat1:");
+        // Index registration (parse_html_cached path registers; call the
+        // registrar directly here for hermeticity).
+        super::custom_emoji_seen("sadcat1", "https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-csea-d6-x/views/imgt2_anim");
+        assert!(super::custom_emoji_entries()
+            .iter()
+            .any(|(n, _)| n == "sadcat1"));
+        assert_eq!(
+            super::custom_emoji_objects_host().as_deref(),
+            Some("eu-prod.asyncgw.teams.microsoft.com")
+        );
+        assert_eq!(
+            super::custom_emoji_asset_url("0-csea-abc").as_deref(),
+            Some("https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-csea-abc/views/imgt2_anim")
+        );
+        // Non-asyncgw URLs never register (host learning is strict).
+        super::custom_emoji_seen("fake", "https://evil.example/x");
+        assert!(!super::custom_emoji_entries().iter().any(|(n, _)| n == "fake"));
+    }
+
     fn image_markup_collapses_to_alt() {
         // The real Jira shape (run-8 battery crops).
         assert_eq!(

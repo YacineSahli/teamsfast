@@ -59,6 +59,12 @@ pub enum Command {
         emoji: String,
         remove: bool,
     },
+    /// Tenant custom-emoji reaction by display name (Graph beta wire).
+    ReactCustom {
+        chat_id: String,
+        message_id: String,
+        name: String,
+    },
     /// One older page of the conversation.
     LoadOlder(String),
     MarkRead { chat_id: String, message_id: String },
@@ -762,6 +768,13 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 remove,
             } => {
                 conv::react(&ses, &tx, &chat_id, &message_id, &emoji, remove).await;
+            }
+            Command::ReactCustom {
+                chat_id,
+                message_id,
+                name,
+            } => {
+                conv::react_custom(&ses, &tx, &chat_id, &message_id, &name).await;
             }
             Command::LoadOlder(chat_id) => {
                 conv::load_older(&mut ses, &tx, &chat_id).await;

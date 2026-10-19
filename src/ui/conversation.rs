@@ -86,20 +86,61 @@ pub fn toggle_favorite(favorites: &mut Vec<String>, emoji: &str) {
 #[derive(Debug)]
 pub enum PickerAction {
     React(String),
+    /// React with a TENANT custom emoji by display name (beta custom
+    /// wire, live-verified 2026-10-19).
+    ReactCustom(String),
     ToggleFavorite(String),
+    /// Request a network fetch for one custom-emoji asset URL (the
+    /// picker itself never talks to the worker).
+    FetchCustom(String),
 }
 
-/// The reaction picker window: a compact grid anchored near the hover
-/// bar's "+" chip. Click an emoji to react (window closes); click the
-/// star beside it to (un)favorite — favorites are the hover bar's quick
-/// set. Renders COLOR emoji via the shared texture cache (windows fall
-/// back to monochrome with plain labels).
+/// Picker tab labels (index-stable: the active tab persists by index).
+pub const PICKER_TABS: &[&str] = &["Favorites", "Smileys", "Gestures", "Objects", "Custom"];
+
+/// Curated per-category grids (the wire accepts any unicode emoji).
+/// Union must be duplicate-free; a unit test pins coverage.
+pub const PICKER_CATEGORIES: &[(&str, &[&str])] = &[
+    (
+        "Smileys",
+        &[
+            "\u{1f970}", "\u{1f60d}", "\u{1f923}", "\u{1f605}", "\u{1f609}", "\u{1f60e}",
+            "\u{1f973}", "\u{1f62d}", "\u{1f631}", "\u{1f92f}", "\u{1f914}", "\u{1f928}",
+            "\u{1f97a}", "\u{1f634}", "\u{1f92e}", "\u{1f921}",
+        ],
+    ),
+    (
+        "Gestures",
+        &[
+            "\u{1f44d}", "\u{2764}\u{fe0f}", "\u{1f602}", "\u{1f62e}", "\u{1f622}",
+            "\u{1f620}", "\u{1f44f}", "\u{1f64f}", "\u{1f4aa}", "\u{1fae1}", "\u{1f91d}",
+            "\u{1f440}", "\u{1f9e0}", "\u{1f480}",
+        ],
+    ),
+    (
+        "Objects",
+        &[
+            "\u{1f389}", "\u{1f525}", "\u{1f680}", "\u{1f4af}", "\u{2705}", "\u{274c}",
+            "\u{26a1}", "\u{1f3af}", "\u{1f37f}", "\u{2615}", "\u{1f355}", "\u{1f37b}",
+            "\u{1f388}", "\u{1f3c6}", "\u{1f4cc}",
+        ],
+    ),
+];
+
+/// The reaction picker window: tabbed grid anchored near the hover bar's
+/// "+" chip. Favorites = the pinned defaults + the user's starred picks;
+/// Smileys/Gestures/Objects are the curated unicode set (★ toggles the
+/// quick set); Custom lists TENANT emoji seen so far (message imgs and
+/// received custom reactions — the directory endpoint is scope-blocked).
+/// Click an emoji to react (window closes).
 pub fn reaction_picker_window(
     ui: &mut egui::Ui,
     anchor: egui::Pos2,
     open: &mut bool,
     favorites: &[String],
     emoji_textures: &mut std::collections::HashMap<String, egui::TextureHandle>,
+    custom: &[(String, String)],
+    custom_textures: &std::collections::HashMap<String, (egui::TextureHandle, [usize; 2])>,
 ) -> Vec<PickerAction> {
     let mut out = Vec::new();
     let mut close = false;
@@ -111,85 +152,214 @@ pub fn reaction_picker_window(
         .fixed_pos(anchor)
         .show(ui.ctx(), |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-            let mut row = ui.horizontal(|ui| {
-                egui::Grid::new("reaction_picker_grid")
-                    .min_col_width(46.0)
-                    .show(ui, |ui| {
-                        for (i, e) in PICKER_REACTIONS.iter().enumerate() {
-                            let mut cell = ui.horizontal(|ui| {
-                                let btn = match emoji_image_map(ui, emoji_textures, e, 22.0) {
-                                    Some(img) => egui::Button::image(img),
-                                    None => egui::Button::new(
-                                        egui::RichText::new((*e).to_string()).size(22.0),
-                                    ),
-                                }
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::NONE)
-                                .min_size(egui::vec2(30.0, 28.0));
-                                let r = ui.add(btn);
-                                if i == 0 {
-                                    // Rect persistence for the click test
-                                    // (same pattern as the hover bar).
-                                    ui.ctx().data_mut(|d| {
-                                        d.insert_temp(
-                                            egui::Id::new("reaction_picker_first_cell"),
-                                            r.rect,
-                                        );
-                                    });
-                                }
-                                if r.clicked() {
-                                    out.push(PickerAction::React((*e).to_string()));
-                                    close = true;
-                                }
-                                let starred = favorites.iter().any(|f| f == e);
-                                // Star gold: one deliberate hardcoded tint
-                                // (presence-green precedent) — semantic
-                                // "saved" color, readable on both themes;
-                                // not worth a Palette ripple.
-                                let star = egui::RichText::new(if starred { "★" } else { "☆" })
-                                    .size(11.0)
-                                    .color(if starred {
-                                        egui::Color32::from_rgb(0xf0, 0xa8, 0x24)
+            // Active tab persists by INDEX across opens.
+            let tab_key = egui::Id::new("reaction_picker_tab");
+            let tab: usize = ui.ctx().data(|d| d.get_temp(tab_key)).unwrap_or(0);
+            let mut next_tab = tab;
+            ui.horizontal(|ui| {
+                for (i, label) in PICKER_TABS.iter().enumerate() {
+                    // The Custom tab hides while the tenant has shown no
+                    // custom emoji yet (no honest content to offer).
+                    if *label == "Custom" && custom.is_empty() {
+                        continue;
+                    }
+                    let selected = i == tab;
+                    let btn = egui::Button::new(
+                        egui::RichText::new(*label).small().color(if selected {
+                            ui.style().visuals.strong_text_color()
+                        } else {
+                            ui.style().visuals.weak_text_color()
+                        }),
+                    )
+                    .fill(if selected {
+                        ui.style().visuals.faint_bg_color
+                    } else {
+                        Color32::TRANSPARENT
+                    })
+                    .corner_radius(egui::CornerRadius::same(5));
+                    if ui.add(btn).clicked() {
+                        next_tab = i;
+                    }
+                }
+            });
+            let tab = next_tab;
+            ui.ctx().data_mut(|d| d.insert_temp(tab_key, tab));
+
+            match tab {
+                0 => {
+                    // Favorites: defaults + user picks (favorite_state is
+                    // computed by the caller; unicode only here).
+                    picker_unicode_grid(ui, favorites, favorites, emoji_textures, &mut out, &mut close, true);
+                }
+                t @ 1..=3 => {
+                    let (_, set) = PICKER_CATEGORIES[t - 1];
+                    let set: Vec<String> = set.iter().map(|s| s.to_string()).collect();
+                    picker_unicode_grid(
+                        ui,
+                        &set,
+                        favorites,
+                        emoji_textures,
+                        &mut out,
+                        &mut close,
+                        false,
+                    );
+                }
+                _ => {
+                    // Custom (tenant) emoji: image cells from the seen
+                    // index; click reacts via the custom wire.
+                    if custom.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "No tenant emoji seen yet — open chats that use them",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    } else {
+                        egui::Grid::new("reaction_picker_custom_grid")
+                            .min_col_width(52.0)
+                            .show(ui, |ui| {
+                                for (i, (name, url)) in custom.iter().enumerate() {
+                                    let r = if let Some((tex, size)) = custom_textures.get(url) {
+                                        let aspect = size[0] as f32 / size[1].max(1) as f32;
+                                        let disp = if aspect >= 1.0 {
+                                            egui::vec2(24.0, 24.0 / aspect)
+                                        } else {
+                                            egui::vec2(24.0 * aspect, 24.0)
+                                        };
+                                        ui.add(
+                                            egui::Button::image(egui::Image::new((tex.id(), disp)))
+                                                .fill(Color32::TRANSPARENT)
+                                                .stroke(egui::Stroke::NONE)
+                                                .min_size(egui::vec2(30.0, 28.0)),
+                                        )
+                                        .on_hover_text(name)
                                     } else {
-                                        egui::Color32::GRAY
-                                    });
-                                let sr = ui.add(
-                                    egui::Button::new(star)
-                                        .fill(Color32::TRANSPARENT)
-                                        .stroke(egui::Stroke::NONE)
-                                        .min_size(egui::vec2(16.0, 16.0)),
-                                );
-                                if i == 0 {
-                                    ui.ctx().data_mut(|d| {
-                                        d.insert_temp(
-                                            egui::Id::new("reaction_picker_first_star"),
-                                            sr.rect,
-                                        );
-                                    });
-                                }
-                                if sr.clicked() {
-                                    out.push(PickerAction::ToggleFavorite((*e).to_string()));
+                                        out.push(PickerAction::FetchCustom(url.clone()));
+                                        ui.add(
+                                            egui::Button::new(
+                                                egui::RichText::new("\u{2026}").size(18.0),
+                                            )
+                                            .fill(Color32::TRANSPARENT)
+                                            .stroke(egui::Stroke::NONE)
+                                            .min_size(egui::vec2(30.0, 28.0)),
+                                        )
+                                        .on_hover_text(name)
+                                    };
+                                    if i == 0 {
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(
+                                                egui::Id::new("reaction_picker_first_cell"),
+                                                r.rect,
+                                            );
+                                        });
+                                    }
+                                    if r.clicked() {
+                                        out.push(PickerAction::ReactCustom(name.clone()));
+                                        close = true;
+                                    }
+                                    if (i + 1) % 8 == 0 {
+                                        ui.end_row();
+                                    }
                                 }
                             });
-                            let _ = &mut cell;
-                            if (i + 1) % 8 == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-            });
-            let _ = &mut row;
+                    }
+                }
+            }
             ui.set_min_width(416.0);
             ui.label(
-                egui::RichText::new("Click to react — ★ sets the quick set")
-                    .small()
-                    .weak(),
+                egui::RichText::new(if tab == 4 {
+                    "Tenant emoji — click to react"
+                } else {
+                    "Click to react — ★ sets the quick set"
+                })
+                .small()
+                .weak(),
             );
         });
     if close {
         *open = false;
     }
     out
+}
+
+/// One unicode emoji grid (Favorites or a category). `starred` is the
+/// favorite STATE (defaults + user picks); on the Favorites tab the star
+/// still toggles (removing a USER pick; defaults are pinned no-ops).
+fn picker_unicode_grid(
+    ui: &mut egui::Ui,
+    set: &[String],
+    starred: &[String],
+    emoji_textures: &mut std::collections::HashMap<String, egui::TextureHandle>,
+    out: &mut Vec<PickerAction>,
+    close: &mut bool,
+    _is_favorites: bool,
+) {
+    egui::Grid::new("reaction_picker_grid")
+        .min_col_width(46.0)
+        .show(ui, |ui| {
+            for (i, e) in set.iter().enumerate() {
+                let cell = ui.horizontal(|ui| {
+                    let btn = match emoji_image_map(ui, emoji_textures, e, 22.0) {
+                        Some(img) => egui::Button::image(img),
+                        None => {
+                            egui::Button::new(egui::RichText::new(e.as_str()).size(22.0))
+                        }
+                    }
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::NONE)
+                    .min_size(egui::vec2(30.0, 28.0));
+                    let r = ui.add(btn);
+                    if i == 0 {
+                        // Rect persistence for the click test
+                        // (same pattern as the hover bar).
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(
+                                egui::Id::new("reaction_picker_first_cell"),
+                                r.rect,
+                            );
+                        });
+                    }
+                    if r.clicked() {
+                        out.push(PickerAction::React(e.clone()));
+                        *close = true;
+                    }
+                    let is_starred = starred.iter().any(|f| f == e);
+                    // Star gold: one deliberate hardcoded tint
+                    // (presence-green precedent) — semantic
+                    // "saved" color, readable on both themes;
+                    // not worth a Palette ripple.
+                    let star = egui::RichText::new(if is_starred { "★" } else { "☆" })
+                        .size(11.0)
+                        .color(if is_starred {
+                            egui::Color32::from_rgb(0xf0, 0xa8, 0x24)
+                        } else {
+                            egui::Color32::GRAY
+                        });
+                    let sr = ui.add(
+                        egui::Button::new(star)
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE)
+                            .min_size(egui::vec2(16.0, 16.0)),
+                    );
+                    if i == 0 {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(
+                                egui::Id::new("reaction_picker_first_star"),
+                                sr.rect,
+                            );
+                        });
+                    }
+                    if sr.clicked() {
+                        out.push(PickerAction::ToggleFavorite(e.clone()));
+                    }
+                });
+                let _ = &cell;
+                if (i + 1) % 8 == 0 {
+                    ui.end_row();
+                }
+            }
+        });
 }
 
 /// UI-intent actions produced by views, applied by `App`.
@@ -222,6 +392,11 @@ pub enum Action {
         message_id: String,
         emoji: String,
         remove: bool,
+    },
+    /// React with a TENANT custom emoji (beta custom wire) by name.
+    ReactCustom {
+        message_id: String,
+        name: String,
     },
     /// Open the reaction picker for a message (anchored at the hover
     /// bar's "+" chip).
@@ -2171,11 +2346,18 @@ fn bubble_parts(
                                 std::cell::RefCell<Vec<(String, Option<String>)>>,
                             > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                             let hits3 = mention_hits.clone();
+                            // Both media closures need &mut ConvCtx
+                            // (textures/pending/actions); the callbacks
+                            // run strictly one at a time inside
+                            // render_segments, so a RefCell borrow per
+                            // call is sound and keeps the signature pure.
+                            let ctx_cell: std::cell::RefCell<&mut ConvCtx<'_>> =
+                                std::cell::RefCell::new(&mut *ctx);
                             render_segments(
                                 ui,
                                 &segments,
                                 &link_pal,
-                                |ui, url| show_image(ui, ctx, url),
+                                |ui, url| show_image(ui, &mut ctx_cell.borrow_mut(), url),
                                 |ui, name, url| {
                                     if ui
                                         .button(
@@ -2198,6 +2380,9 @@ fn bubble_parts(
                                     hits3
                                         .borrow_mut()
                                         .push((name.to_string(), mri.map(str::to_string)));
+                                },
+                                |ui, name, url| {
+                                    show_custom_emoji(ui, &mut ctx_cell.borrow_mut(), name, url)
                                 },
                             );
                             for (name, mri) in mention_hits.borrow().iter() {
@@ -2247,11 +2432,13 @@ fn bubble_parts(
                             std::cell::RefCell<Vec<(String, Option<String>)>>,
                         > = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                         let hits3 = mention_hits.clone();
-                        render_segments(
+                            let ctx_cell: std::cell::RefCell<&mut ConvCtx<'_>> =
+                                std::cell::RefCell::new(&mut *ctx);
+                            render_segments(
                             ui,
                             &segments,
                             &link_pal,
-                            |ui, url| show_image(ui, ctx, url),
+                            |ui, url| show_image(ui, &mut ctx_cell.borrow_mut(), url),
                             |ui, name, url| {
                                 if ui
                                     .button(
@@ -2273,6 +2460,9 @@ fn bubble_parts(
                                 hits3
                                     .borrow_mut()
                                     .push((name.to_string(), mri.map(str::to_string)));
+                            },
+                            |ui, name, url| {
+                                show_custom_emoji(ui, &mut ctx_cell.borrow_mut(), name, url)
                             },
                         );
                         for (name, mri) in mention_hits.borrow().iter() {
@@ -2884,10 +3074,26 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
             break;
         }
         let names: Vec<String> = r.reactors.iter().map(|x| x.name.clone()).collect();
+        // Custom reaction chips: image asset keyed by object id (host
+        // learned from CustomEmoji imgs); text fallback ":name:" until
+        // the tenant host is known. Registering here grows the picker's
+        // Custom tab from reactions too.
+        let custom_url = r.custom.as_ref().and_then(|c| {
+            let url = crate::ui::widgets::custom_emoji_asset_url(&c.object_id)
+                .unwrap_or_default();
+            if !url.is_empty() {
+                crate::ui::widgets::custom_emoji_seen(&c.name, &url);
+            }
+            (!url.is_empty()).then_some(url)
+        });
+        let label_key = match (&r.custom, custom_url.as_deref()) {
+            (Some(c), _) => c.name.clone(),
+            (None, _) => r.emoji.clone(),
+        };
         let tip = if names.is_empty() {
             format!("{} reaction{}", r.count, if r.count == 1 { "" } else { "s" })
         } else {
-            format!("{} by {}", r.emoji, names.join(", "))
+            format!("{} by {}", label_key, names.join(", "))
         };
         let chip = Frame::default()
             .fill(crate::theme::tint_over(base, ctx.pal.text, fill_a))
@@ -2898,14 +3104,41 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
             .inner_margin(egui::Margin::symmetric(5, 1))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let mut glyph = |ui: &mut egui::Ui| match custom_url.as_deref() {
+                        Some(url) => {
+                            if let Some((tex, size)) = ctx.textures.get(url) {
+                                let aspect = size[0] as f32 / size[1].max(1) as f32;
+                                let disp = if aspect >= 1.0 {
+                                    egui::vec2(13.0, 13.0 / aspect)
+                                } else {
+                                    egui::vec2(13.0 * aspect, 13.0)
+                                };
+                                ui.add(egui::Image::new((tex.id(), disp)));
+                            } else {
+                                if ctx.pending_images.insert(url.to_string()) {
+                                    ctx.actions.push(Action::FetchImage(url.to_string()));
+                                }
+                                ui.label(
+                                    RichText::new(":").small().color(ctx.pal.secondary),
+                                );
+                            }
+                        }
+                        None => {
+                            if r.custom.is_some() {
+                                ui.label(RichText::new(&label_key).small());
+                            } else {
+                                emoji_widget(ui, ctx, &r.emoji, 13.0);
+                            }
+                        }
+                    };
                     if own {
                         // The strip is right-to-left on own rows; adding
                         // the count first keeps the visual order
                         // emoji-then-count on both sides.
                         ui.label(RichText::new(r.count.to_string()).small());
-                        emoji_widget(ui, ctx, &r.emoji, 13.0);
+                        glyph(ui);
                     } else {
-                        emoji_widget(ui, ctx, &r.emoji, 13.0);
+                        glyph(ui);
                         ui.label(RichText::new(r.count.to_string()).small());
                     }
                 });
@@ -2913,7 +3146,7 @@ fn reaction_chips(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, m: &MessageInfo, own
             .response;
         let chip = chip.on_hover_text(tip);
         if chip.clicked() {
-            ctx.actions.push(Action::ShowReactions { emoji: r.emoji.clone(), names });
+            ctx.actions.push(Action::ShowReactions { emoji: label_key, names });
         }
     }
 }
@@ -3048,6 +3281,45 @@ fn open_mention_contact(ctx: &mut ConvCtx<'_>, name: &str, mri: Option<&str>) {
 
 /// Inline image: textured when loaded, fetch requested once, placeholder
 /// otherwise (failed URLs stay in `pending_images` so they never retry).
+/// One tenant custom emoji INLINE at ~text height (message body). Same
+/// fetch pipeline as block images (URL-keyed textures), but a 20px slot,
+/// no lightbox, name on hover.
+fn show_custom_emoji(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, name: &str, url: &str) {
+    const PX: f32 = 20.0;
+    if let Some((tex, size)) = ctx.textures.get(url) {
+        // Natural aspect, capped to the square.
+        let aspect = size[0] as f32 / size[1].max(1) as f32;
+        let disp = if aspect >= 1.0 {
+            egui::vec2(PX, PX / aspect)
+        } else {
+            egui::vec2(PX * aspect, PX)
+        };
+        ui.add(egui::Image::new((tex.id(), disp)).sense(Sense::hover()))
+            .on_hover_text(name);
+    } else {
+        if ctx.pending_images.insert(url.to_string()) {
+            ctx.actions.push(Action::FetchImage(url.to_string()));
+        }
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(PX, PX), Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 5, crate::theme::tint_over(ctx.pal.panel, ctx.pal.text, 0.06));
+        ui.painter().rect_stroke(
+            rect,
+            5,
+            Stroke::new(1.0, ctx.pal.outline.gamma_multiply(0.6)),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "☺",
+            egui::FontId::proportional(11.0),
+            ctx.pal.secondary,
+        );
+        ui.allocate_rect(rect, Sense::hover()).on_hover_text(name);
+    }
+}
+
 fn show_image(ui: &mut egui::Ui, ctx: &mut ConvCtx<'_>, url: &str) -> bool {
     // Display box: width-capped at 340, height-capped at 460. Placeholder
     // reserves the SAME box (from the archive's decoded sizes) so an image
@@ -3145,6 +3417,7 @@ mod tests {
 
         let react = |emoji: &str, count: usize| ost::api::ReactionCount {
             emoji: emoji.to_string(),
+            custom: None,
             count,
             reactors: (1..=count)
                 .map(|i| ost::api::Reactor {
@@ -3730,6 +4003,25 @@ mod splice_review_tests {
 #[cfg(test)]
 mod picker_tests {
     use super::{reaction_picker_window, toggle_favorite, PickerAction};
+
+    /// The tabbed picker's curated categories must be duplicate-free and
+    /// match the tab list (Favorites + categories + Custom).
+    #[test]
+    fn picker_categories_duplicate_free() {
+        let mut seen: Vec<&str> = Vec::new();
+        for (_, set) in super::PICKER_CATEGORIES {
+            for e in *set {
+                assert!(!seen.contains(e), "emoji {e} in two categories");
+                seen.push(e);
+            }
+        }
+        assert_eq!(super::PICKER_CATEGORIES.len() + 2, super::PICKER_TABS.len());
+        assert_eq!(super::PICKER_TABS.last(), Some(&"Custom"));
+        // Every classic quick-set emoji is reachable in a category.
+        for e in super::DEFAULT_FAVORITES {
+            assert!(seen.contains(e), "default {e} missing from categories");
+        }
+    }
     use std::collections::HashMap;
 
     #[test]
@@ -3786,6 +4078,8 @@ mod picker_tests {
                 ..Default::default()
             };
             let mut acts = Vec::new();
+            let no_custom: Vec<(String, String)> = Vec::new();
+            let no_textures: HashMap<String, (egui::TextureHandle, [usize; 2])> = HashMap::new();
             let mut out = egui_ctx.run_ui(input, |ui| {
                 acts = reaction_picker_window(
                     ui,
@@ -3793,6 +4087,8 @@ mod picker_tests {
                     open,
                     &["👍".to_string()],
                     emap,
+                    &no_custom,
+                    &no_textures,
                 );
             });
             // The emoji raster queues texture deltas; a test Context has

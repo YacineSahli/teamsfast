@@ -1950,16 +1950,38 @@ impl TeamsFastApp {
                             "k8s right-sizing (QA)",
                             format!(r#"<Swift b64="{b64}"/>"#),
                         ));
+                        // Tenant custom-emoji row (the REAL wire shape from
+                        // this tenant's archive, 2026-10-19): inline seg +
+                        // seen-index registration for the picker's Custom
+                        // tab. Live URL — the QA network fetches the asset.
+                        self.messages.push(qa(
+                            "qa-custom-emoji",
+                            "QA Bot",
+                            "pray for prod :sadcat1:",
+                            format!(
+                                "<p>pray for prod <span><img alt=\"sadcat1\" itemid=\"sadcat1;0-csea-d6-11111111222233334444555566667777\" itemtype=\"http://schema.skype.com/CustomEmoji\" src=\"https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-csea-d6-11111111222233334444555566667777/views/imgt2_anim\" style=\"width:20px; height:20px\"></span></p>"
+                            ),
+                        ));
                     }
                     // QA hook: TEAMSFAST_PICKER=1 opens the reaction
                     // picker on the newest message of the opened chat —
                     // headless QA can't click the hover bar's "+" chip.
+                    // TEAMSFAST_PICKER_TAB=<n> presets the tab (Custom = 4)
+                    // — tab clicks are equally impossible headless.
                     if crate::app::qa_flag("TEAMSFAST_PICKER")
                         && self.reaction_picker.is_none()
                         && let Some(m) = self.messages.last()
                     {
                         self.reaction_picker =
                             Some((m.id.clone(), egui::Pos2::new(640.0, 110.0)));
+                        if let Some(ectx) = self.egui_ctx.clone()
+                            && let Ok(t) = std::env::var("TEAMSFAST_PICKER_TAB")
+                            && let Ok(idx) = t.parse::<usize>()
+                        {
+                            ectx.data_mut(|d| {
+                                d.insert_temp(egui::Id::new("reaction_picker_tab"), idx)
+                            });
+                        }
                     }
                     // QA hook: TEAMSFAST_FMT=1 seeds one synthetic message
                     // whose raw HTML is EXACTLY what build_message_html
@@ -2001,6 +2023,7 @@ impl TeamsFastApp {
                         let seed = |vec: &mut Vec<MessageInfo>| {
                             let react = |emoji: &str, count: usize| ost::api::ReactionCount {
                                 emoji: emoji.to_string(),
+                                custom: None,
                                 count,
                                 reactors: (1..=count)
                                     .map(|i| ost::api::Reactor {
@@ -2013,7 +2036,33 @@ impl TeamsFastApp {
                                 vec[n - 2].reactions = vec![react("👍", 2), react("❤️", 1)];
                             }
                             if n >= 4 {
-                                vec[n - 4].reactions = vec![react("🎉", 1)];
+                                // Custom reaction (live shape: the object id
+                                // matches the TABLE seed's img, so the
+                                // objects host is already learned and the
+                                // chip can build its asset URL).
+                                vec[n - 4].reactions = vec![
+                                    react("🎉", 1),
+                                    ost::api::ReactionCount {
+                                        emoji: String::new(),
+                                        custom: Some(ost::api::CustomReaction {
+                                            name: "sadcat1".into(),
+                                            object_id:
+                                                "0-csea-d6-11111111222233334444555566667777"
+                                                    .into(),
+                                        }),
+                                        count: 2,
+                                        reactors: vec![
+                                            ost::api::Reactor {
+                                                id: "8:orgid:qa0001".into(),
+                                                name: "QA Tester 1".into(),
+                                            },
+                                            ost::api::Reactor {
+                                                id: "8:orgid:qa0002".into(),
+                                                name: "QA Tester 2".into(),
+                                            },
+                                        ],
+                                    },
+                                ];
                             }
                         };
                         seed(&mut self.messages);
@@ -2711,6 +2760,17 @@ impl TeamsFastApp {
                             message_id,
                             emoji,
                             remove,
+                        })
+                        .ok();
+                }
+            }
+            Action::ReactCustom { message_id, name } => {
+                if let Some(chat) = self.selected.clone() {
+                    self.cmd
+                        .send(Command::ReactCustom {
+                            chat_id: chat,
+                            message_id,
+                            name,
                         })
                         .ok();
                 }
@@ -5431,12 +5491,15 @@ impl eframe::App for TeamsFastApp {
             // user picks), not the stored user list alone.
             let fav_state =
                 crate::ui::conversation::favorite_state(&self.settings.reaction_favorites);
+            let custom = crate::ui::widgets::custom_emoji_entries();
             let actions = crate::ui::conversation::reaction_picker_window(
                 ui,
                 anchor,
                 &mut open,
                 &fav_state,
                 &mut emap,
+                &custom,
+                &self.textures,
             );
             self.emoji_textures = emap;
             for a in actions {
@@ -5448,8 +5511,19 @@ impl eframe::App for TeamsFastApp {
                             remove: false,
                         },
                     ),
+                    crate::ui::conversation::PickerAction::ReactCustom(name) => self.apply(
+                        Action::ReactCustom {
+                            message_id: pmsg.clone(),
+                            name,
+                        },
+                    ),
                     crate::ui::conversation::PickerAction::ToggleFavorite(emoji) => {
                         self.apply(Action::ToggleReactionFavorite(emoji));
+                    }
+                    crate::ui::conversation::PickerAction::FetchCustom(url) => {
+                        if self.pending_images.insert(url.clone()) {
+                            self.cmd.send(Command::FetchImage(url)).ok();
+                        }
                     }
                 }
             }
