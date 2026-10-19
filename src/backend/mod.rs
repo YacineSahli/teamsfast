@@ -1315,9 +1315,12 @@ async fn ready_session(ses: &mut Session) -> Result<(Option<String>, Option<Stri
             if let Some(id) = c.skypeid() {
                 let mri = format!("8:{id}");
                 ses.self_id = Some(mri.clone());
-                let name = ost::config::Config::load_cached()
-                    .ok()
-                    .and_then(|cfg| cfg.skypeid.map(|s| s.trim_start_matches("live:").to_string()));
+                // Friendliest self label: the sign-in email's local part.
+                let name = ost::config::Config::load_cached().ok().and_then(|cfg| {
+                    cfg.signinname.map(|e| {
+                        e.split('@').next().unwrap_or(&e).to_string()
+                    })
+                });
                 return Ok((Some(name.unwrap_or_else(|| "Personal".into())), Some(mri)));
             }
             match ost::api::whoami_data(c).await {
