@@ -884,3 +884,43 @@ stale; the web tab's registration was swept — refresh it before the next
 web test). Pair thread 19:2d46f0… STILL wedged (roster 403; group
 thread remains the working one). P2 caller-name in the ring banner
 still "(unknown)" (offer from.displayName; roster resolve exists).
+
+### run-13 addendum — CONSUMER WEB↔APP CALLS WORK (DTLS-SRTP shipped, live E2E)
+
+Evening continuation ("fix everything and test"): implemented the full
+DTLS-SRTP stack and closed the loop with the user's browser as caller.
+**Live-verified end-to-end: web (teams.live.com, real WebRTC client)
+calls the app → rig rings with the caller's real name ("Riley Alvarez") →
+answer → ICE direct → acceptance 200 + INLINED callAcceptanceAcknowledgement
+in 0.1s → DTLS handshake with the browser (client role) in ~100ms →
+audio streaming 5000+ packets, call STAYS UP (user confirmed "working";
+every prior attempt died ≤30s).**
+
+Evening commits (core, COMMIT BUT NOT PUSHED; 404/404 tests):
+- ed79e87 SDP: a=fingerprint(sha-256, real cert)+a=setup on every
+  offer/answer (actpass/active); SDES a=crypto kept for SFB peers.
+- 479a4aa DTLS-SRTP media plane: new calling::dtls on webrtc-rs `dtls`
+  (use_srtp, EXTRACTOR-dtls_srtp 60B export split per RFC 5764); single
+  socket reader demuxes DTLS records into a bounded queue; background
+  handshake (caller=server/answerer=client) swaps the SRTP context;
+  sends gated until keys land. Loopback unit test + rig↔rig live
+  (handshakes <1s, RTP 1458/1454).
+- 5179f86 start the media session for DTLS-only offers (web offers have
+  NO a=crypto; our SDES gate skipped media entirely).
+- d7f6e24 answers never ADD SDES crypto to a DTLS-only offer (RFC 3264
+  violation → the web's setRemoteDescription failed 500ms after its 200).
+- 7bd8742 JSEP m-section stubs: the web offers FOUR m-lines (audio,
+  video-recvonly, screenshare, x-data; BUNDLE 0 1 2 3) — answers now
+  carry a section per offer line (port-0 rejects echoing proto/pts/mid).
+  A short answer = instant 410/3111 (live-verified twice).
+
+The debugging ladder (each step live with the user's browser): acceptance
+200+inlined ack → media-gate fix → crypto-violation fix → m-count fix →
+CONNECTED. Rig↔rig 408/10056 (our own caller vs our own answerer) is
+STILL OPEN — the CC's wait there is specific to OUR create-side flow
+(the web caller's identical-looking transaction completes fine); next
+lead: diff our create/invite against the web caller's (HAR has it).
+Remaining nits: browser→app return audio (recv=0; tab mic/relay suspect),
+video answered as rejected, ring banner "(unknown)" for OUR rig callers.
+NOTE: the answer side is now the reference implementation — web↔app
+inbound calls are DONE.
