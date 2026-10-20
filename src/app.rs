@@ -160,13 +160,24 @@ fn drain_latest(
 }
 
 /// Upload/refresh a video texture from an I420 frame; recreates the
-/// texture when the resolution changes.
+/// texture when the resolution changes. Screen-sized sources are
+/// box-filtered down first — a 1280x720 share at 15 repaints/s is
+/// ~55MB/s of RGBA conversion + upload on software GL and starves the
+/// stage (live 2026-10-20: callee tile vanished at 86% CPU).
 fn apply_frame(
     ctx: &egui::Context,
     slot: Option<egui::TextureHandle>,
     id: &str,
     frame: &ost::calling::video::VideoFrame,
 ) -> egui::TextureHandle {
+    const MAX_TEXTURE_W: u32 = 640;
+    let frame_ref: std::borrow::Cow<ost::calling::video::VideoFrame> =
+        if frame.width > MAX_TEXTURE_W {
+            std::borrow::Cow::Owned(frame.downscaled(MAX_TEXTURE_W))
+        } else {
+            std::borrow::Cow::Borrowed(frame)
+        };
+    let frame = &*frame_ref;
     let rgba = frame.to_rgba();
     let img = egui::ColorImage::from_rgba_unmultiplied(
         [frame.width as usize, frame.height as usize],
