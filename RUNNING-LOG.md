@@ -712,3 +712,65 @@ Core 085f97e pushed (400 tests). Gotchas: pkill shim ignores -9
 (use kill -9 by pid); registrar deletes rate-limit fast (~30/burst);
 the wedge also surfaced a caller call-slot latch on torn-down calls
 (restart clears; fix separately).
+
+## 2026-10-20 run-12 — acceptance-504 campaign: caller chain COMPLETE, callee acceptance still CC-blocked
+
+Rigs relaunched (pa :81 / pb :82, fresh group thread
+19:9999999988887777666655554444aaaa@thread.v2 minted via
+PAIR_MAKE_GROUP — the ORIGINAL pair thread's conv record is wedged
+server-side: 5704 "failure to resolve ownership", identical cached
+correlationId 7fd7434d for BOTH callers = a poisoned conversation
+record at conv-frce-06; unreachable from outside (GET/DELETE 404,
+POST end 503/70051). Fresh threads resolve fine — pair thread to
+retest later for expiry).
+
+LIVE-VERIFIED END-TO-END (repeatably, 6+ cycles): invite 202 →
+evt:107 ring on B (caller unknown, video flag from offer m=video) →
+fork attach (11KB) → ringing progress (A receives /call/progress/ on
+its task socket!) → mediaAnswer 202 → caller CONNECTED on the answer
+SDP → NEW: caller POSTs the mediaAnswer acknowledgement
+(mediaAnswer/links/mediaAcknowledgement — 201 Created; was parsed from
+the wrong path and never sent).
+
+The callee's acceptance POST still dies: 22s hold → 412/430/10065
+"Trouter server timed out … Delivering call acceptance notification".
+Falsified this run (all live-tested, then reverted only where inert):
+- dead registrar registrations (swept BOTH V3 and LIFE registrars; the
+  app leaks 6/instance: 1h session-max-age reconnects re-register on a
+  NEW surl without removing the old — systemic; REG_CLEAN now covers
+  both registrars, comma keeps, CONTAINS match: the old starts_with on
+  a full URL never matched and DELETED LIVE registrations once — the
+  likely 5704-wedge origin).
+- declared endpoint ids (create/attach/acceptedBy now declare the main
+  session's REGISTERED epid via trouter::current_epid, not random
+  UUIDs).
+- registrationId=epid bindings (register_calling_epid probe; present
+  on live surls during the last test — still 504).
+- caller call-channel links: invite callInvitation.links
+  (progress/mediaAnswer/acceptance/redirection/end — mined from the
+  web callInvitation builder) + clientContentForMediaController. The
+  double-slash bug in trouter_callback paths ("/call/x/" → //call/x/)
+  fixed; CC now adopts the links (echoed single-slash in logs).
+- callee broker channel: fork-attach `subscribe` link = GET long-poll
+  (202, message/nextSubscribeUrl/expirationTimeInSec=30, 404 when the
+  channel dies — contract captured via PAIR_BROKER_SUB); the answer
+  flow now polls it and would ack a callAcceptance echo — the echo
+  NEVER ARRIVES on it (empty messages only).
+
+Web-chunk evidence (calling-pluginless): the callee FSM enters
+WAITING_CALL_ACCEPTANCE_ACK after POSTing AG; handleCallAcceptance
+receives the callAcceptance EVENT and POSTs
+e.body.callAcceptance.links.acknowledgement (Ty body). B's socket has
+received ZERO callAcceptance frames all day — the CC never attempts
+delivery to ANY URL B declared. Every client-side lever now matches
+the web shapes; the remaining diff is invisible without a real web
+acceptance capture (USER-GATED).
+
+Also found: decline is broken (fork reject link answers 405 to our
+POST — wrong method/body for /cc/v1/forked/.../reject); caller 60s
+no-answer timeout works; caller call-slot latch still wedges after
+connected calls that die on acceptance (hangup clears).
+
+Core: 0757679 pushed (400 tests). NEXT: (a) web capture of a real
+acceptance (gated), or (b) fix decline's 405 + latch, retest pair
+thread wedge expiry.
