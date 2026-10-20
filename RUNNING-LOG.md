@@ -793,3 +793,29 @@ day:
   Cargo dep is branch-tracked, lock carries no rev pin.
 - Guards: pre-push grep hooks both repos; GitHub secret scanning +
   push protection enabled.
+
+### run-12 addendum — decline VERIFIED, latch VERIFIED, registrar self-sweep; acceptance 408 now
+
+Second wave (core 08a5e02 pushed):
+- DECLINE WORKS E2E: fork reject = DELETE with top-level
+  {callEnd:{code:603,...}} (payload-unwrapped) → 202, and the caller
+  receives the rejection in 170ms. Proves the CC event fan-out is fine
+  when the payload is right — the acceptance failure is payload/flow
+  specific, not environmental.
+- CALLER LATCH FIXED (live): the call task now pumps its socket
+  post-connect (heartbeats + callEnd detection); a connected-then-
+  failed call self-terminates on the CC's call/end instead of wedging
+  the slot ("Remote end received — hanging up").
+- REGISTRAR SWEEP on reconnect: surl changes now delete the superseded
+  surl's bindings (the hourly session-max-age reconnect was leaking 6
+  dead entries per hour per account).
+- updateConversationLinks (QG shape) against the fork join's
+  notificationLinks URL → 404 (before AND after mediaAnswer). The
+  acceptance error shifted 412/430 → 408 — behavior changes with
+  payload timing; remaining unknowns need the gated web capture.
+- test hygiene: sendfix_one_to_one_thread_id_is_ordered_pair had a
+  wrong-pasted expectation since 88f27a9 (the pure function can never
+  produce the real-tenant thread id); fixed. self_ring example
+  repaired.
+
+ rigs left RUNNING (pa/pb on the final binary, registrations clean).
