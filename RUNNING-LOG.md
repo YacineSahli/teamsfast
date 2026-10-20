@@ -993,3 +993,93 @@ crypto both ways. Needs one user round with a hot mic to confirm.
 Video offers are still answered audio-only (port-0 stubs) — the
 remaining P3. Pair thread 19:2d46f0… permanently dead (roster 403;
 use calluser — it resolves via the sticky OneToOneChat now).
+
+## run-14 — CONSUMER VIDEO CALLS + GROUP CALLS + SCREEN SHARE (all rig-verified)
+
+Autonomous run ("video calls → group calls → screen share", 2026-10-20
+evening). COMMIT BUT DO NOT PUSH still in effect. core 548c766..246deb4
+(7 commits, 414 tests / 416 with video-cam), app 5f234dc..eeed648
+(4 commits, 118 tests). Rigs pa/pb left RUNNING on the final binary.
+
+**P0 VIDEO CALLS: DONE, rig↔rig end-to-end, every round live-verified.**
+Strategy: consumer video uses the WEB'S OWN BUNDLE SHAPE everywhere —
+the web's cpconv offer (captured in the HAR) is `a=group:BUNDLE 0 1 2 3`,
+all m-lines on ONE transport, DTLS-only, mid1 video recvonly with a pile
+of H264/AV1/rtx PTs. Our caller now offers that shape (2 m-lines,
+audio PCMU + video H264 102/108 pm=1, both sendrecv, one socket) and
+the answerer answers mid1 FOR REAL (same port/creds/candidates as
+audio, offer's PT + fmtp echoed, direction mirrored, BUNDLE group line,
+mid2/mid3 stubbed) — so the rig testbed exercises exactly the code a
+browser hits. TEAMSFAST_NO_VIDEO_ANSWER=1 forces the old audio-only
+stubs for A/B.
+
+The chain closed on the FIRST live round (ring → answer → DTLS-SRTP on
+the one transport → bidirectional video + audio) but rendered nothing —
+three stacked display bugs, each found by one rig round + an offline
+loopback test:
+1. per-SSRC ROC (cfcacb0): BUNDLE = two SSRCs on ONE SrtpContext; the
+   single shared (roc, highest_seq) pair corrupts the estimate. Now a
+   HashMap<ssrc, StreamRoc> per direction; inbound state commits only
+   after auth-tag verify. Interleaved-streams-across-wraps unit test.
+2. SVC container NALs (fb613ba): our packetizer injects PACSI(30)/
+   prefix(14) NALs; openh264 rejects them with persistent
+   dsBitstreamError that kills every P-frame. Receive paths skip 14/30.
+   Full-wire roundtrip test (encode→packetize→depacketize→decode).
+3. TWO-ENCODER interleave (7a95c2a + ea2a121): the no-source fallback
+   used a separate black-frame encoder, so a camera ticking slower than
+   the send loop interleaved two unrelated H264 reference chains on one
+   SSRC (receiver: dsRefLost on every slice). encode_black_frame() goes
+   through the CALL'S encoder (dims-aware); the hand-rolled baseline
+   IDR bitstream is also decoder-hostile (0/6 in tests) — pinned by test.
+Final polish (7940cab): I420 black needs UV=128 — all-zero planes
+render as solid RGB(0,135,0) GREEN (the caller's remote tile was a
+uniform green field); the fallback tees the preview (no more "camera…"
+placeholder on no-source legs); answer_call_with_stop drives the
+phase watch to Connected (callee banners were stuck "calling… 00:00").
+
+VERIFIED (final binary, CALLQA logs + pixel-checked screenshots):
+- videocall pa→pb: ring video=true → accept → BUNDLE video answered
+  (PT 102) → DTLS → audio 1500/1500 + video both directions, decode
+  150/150 frames (100%, zero errors) → both stages render video tiles
+  (vision 4/4 pass: no placeholders, no green) → caller hangup clean;
+  decline still ends <1s (accepted=false 0/0); audio-only calls intact.
+- Callee-side media: VideoSessionConfig on MediaSession — video RTP
+  demuxed by payload type in the STUN-aware recv loop, camera/share
+  slots + camera gate + remote-frame sink via CallControls (the app's
+  accept_incoming now creates call_controls(true) and passes them).
+
+**P1 GROUP CALLS: the group thread works** (`--ctl call
+19:<group-thread>@thread.v2`): ring → accept → DTLS → audio 1242/1242 →
+clean hangup. N-party create (2+ participants.to) NOT implemented —
+honestly deferred: with only two QA accounts a multi-dial cannot be
+verified; a true 3rd participant is the user's browser (§5). Noted on
+the wire: the calluser flow's post-hoc invite leg draws a trouter
+addParticipantFailure 580/5201 (callControllerTransactionEnd 408/10312
+"timed out waiting for an answer to the media negotiation request")
+while the call itself works — cosmetic today, worth understanding when
+N-party lands.
+
+**P2 SCREEN SHARE on the consumer video leg: DONE, synthetic source.**
+TEAMSFAST_SCREENSHARE=1 + videocall: pa's share (1280x720 bars) rides
+the BUNDLE video leg — encoder re-init at 720p/3072kbps on the SAME
+chain, preview tee shows the bars, pb DECODES 720p frames and its stage
+RENDERS the bars end-to-end (vision-verified both sides). One real bug
+found + fixed (246deb4 + app 18ff4a9): 720p frames at the stage's
+15fps repaint = ~55MB/s RGBA conversion+upload on software GL — the
+callee UI burned 86% CPU and the stage VANISHED; VideoFrame::downscaled
+box-filters anything >640px wide before the texture. The REAL portal
+path stays user-gated (interactive session); the interactive STOP
+(share→camera swap) is untested headless (no click injection).
+
+User-gated §5 batch (unchanged, ONE message when the user is back):
+browser→app VIDEO call with camera ON (validates our answer against
+real WebRTC + captures the newOffer/renegotiation shapes for mid-call
+video + mid2 screenshare activation); 3rd participant in the group
+call; one hot-mic browser→app audio round (recv=0 = muted-tab theory).
+Refresh the browser tab after any registrar sweep.
+
+P3 notes (not blocking): outgoing consumer call banners show the raw
+thread id (incoming calls show real names since 548c766); the callee
+stage renders narrow beside an open chat (layout, not data); rigs burn
+~75% CPU on 720p (openh264 decode at 15fps dominates — fine for QA,
+worth a thread-priority look someday).
