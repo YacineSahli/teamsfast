@@ -1593,6 +1593,16 @@ impl TeamsFastApp {
                     // preview sink exists only when the camera is on.
                     // Meeting joins keep the stage the join already opened
                     // (the lobby room is the content until admitted).
+                    // An incoming call's label may still carry a pre-media
+                    // status fragment ("… — accepting…") appended before
+                    // this handle existed — the live phase replaces it.
+                    if let Some((label, at)) = self.call.take() {
+                        let base = label
+                            .split_once(" — ")
+                            .map(|(b, _)| b.to_string())
+                            .unwrap_or(label);
+                        self.call = Some((base, at));
+                    }
                     self.call_view_open = handle.local_preview.is_some()
                         || (self.call_is_meeting && self.call_view_open);
                     self.call_media = Some(handle);
