@@ -774,3 +774,22 @@ connected calls that die on acceptance (hangup clears).
 Core: 0757679 pushed (400 tests). NEXT: (a) web capture of a real
 acceptance (gated), or (b) fix decline's 405 + latch, retest pair
 thread wedge expiry.
+
+## run-12 — publish scrub (2026-10-20)
+
+3-subagent audit of both public repos (full history + trees): zero
+credentials anywhere, but run-9..11 capture work had landed real
+identifiers against the fictional-fixtures policy. Fixed the same
+day:
+- teamsfast: `git filter-repo --replace-text` over the UNPUSHED
+  range only (published history + tags untouched) — rig-account
+  emails/handles, the live_parse orgid, and the tenant k8s/Jira/
+  custom-emoji fixtures all swapped for same-shape fictional
+  stand-ins; AGENTS.md topic-channel example generalized and the
+  signing-key backup path redacted (see the private runbook).
+- teams-core: full history rewrite + force-push (personal handles,
+  captured per-call keying material, thread ids, AAD orgids, emoji
+  object id → fictional). 400/400 lib tests green post-rewrite;
+  Cargo dep is branch-tracked, lock carries no rev pin.
+- Guards: pre-push grep hooks both repos; GitHub secret scanning +
+  push protection enabled.
