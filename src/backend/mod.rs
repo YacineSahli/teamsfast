@@ -1227,6 +1227,10 @@ async fn accept_incoming(ses: &mut Session, tx: &Sender<Event>, raw: String) {
         stop: stop_tx,
         done: done.clone(),
     });
+    // Video pipes for the answered call: remote frames → call stage,
+    // camera/share slots → the send loop. The answer answers video for
+    // real when the offer is BUNDLE (consumer web + our own video calls).
+    let (media, media_handle) = ost::calling::call_controls(true);
     let tx_evt = tx.clone();
     tokio::spawn(async move {
         // First statement: Drop marks the slot done when THIS task ends
@@ -1234,14 +1238,20 @@ async fn accept_incoming(ses: &mut Session, tx: &Sender<Event>, raw: String) {
         let _done_guard = CallDoneGuard(done);
         let _ = tx_evt.send(Event::CallStarted { label });
         let _ = tx_evt.send(Event::CallStatus("accepting…".into()));
+        let _ = tx_evt.send(Event::CallMedia(media_handle));
         // Safety cap via hang-up only — an incoming call has no duration
         // budget; the stop watch (and the remote end) end it.
-        let res = ost::calling::answer_call_with_stop(&notification, false, stop_rx).await;
+        let res =
+            ost::calling::answer_call_with_stop(&notification, true, stop_rx, Some(media)).await;
         match res {
             Ok(result) => {
                 let _ = tx_evt.send(Event::CallEnded(format!(
-                    "call ended — accepted: {}, {} packets sent / {} received",
-                    result.call_accepted, result.packets_sent, result.packets_received
+                    "call ended — accepted: {}, {} packets sent / {} received, video {} sent / {} received",
+                    result.call_accepted,
+                    result.packets_sent,
+                    result.packets_received,
+                    result.video_packets_sent,
+                    result.video_packets_received
                 )));
             }
             Err(e) => {
