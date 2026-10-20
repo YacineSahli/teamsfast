@@ -924,3 +924,72 @@ Remaining nits: browser→app return audio (recv=0; tab mic/relay suspect),
 video answered as rejected, ring banner "(unknown)" for OUR rig callers.
 NOTE: the answer side is now the reference implementation — web↔app
 inbound calls are DONE.
+
+## run-13 addendum II — RIG↔RIG CONSUMER CALLS FULLY WORKING (the 408 closed)
+
+Autonomous continuation ("continue work on next things"): the
+rig↔rig acceptance 408/10056 — open since run-12 — is CLOSED, plus two
+adjacent live bugs. Four core commits (edee7b8..548c766, 407 tests)
++ app 30ebf78 (118 tests); COMMIT BUT DO NOT PUSH still in effect.
+
+The 408 was THREE stacked bugs; each fix was found by one live
+rig↔rig round + HAR/JS mining:
+
+1. **edee7b8 UPN-form callee MRI → 10124 stranger gate.** The pair
+   thread died server-side (A removed from its roster — the run-11
+   "wedge" finally explained: AclCheckFailed 209), so calluser minted
+   a FRESH 1:1 whose roster carries the callee as `8:user@host` —
+   the CC cannot route that form and the invite fan-out dies
+   call/end 403 subCode 10124. The consumer web anchors its contact
+   1:1 on a `productThreadType: OneToOneChat` thread whose roster
+   freezes endpoint-registered forms (`8:live:.cid.<guid>`): when the
+   roster peer is UPN-form, we now resolve the endpoint MRI via the
+   sticky thread's roster. (msgapi `/v1/users/ME/contacts*` is 405-
+   walled; presence reads 40102 — the sticky roster is the only
+   client-visible UPN→MRI table.)
+2. **211e275 epconv → cpconv.** Our single-shot create went to
+   /api/v2/epconv WITH `groupChat {threadId}`; the CC built a GROUP
+   call (fresh minted thread, isMultiParty=true, groupCallInitiator)
+   — the web's create is /api/v2/cpconv with `groupChat:null`
+   (two-party). Aligned consumer creates to the web shape exactly
+   (caps 109985824, endpointState seq 1).
+3. **b3fb4d9 THE ack the CC actually waits for.** With 1+2 the calls
+   CONNECTED with perfect bidirectional DTLS-SRTP audio and still
+   died at the 30s acceptance deadline despite the caller
+   transport-acking (160ms) AND POSTing the record's
+   links.acknowledgement (201, Ty body). Mined the web's
+   calling-pluginless chunk: `handleIncomingMsgSync` returns the
+   Ty-shaped callAcceptanceAcknowledgement as the RESPONSE BODY of
+   the trouter HTTP-over-WS frame (`{id,status,headers,body}` per
+   trouter-js) — the CC resolves the callee's accept long-poll on
+   THAT transport-body ack, not the HTTP POST. Our websocket now
+   answers `/call/acceptance/` forwards with the ack body + echoed
+   correlation headers. Acceptance: 200 "Incoming call accepted",
+   calls stay up indefinitely (verified 2min+, ended only by
+   hang-up).
+
+Also fixed live-verified:
+- **548c766 callee remote-gone watchdog + real display names.** The
+  CC delivers NOTHING to the callee on caller hang-up (no trouter
+  frame, no broker event — the earlier browser hang-up DID deliver
+  frames the answer loop ignored): accepted calls kept streaming
+  into the void (20min/36k packets) with the slot latched. The
+  answer loop now ends the call after 30s of frozen recv (our sender
+  paces 50pps, so frozen-after-traffic = remote gone). App side:
+  Event::CallGone always sends HangUp (30ebf78). Ring banners show
+  the sign-in local part instead of "(unknown)"/raw MRI (both the
+  invite from.displayName and acceptedBy.displayName).
+
+VERIFIED THIS SESSION (rig pa↔pb, final binary, CALLQA logs):
+ring → answer → acceptance 200 → DTLS both roles → bidirectional
+audio 5954/5954 → caller hangup clean end; callee watchdog end at
++30s ("remote end gone: recv frozen"); decline still 603/202.
+Echo path untouched; rigs left running (pa :81 / pb :82).
+
+Notes: browser→app recv=0 is almost certainly a muted tab — Chrome
+stops RTP when the mic track is disabled while consent STUN keeps
+flowing (exactly our observed pattern); rig↔rig proves the receive
+crypto both ways. Needs one user round with a hot mic to confirm.
+Video offers are still answered audio-only (port-0 stubs) — the
+remaining P3. Pair thread 19:2d46f0… permanently dead (roster 403;
+use calluser — it resolves via the sticky OneToOneChat now).
