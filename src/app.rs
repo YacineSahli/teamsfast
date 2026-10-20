@@ -1566,11 +1566,18 @@ impl TeamsFastApp {
                 }
                 Event::CallGone => {
                     log::info!("CALLQA phase=caller_gone");
-                    // Caller cancelled while ringing: drop the banner. The
-                    // accepted-call case stays manual until the callback
-                    // shapes are capture-verified (see NOTES).
+                    // Caller cancelled while ringing: drop the banner…
                     self.incoming = None;
                     self.stop_ringer();
+                    // …and if the call was already ACCEPTED, the remote
+                    // hung up (the CC delivers conversationEnd / call-end
+                    // to the callee as well) — stop the active leg so the
+                    // call tears down instead of streaming into the void
+                    // (live 2026-10-20: browser hang-up left the callee
+                    // sending for 8+ minutes with recv frozen). HangUp on
+                    // an idle slot is a no-op.
+                    log::info!("CALLQA action=hangup (remote ended call)");
+                    self.cmd.send(Command::HangUp).ok();
                 }
                 Event::JoinPreview(rx) => {
                     self.join_preview = Some(rx);
