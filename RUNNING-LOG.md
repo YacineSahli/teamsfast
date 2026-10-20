@@ -652,3 +652,38 @@ chunks — the 32 initial bundles don't contain the publish code), (b)
 mint it, publish capabilities ["Audio","Video"], (c) retry the call —
 if invites then route, ringing proceeds with everything already
 built. Fallback capture: B in the web client once.
+
+## 2026-10-20 run-10 — consumer calls: spine solved, 403 root-caused
+
+Mined the consumer web client's LAZY chunks (found the runtime's
+a.un/a.uh chunk maps — 6881 named chunks — via the browser-UA page
+load; presence-service, config-life and calling chunks downloaded).
+Four live-verified breakthroughs:
+- PRESENCE PUBLISH SOLVED: the consumer write path is PUT
+  {unifiedPresence}/v1/me/endpoints/ with {id, availability, activity,
+  deviceType, capabilities} + X-Skypetoken + teams4life header → 201,
+  capabilities ["Audio","Video"] visible in GET (the months of 401s
+  were wrong-path PUTs). ~5-min TTL → the app's PollPresence now
+  publishes for personal profiles every 60 s (UPS endpoint published,
+  live-verified in-app; an MT variant via teams.live.com/ups/global +
+  authz ?resource= mtsvc tokens also works).
+- CONSUMER SPINE: config-life's trouterService = go.trouter.skype.com
+  + edge.skype.com/registrar (work prod = teams.microsoft.com v3!).
+  teams-core now negotiates the SKYPE fleet for personal and takes
+  the edge.skype.com V3 registrar hint; all TFL templates accepted.
+  Plus LIFE-registrar (teams.microsoft.com/registrar/prod/v2) calling
+  registrations; appliance-8443 attempt REMOVED (theory retracted).
+- ECHO CALL CONNECTED on a consumer account (phase=connected) — the
+  whole caller + media stack works end-to-end for personal profiles.
+- A↔B 1:1 = call/end 403 subCode 10124 "Permission check for callee
+  to interact with caller is not allowed" in <0.5 s: a CALLEE-SIDE
+  RELATIONSHIP GATE (stranger-call block), not routing. Contact-add
+  probes rejected everywhere (peoplecoreservice 401/403 on every
+  mintable token; flightproxy FQDN-whitelisted; msgapi 501). B also
+  gets NO message pushes on either fleet (receiver-side; app polls).
+NEXT (the one gate left): establish the A↔B relationship — either the
+user adds the contact once from a real client (both accounts are
+ours), or one authorized web-client capture of the Add-contact wire.
+Then ringing → answer (--ctl) → RTP counters → video, all of which is
+already built and waiting on the rigs (pa/pb Xvfb launchers).
+Core: 9639ba7+1467624 pushed. App: UPS publish in PollPresence.

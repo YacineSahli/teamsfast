@@ -890,6 +890,29 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 let Some(c) = ses.client.as_ref() else {
                     continue;
                 };
+                // Personal (consumer) profiles have no Graph presence —
+                // poll = publish the UPS endpoint instead. The record
+                // expires after ~5 min; call routing reads its
+                // capabilities to decide callee reachability.
+                if ost::config::Config::load_cached()
+                    .map(|cfg| cfg.personal == Some(true))
+                    .unwrap_or(false)
+                {
+                    match ost::api::publish_endpoint_personal(c).await {
+                        Ok(()) => {
+                            ses.presence_failures = 0;
+                            send!(Event::MyPresence("Available".into()));
+                        }
+                        Err(e) => {
+                            ses.presence_failures += 1;
+                            log::debug!(
+                                "UPS endpoint publish (strike {}): {e:#}",
+                                ses.presence_failures
+                            )
+                        }
+                    }
+                    continue;
+                }
                 let res = ost::api::get_presence_data(c).await;
                 match res {
                     Ok(p) => {
