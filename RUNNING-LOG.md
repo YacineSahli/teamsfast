@@ -819,3 +819,68 @@ Second wave (core 08a5e02 pushed):
   repaired.
 
  rigs left RUNNING (pa/pb on the final binary, registrations clean).
+
+## run-13 — acceptance root-caused to DTLS-SRTP; RTP now flows; 7 core fixes
+
+User-gated web captures: FOUR HARs captured live (user accepted in the
+browser while rigs called). Every web accept died CLIENT-SIDE before any
+HTTP request — attach 200 → progress 202 → (accept click) →
+updateEndpointState 200 → DELETE reject 410/3111
+"CallEndReasonMediaOfferProcessingError". Ruled out live: mic permission
+(was granted), input devices (system has 2), modalities (audio-only
+offer + ["Audio"] declared — CC echoed callModalities ['audio'] and it
+STILL failed), offer shape (rebuilt to MS form), Firefox-vs-Chromium.
+ROOT CAUSE (chunk-verified): calling-pluginless carries 57 dtls + 8
+fingerprint references and ZERO SDES crypto — the consumer web is a
+WebRTC/DTLS-SRTP stack; our SDES-only (a=crypto) offer is unanswerable
+(setRemoteDescription throws). The same fleet-wide DTLS expectation
+unifies the rig→rig 408/10056 "waiting for acknowledgement": the CC's
+media pipeline never sets connectTime for an all-SDES call (RTP flows
+raw regardless) and the acceptance transaction dies at its 30s deadline.
+FIX = DTLS-SRTP media stack in teams-core (a=fingerprint+a=setup in SDP,
+DTLS handshake on the ICE-selected socket, SRTP keys from the exporter;
+keep a=crypto for SFB/echo interop) — the next run's main feature.
+
+Shipped this run (all live-verified, core 400/400, COMMIT BUT NOT PUSHED):
+- b784fcb caller acks the LATE callAcceptance frame (arrives ~300ms
+  after the mediaAnswer, i.e. after wait_for_call_acceptance returned —
+  the pump forwards links.acknowledgement; ack 201 in 330ms).
+- dedd7db answer flow binds the RTP socket BEFORE answering and patches
+  the bound port into the SDP: m=audio 0 REJECTS the m-line (RFC 3264) —
+  every prior answer told the CC the callee had no media leg. RTP NOW
+  FLOWS rig↔rig (1472 sent / 1475 received vs 0/0 before).
+- 52a96e7 AG acceptance body completed (clientEndpointCapabilities=1,
+  callKeepAliveInterval:null).
+- 6563ae6 applicationType "TFL" (value captured from the web's own
+  reject payload) on attach + conversationRequest + acceptance.
+- deb507b ringback 120s hard deadline + 10s timeout on the end-POST
+  (live wedge: 8 minutes of ringback on the host speakers after a call
+  ended — the un-timed end POST blocked the task post-`ended`).
+- 4239025 MS-shaped SDP both directions (per-m c=, a=rtcp,
+  x-signaling-fb, x-source-streamid, no direction attr, real o= session
+  id, srflx raddr fixed off 0.0.0.0).
+- d2c8dd8 honest callModalities + video-less offers for audio-only
+  calls (web preps its accept from the DECLARED modalities); side
+  effect: the callee ring banner now shows video=false for audio calls.
+
+Verified end-of-run on the final binary: echo call healthy (connected
+2.2s, 818 pkts + SRTCP back), rig→rig answer chain complete with
+two-way RTP, decline path untouched. Falsified this run: notificationLinks
+404 = red herring (web POSTs it only on trouter-URL change); keep-alives
+(interval 2700s ≈ 40min — not the 30s killer); registrar same-id
+semantics (one binding per registrationId, replace on re-register);
+fork-per-registration (invite fan-out is per-channel).
+
+Traps for the record: PAIR_REG_CLEAN with rig-keep-tokens DELETES THE
+WEB CLIENT'S REGISTRATIONS (a mid-session sweep made the web un-ringable
+until tab refresh — refresh re-registers). pkill shim ignores -9; rigs
+launched via setsid still died once to a cancelled watcher (relaunch
+heals). Non-stop "ringing" on the host = a rig's 425Hz tone through
+PulseAudio (fixed wedge; blip was a red herring). The `app.pid` files
+can go stale (relaunch overwrote); pgrep is the truth.
+
+Rigs LEFT RUNNING (pa/pb on final binary d2c8dd8, regs 24 live / 0
+stale; the web tab's registration was swept — refresh it before the next
+web test). Pair thread 19:2d46f0… STILL wedged (roster 403; group
+thread remains the working one). P2 caller-name in the ring banner
+still "(unknown)" (offer from.displayName; roster resolve exists).
