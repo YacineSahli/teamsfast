@@ -1185,8 +1185,12 @@ async fn start_call_labelled(
         match res {
             Ok(result) => {
                 let _ = tx_evt.send(Event::CallEnded(format!(
-                    "call ended — accepted: {}, {} packets sent / {} received",
-                    result.call_accepted, result.packets_sent, result.packets_received
+                    "call ended — accepted: {}, {} packets sent / {} received, video {} sent / {} received",
+                    result.call_accepted,
+                    result.packets_sent,
+                    result.packets_received,
+                    result.video_packets_sent,
+                    result.video_packets_received
                 )));
             }
             Err(e) => {
