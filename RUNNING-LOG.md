@@ -632,3 +632,23 @@ route, and ringing/answer/voice/video proceed. Zero code changes
 needed; the V2 payload may need one iteration against the appliance's
 validation once reachable. (Also fixed: a broken commit I pushed
 mid-refactor — caught by the build check, corrected + repushed.)
+
+## 2026-10-20 investigation — the capability lead
+
+Mined the web client's service-binding code (b14.js): consumer
+services require header x-ms-client-consumer-type: teams4life, and
+pick skype-token vs AAD auth per service config. PROBES (live):
+- GET presence.teams.live.com/v1/me/presence (X-Skypetoken + the
+  consumer header) = 200 — and shows "capabilities":[] — our consumer
+  accounts publish NO call capabilities. Strong fit for the ~0.3s
+  fast-fail: the controller sees a non-callable callee.
+- Presence/capability WRITES 401 (40102) on every candidate path and
+  BOTH auth styles (skype header, MSA Bearer) at presence + ups hosts;
+  PATCH too. The consumer write path needs a per-service token scope
+  (the authSvcEndpointMetadata pattern — each teams.live.com service
+  names its own authority+tokenScopes) that we haven't minted yet.
+NEXT: (a) find the presence service's token scope (mine the LAZY JS
+chunks — the 32 initial bundles don't contain the publish code), (b)
+mint it, publish capabilities ["Audio","Video"], (c) retry the call —
+if invites then route, ringing proceeds with everything already
+built. Fallback capture: B in the web client once.
