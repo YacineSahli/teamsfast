@@ -687,3 +687,28 @@ ours), or one authorized web-client capture of the Add-contact wire.
 Then ringing → answer (--ctl) → RTP counters → video, all of which is
 already built and waiting on the rigs (pa/pb Xvfb launchers).
 Core: 9639ba7+1467624 pushed. App: UPS publish in PollPresence.
+
+## 2026-10-20 run-11 — CONSUMER CALLS: receive chain COMPLETE
+
+User added A↔B as mutual contacts → the 403/10124 permission gate is
+GONE (calls ring the full window). Mined + implemented the whole
+consumer receive/answer protocol (config-life + calling chunks +
+live capture): evt:107 invites on the SKYPE fleet as 3::: data frames
+({evt,cp=b64(gzip(...))} / gp) — were silently DROPPED by the
+chat-only gate in data_frame_event (the ring starvation). Chain now
+LIVE-VERIFIED: B rings (phase=ringing, video detected from the SDP) →
+answer → fork attach (top-level 'attach' + required links.end on the
+live surl; join action with full conversationRequest) → mediaAnswer
+{mediaAnswer:{...}} + acceptance {callAcceptance:{acceptedBy (fork
+participantId!), mediaContent, links}} → CALLER phase=connected on
+the answer SDP. Echo re-verified healthy mid-session.
+WEDGE (environmental, post-surgery): mass registrar cleanup (~200
+stale 24h-TTL bindings from SIGKILLed test sessions, deleted via
+GET/DELETE /registrations) triggered 429s + conv-service 404s on
+invite resolution for the pair thread; echo (fresh conversations)
+still connects. A single call+answer re-verifies the acceptance once
+the cooldown lifts — rigs left running (pa :81, pb :82).
+Core 085f97e pushed (400 tests). Gotchas: pkill shim ignores -9
+(use kill -9 by pid); registrar deletes rate-limit fast (~30/burst);
+the wedge also surfaced a caller call-slot latch on torn-down calls
+(restart clears; fix separately).
