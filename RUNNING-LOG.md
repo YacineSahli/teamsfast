@@ -605,3 +605,30 @@ NEXT (the one remaining gap): why B's calling registration doesn't
 attract the invite — compare A/B registrar template responses,
 calling presence/capabilities post, CID-account routing. Then B
 answers → voice → video. Wire keys all in teams-core (pushed).
+
+## 2026-10-20 consumer calls — root cause of the receive gap FOUND
+
+Experiments: B→A direction (same non-delivery — not account-specific);
+TFL registration table (2.6 keys + product context, the work flow's
+own pre-fix shape) — pushed, live, did not flip delivery; consumer
+calls also stamp Event/Call "started" partlist messages into the
+thread (marker only — no SDP; the real invite still rides the NGCall
+push).
+ROOT CAUSE (from the web client's own JS config):
+calling_registrarUrl = https://{appliance}:8443/V2/registrations — a
+SEPARATE calling registration on the appliance port. THIS NETWORK
+FILTERS OUTBOUND 8443: api.cc.skype.com + api.conv.skype.com both
+time out on 8443 while 443 answers; flightproxy cp/ep refuse to
+proxy V2 registrations (404 Route does not exist). With that
+registration missing, the controller sees the callee as unreachable
+(callState=failed in ~0.3s — exactly what the call-logs show).
+SHIPPED: register_calling_v2 fires automatically for personal
+profiles (timeout-tolerant, logs "is outbound 8443 filtered?").
+Everything else about consumer calling already works over 443 —
+placement verified end-to-end yesterday.
+NEXT: run the rig once on an UNFILTERED network (home/hotspot; or
+open 8443 to api.cc.skype.com) — the registration lands, invites
+route, and ringing/answer/voice/video proceed. Zero code changes
+needed; the V2 payload may need one iteration against the appliance's
+validation once reachable. (Also fixed: a broken commit I pushed
+mid-refactor — caught by the build check, corrected + repushed.)
