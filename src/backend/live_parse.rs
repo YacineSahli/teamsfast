@@ -493,7 +493,7 @@ mod tests {
         // …/callAgent/<epid>/<callId>/call/end/ — the id that ties a
         // gone-push to ONE call.
         let gone = r#"{"type":"callCallback",
-            "url":"/v4/f/FLAG/callAgent/378567d5-afaf-413b-bdd6-477e92750218/a8ba95de/call/end/",
+            "url":"/v4/f/FLAG/callAgent/00000000-aaaa-bbbb-cccc-111111111111/a8ba95de/call/end/",
             "body":null}"#;
         assert_eq!(
             parse(gone),
