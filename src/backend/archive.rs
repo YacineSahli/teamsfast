@@ -477,10 +477,11 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageInfo> {
 
 
 #[cfg(test)]
-mod tests {
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
 
-    fn temp_archive(tag: &str) -> (Archive, PathBuf) {
+    pub(crate) fn temp_archive(tag: &str) -> (Archive, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "teamsfast-test-{tag}-{}",
             std::time::SystemTime::now()

@@ -1134,21 +1134,25 @@ async fn start_call(
     let label = if echo {
         "Echo test".to_string()
     } else {
-        // Banner label: the cached chat's display name beats the raw
-        // thread id (consumer 1:1s are GUID soup the user can't read).
-        ses.archive
-            .as_ref()
-            .and_then(|a| a.load_chats().ok())
-            .and_then(|chats| {
-                chats
-                    .iter()
-                    .find(|c| c.id == chat_id)
-                    .map(|c| c.name.trim().to_string())
-                    .filter(|n| !n.is_empty())
-            })
-            .unwrap_or_else(|| chat_id.clone())
+        call_label(ses.archive.as_ref(), &chat_id)
     };
     start_call_labelled(ses, tx, chat_id, echo, label, video, mic).await;
+}
+
+/// The banner label for an outgoing call: the cached chat's display name
+/// beats the raw thread id (consumer 1:1s are GUID soup the user can't
+/// read). Falls back to the thread id when the archive has no name.
+fn call_label(archive: Option<&archive::Archive>, chat_id: &str) -> String {
+    archive
+        .and_then(|a| a.load_chats().ok())
+        .and_then(|chats| {
+            chats
+                .iter()
+                .find(|c| c.id == chat_id)
+                .map(|c| c.name.trim().to_string())
+                .filter(|n| !n.is_empty())
+        })
+        .unwrap_or_else(|| chat_id.to_string())
 }
 
 /// [`start_call`] with a display label (meeting subject, chat name, …).
@@ -1501,5 +1505,42 @@ mod offline_guard_tests {
         ] {
             assert!(!runs_offline(&cmd), "{cmd:?} must be gated offline");
         }
+    }
+}
+
+#[cfg(test)]
+mod call_label_tests {
+    use super::*;
+    use crate::backend::archive::tests::temp_archive;
+
+    fn chat(id: &str, name: &str) -> ost::api::ChatInfo {
+        ost::api::ChatInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            is_group: false,
+            last_message_time: None,
+            last_message_sender: None,
+            last_message_preview: None,
+            last_read_ms: None,
+        }
+    }
+
+    #[test]
+    fn label_prefers_cached_name_over_thread_id() {
+        let (archive, _dir) = temp_archive("call-label");
+        archive
+            .save_chats(&[
+                chat("19:other@thread.v2", "Someone Else"),
+                chat("19:abc@thread.v2", "  Riley Alvarez  "),
+            ])
+            .unwrap();
+        assert_eq!(call_label(Some(&archive), "19:abc@thread.v2"), "Riley Alvarez");
+        // Unknown chat: the raw id survives (the banner needs SOMETHING).
+        assert_eq!(call_label(Some(&archive), "19:missing@thread.v2"), "19:missing@thread.v2");
+        // Blank names fall back to the id too.
+        archive.save_chats(&[chat("19:blank@thread.v2", "   ")]).unwrap();
+        assert_eq!(call_label(Some(&archive), "19:blank@thread.v2"), "19:blank@thread.v2");
+        // No archive at all.
+        assert_eq!(call_label(None, "19:x@thread.v2"), "19:x@thread.v2");
     }
 }
