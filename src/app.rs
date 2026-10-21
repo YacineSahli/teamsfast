@@ -1407,10 +1407,22 @@ impl TeamsFastApp {
                     self.apply(crate::ui::conversation::Action::OpenChat(chat_id));
                 }
                 crate::control::ControlVerb::Send { chat_id, text } => {
-                    self.apply(crate::ui::conversation::Action::Send(text));
-                    // Send targets the open composer; open first when the
-                    // chat differs. The rig always pairs open+send.
-                    let _ = chat_id;
+                    // Send targets the OPEN composer. A mismatched chat_id
+                    // would deliver the text to the wrong conversation —
+                    // refuse loudly instead (the rig always pairs
+                    // open+send, so this only fires on misuse).
+                    let open_matches = self
+                        .selected
+                        .as_ref()
+                        .map(|c| c == &chat_id)
+                        .unwrap_or(false);
+                    if !open_matches {
+                        log::warn!(
+                            "ctl send refused: open chat differs from target {chat_id}"
+                        );
+                    } else {
+                        self.apply(crate::ui::conversation::Action::Send(text));
+                    }
                 }
                 crate::control::ControlVerb::Echo => {
                     self.cmd
@@ -1566,6 +1578,15 @@ impl TeamsFastApp {
                     log::info!(
                         "CALLQA phase=ringing caller={caller_name} video={has_video}"
                     );
+                    // A second ring replaces the banner — DECLINE the
+                    // first explicitly (silent replacement left that
+                    // caller ringing to their own timeout).
+                    if let Some(old) = self.incoming.take() {
+                        log::info!("CALLQA decline superseded ring");
+                        self.cmd
+                            .send(Command::DeclineIncoming(old.raw))
+                            .ok();
+                    }
                     self.incoming = Some(IncomingRing {
                         name: caller_name,
                         mri: caller_mri,
@@ -1608,9 +1629,11 @@ impl TeamsFastApp {
                     // status fragment ("… — accepting…") appended before
                     // this handle existed — the live phase replaces it.
                     if let Some((label, at)) = self.call.take() {
+                        // Strip ONLY the known pre-media fragment (a chat
+                        // genuinely named "Ops — escalated" must survive).
                         let base = label
-                            .split_once(" — ")
-                            .map(|(b, _)| b.to_string())
+                            .strip_suffix(" — accepting…")
+                            .map(|b| b.to_string())
                             .unwrap_or(label);
                         self.call = Some((base, at));
                     }
@@ -1665,6 +1688,7 @@ impl TeamsFastApp {
                     log::info!("CALLQA phase=ended summary={summary:?}");
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
+                    self.share_note = None;
                     self.play_end_beep();
                     self.stop_screen_share();
                     self.call = None;
@@ -4609,7 +4633,10 @@ impl eframe::App for TeamsFastApp {
                                             // no frames to un-black — start
                                             // a mid-call capture into the
                                             // CameraSlot.
-                                            if !cam_on && !self.call_camera_swap_attempted {
+                                            if !cam_on
+                                                && !self.call_has_camera
+                                                && !self.call_camera_swap_attempted
+                                            {
                                                 late_camera_clicked = true;
                                             }
                                         }

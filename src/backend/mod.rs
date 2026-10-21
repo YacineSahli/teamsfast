@@ -1109,7 +1109,11 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
                 decline_incoming(raw).await;
             }
             Command::HangUp => {
-                if let Some(slot) = ses.call_stop.take() {
+                // Signal stop but LEAVE the slot in place: call_slot_free
+                // reaps it once the task's done-flag lands. Taking it here
+                // let a new call start while the old task was still
+                // unwinding (two concurrent call tasks, device contention).
+                if let Some(slot) = ses.call_stop.as_ref() {
                     let _ = slot.stop.send(true);
                     send!(Event::CallStatus("hanging up…".into()));
                 }
