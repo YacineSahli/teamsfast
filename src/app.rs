@@ -1676,14 +1676,24 @@ impl TeamsFastApp {
                     // synthetic source on video calls so the sharing UI,
                     // preview tee, and encoder re-init can be pixel-checked
                     // headlessly (TEAMSFAST_VIDEOCALL=1 places the call).
-                    if std::env::var("TEAMSFAST_SCREENSHARE").as_deref() == Ok("1")
-                        && !self.share_auto_fired
-                        && self.call_media.as_ref().is_some_and(|m| {
-                            m.local_preview.is_some() || self.call_has_camera
-                        })
-                    {
+                    let share_env = std::env::var("TEAMSFAST_SCREENSHARE").as_deref() == Ok("1");
+                    let share_gate = self.call_media.as_ref().is_some_and(|m| {
+                        m.local_preview.is_some() || self.call_has_camera
+                    });
+                    if share_env && !self.share_auto_fired && share_gate {
+                        log::info!("CALLQA share=auto (preview={} camera={})",
+                            self.call_media.as_ref().is_some_and(|m| m.local_preview.is_some()),
+                            self.call_has_camera);
                         self.share_auto_fired = true;
                         self.begin_screen_share();
+                    } else if share_env && !self.share_auto_fired {
+                        // Flaky-auto forensics: the gate CAN legitimately be
+                        // false at CallMedia time (camera still spawning) —
+                        // log it so a silent no-share is diagnosable from
+                        // the rig log alone.
+                        log::info!("CALLQA share=auto-skipped (preview={} camera={})",
+                            self.call_media.as_ref().is_some_and(|m| m.local_preview.is_some()),
+                            self.call_has_camera);
                     }
                 }
                 Event::CallStarted { label } => {
@@ -1718,6 +1728,7 @@ impl TeamsFastApp {
                     log::info!("CALLQA phase=ended summary={summary:?}");
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
+                    self.share_auto_fired = false;
                     self.share_note = None;
                     self.play_end_beep();
                     self.stop_screen_share();
@@ -1736,6 +1747,7 @@ impl TeamsFastApp {
                     log::info!("CALLQA phase=failed error={e:?}");
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
+                    self.share_auto_fired = false;
                     self.play_end_beep();
                     self.stop_screen_share();
                     self.call = None;
@@ -4487,6 +4499,14 @@ impl eframe::App for TeamsFastApp {
                             Some(tex) => {
                                 let size = tex.size_vec2();
                                 let h = (avail_w * size.y / size.x).min(tile_h);
+                                if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
+                                    eprintln!(
+                                        "STAGE panel={:?} avail_w={avail_w:.0} tex={}x{} tile_h={h:.0}",
+                                        ui.max_rect(),
+                                        size.x,
+                                        size.y
+                                    );
+                                }
                                 let resp = ui.add_sized(
                                     [avail_w, h],
                                     egui::Image::new((tex.id(), size)),
