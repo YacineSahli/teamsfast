@@ -1728,6 +1728,11 @@ impl TeamsFastApp {
                     }
                 }
                 Event::CallStarted { label } => {
+                    // The top bar's status line must not carry the
+                    // PREVIOUS call's end summary through this one
+                    // (vision-caught: "call ended — …" above a live
+                    // banner). The banner owns call state from here.
+                    self.status = "Calling…".into();
                     if self.call_is_meeting {
                         self.lobby =
                             ost::api::lobby_next(self.lobby, ost::api::LobbyEvent::Placed);
