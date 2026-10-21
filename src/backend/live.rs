@@ -117,7 +117,9 @@ async fn ring_gone_poll(tx: std::sync::mpsc::Sender<Event>, raw: &str, notificat
         )
         .await
         {
-            Ok(()) => {}
+            Ok(()) => {
+                log::debug!("ring progress poll ok (fork still live)");
+            }
             Err(_gone) => {
                 log::info!("CALLQA ring_gone (progress link rejected)");
                 let _ = tx.send(Event::RingGone(raw.to_string()));
