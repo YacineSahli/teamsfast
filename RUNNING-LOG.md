@@ -890,7 +890,7 @@ still "(unknown)" (offer from.displayName; roster resolve exists).
 Evening continuation ("fix everything and test"): implemented the full
 DTLS-SRTP stack and closed the loop with the user's browser as caller.
 **Live-verified end-to-end: web (teams.live.com, real WebRTC client)
-calls the app → rig rings with the caller's real name ("Riley Alvarez") →
+calls the app → rig rings with the caller's real name ("the peer's real display name") →
 answer → ICE direct → acceptance 200 + INLINED callAcceptanceAcknowledgement
 in 0.1s → DTLS handshake with the browser (client role) in ~100ms →
 audio streaming 5000+ packets, call STAYS UP (user confirmed "working";
