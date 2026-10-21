@@ -16,6 +16,14 @@
 #                                      # A calluser B → B rings → B answers
 #                                      # → both connected → B mutes →
 #                                      # A hangs up → both ended
+#   qa_call_e2e.sh pairvideo <a_prof> <a_upn> <b_prof> <b_upn> [<thread>]
+#                                      # A videocall B (consumer BUNDLE) →
+#                                      # B rings video=true → answer →
+#                                      # both connected + VIDEO decoded on
+#                                      # both sides → A hangs up → ended.
+#                                      # <thread> overrides the callee
+#                                      # thread (default: A's sticky 1:1 —
+#                                      # pass the shared pair thread).
 #
 # Every instance runs on its own Xvfb display with per-profile XDG dirs
 # under /tmp/tf-<profile> (files) + TEAMSFAST_PROFILE (keyring slots).
@@ -130,6 +138,47 @@ pair)
   echo "== B trace =="; grep -a "CALLQA" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" | tail -10
   kill_profile "$A_P"; kill_profile "$B_P"
   [ $fail -eq 0 ] && echo "PAIR PASS" || echo "PAIR FAIL"
+  exit $fail
+  ;;
+pairvideo)
+  A_P="${2:?a profile}" A_UPN="${3:?a upn}" B_P="${4:?b profile}" B_UPN="${5:?b upn}"
+  THREAD="${6:-}"
+  if [ -z "$THREAD" ]; then
+    # A's sticky 1:1 with B (created by the first `calluser`): resolve it
+    # from A's archive once the app is up — until then, require it
+    # explicitly. Simplest robust default: the known pair thread from the
+    # rig documentation; callers SHOULD pass it.
+    echo "NOTE: no <thread> passed — pass the pair's 1:1 thread id for stability"
+    exit 2
+  fi
+  launch "$A_P" 81; launch "$B_P" 82
+  echo "== waiting for both instances =="
+  sleep 10
+  fail=0
+  step() { echo "== $1 =="; shift; "$@" || fail=1; }
+  step "A alive" alive "$A_P"
+  step "B alive" alive "$B_P"
+  step "A video-calls B"   [ "$(ctl "$A_P" "videocall $THREAD")" = "ok" ]
+  step "B rings (video)"   wait_log "$B_P" "CALLQA phase=ringing caller=.* video=true" 30
+  step "B answers"         [ "$(ctl "$B_P" answer)" = "ok" ]
+  step "B accepted"        wait_log "$B_P" "CALLQA action=accept" 5
+  step "A connected"       wait_log "$A_P" "CALLQA phase=connected" 45
+  step "B connected"       wait_log "$B_P" "CALLQA phase=connected" 45
+  # The BUNDLE video evidence: the callee answered mid1 for real and BOTH
+  # sides decode frames within the hold window.
+  sleep 8   # hold + let video establish
+  step "B answered video"  wait_log "$B_P" "BUNDLE video answered" 5
+  step "B decodes video"   wait_log "$B_P" "Recv video frame decoded" 10
+  step "A decodes video"   wait_log "$A_P" "Recv video frame decoded" 10
+  step "A hangs up"        [ "$(ctl "$A_P" hangup)" = "ok" ]
+  step "A ended"           wait_log "$A_P" "CALLQA phase=ended" 15
+  # The end summary carries both directions' video counters.
+  step "A audio+video"     wait_log "$A_P" "video [1-9][0-9]* sent / [1-9][0-9]* received" 5
+  step "B ended"           wait_log "$B_P" "CALLQA phase=ended" 50
+  echo "== A trace =="; grep -a "CALLQA" "/tmp/tf-$A_P/st/teamsfast/teamsfast.log" | tail -10
+  echo "== B video =="; grep -aE "BUNDLE video answered|Recv video frame decoded|Audio stats" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" | tail -6
+  kill_profile "$A_P"; kill_profile "$B_P"
+  [ $fail -eq 0 ] && echo "PAIRVIDEO PASS" || echo "PAIRVIDEO FAIL"
   exit $fail
   ;;
 *)
