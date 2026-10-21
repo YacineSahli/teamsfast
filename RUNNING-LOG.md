@@ -1260,3 +1260,47 @@ If the caller's phase itself sticks Ringing while media flows (the
 app→browser direction — our offer vs the web callee's answer creation,
 still never verified end-to-end), that is the remaining acceptance-chain
 gap needing one browser round.
+
+### run-14 addendum VI — BROWSER VIDEO CALLS COMPLETE (user rounds, live-verified)
+
+Three user-in-the-loop rounds today closed every remaining call gap.
+The final chain, all verified against real Chrome (TsCalling 2026.36):
+
+- **app→browser**: BUNDLE offer accepted, browser answers mid1 for
+  real, DTLS server role, bidirectional audio for the whole call,
+  video both directions. The pre-DTLS 410/3111 era is fully closed.
+- **browser→app**: full E2E incl. DECODE AND RENDER — the user's
+  camera decodes 589/589 frames at 640x360 and renders in the stage
+  tile (vision-verified: real webcam scene).
+
+The last three bugs, each found by one instrumented round:
+1. **rtcp-fb negotiation** (mined from the web's own JS
+   `reduceRtcpFbInSdp` list): a WebRTC sender only honors PLI/FIR when
+   the SDP declared a=rtcp-fb for it — our offer had only MS x-message
+   lines. Chrome answered 40+ PLIs with SPS/PPS but ZERO IDRs until the
+   standard ccm fir / nack / nack pli lines landed; after: PLI→keyframe
+   in 50 ms.
+2. **STAP-A pending swallow** (FU-A forensics: 224 IDR fragments, 168
+   middles + 56 ends + ZERO starts): the STAP-A(SPS+PPS) queue
+   delivered one NAL per depacketize call, so the second queued NAL was
+   delivered as the NEXT packet's result — consuming it unparsed. The
+   packet after every SPS/PPS burst is always the IDR's FU-A START.
+   Pending NALs now drain within the same packet (process_nal
+   extracted); regression test pins the exact sequence.
+3. **2h call-history durations** (user-reported): our hang-ups posted
+   dead links (acceptance links/end 404s on connected calls) — the CC
+   held sessions to its ~2h cap (also the browser's 'trying to get you
+   back' screen). Fallback chain end -> callLeg/end -> conversation
+   leave on the caller; the callee hang-up now POSTs the invitation
+   end too. The leaked sessions also pinned the browser's inbound
+   endpoint 'in a call' for hours — the cause of the browser not
+   ringing late in the session.
+
+Also this session: ghost ringback fixed (sender-liveness; the rigs
+share the host's PulseAudio AND its tray — two mystery tray icons were
+the rigs; TEAMSFAST_NO_RINGBACK mutes), fork-loss ring detection
+(progress-link poll while ringing), and the ring-dedupe regression
+(consumer DOUBLED invitations must not self-decline — live-caught when
+both pair flows went red).
+
+Core 434 (439 video-cam); app 120. Rigs on the final binary.
