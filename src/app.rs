@@ -4499,20 +4499,39 @@ impl eframe::App for TeamsFastApp {
                             Some(tex) => {
                                 let size = tex.size_vec2();
                                 let h = (avail_w * size.y / size.x).min(tile_h);
+                                // Explicit allocation + painter image — NOT
+                                // `ui.add_sized([avail_w, h], Image)`: an
+                                // egui 0.36 Image whose source texture is
+                                // LARGER than the sized slot paints at its
+                                // ORIGINAL size centered on the slot,
+                                // overflowing the panel and the window (a
+                                // 640x360 capped share rendered as a
+                                // window-edge-clipped slab while 320x240
+                                // camera tiles fit). The aspect is baked
+                                // into h, so stretching to the rect is
+                                // distortion-free (same pattern as the
+                                // local preview tile, which never broke).
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(avail_w, h),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().image(
+                                    tex.id(),
+                                    rect,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
+                                    Color32::WHITE,
+                                );
                                 if crate::app::qa_flag("TEAMSFAST_RECTLOG") {
                                     eprintln!(
-                                        "STAGE panel={:?} avail_w={avail_w:.0} tex={}x{} tile_h={h:.0}",
-                                        ui.max_rect(),
-                                        size.x,
-                                        size.y
+                                        "STAGE-TILE painted={rect:?} max_rect={:?}",
+                                        ui.max_rect()
                                     );
                                 }
-                                let resp = ui.add_sized(
-                                    [avail_w, h],
-                                    egui::Image::new((tex.id(), size)),
-                                );
                                 ui.painter().rect_stroke(
-                                    resp.rect,
+                                    rect,
                                     8,
                                     egui::Stroke::new(1.0, Color32::from_black_alpha(90)),
                                     egui::StrokeKind::Inside,
