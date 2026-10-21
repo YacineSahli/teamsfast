@@ -1304,3 +1304,109 @@ the rigs; TEAMSFAST_NO_RINGBACK mutes), fork-loss ring detection
 both pair flows went red).
 
 Core 434 (439 video-cam); app 120. Rigs on the final binary.
+
+## run-15 — screenshare E2E both directions, call-recycle + egui-Image fixes, N-party shape, P3 hardening (2026-10-21 night)
+
+Autonomous run per docs/drafts/run15-prompt.md. All commits PUSHED:
+app 59b00bc..3063668 (7), core 9212913..09ed4b7 (3). Final: core 457
+tests (both feature combos), app 121. Rigs pa/pb left RUNNING on the
+final binary (muted ringback).
+
+**THE UNEXPECTED BLOCKER (found by P0's first round, fixed + verified):
+the service RECYCLES the caller's dedicated trouter call socket every
+~2m13s (Normal close) — the frame pump treated ANY close as "remote end
+received" and hung the call up mid-media, then the post-mortem hang-up
+chain hit leave-400 and warned the CC session would cap server-side
+(the 2h-history producer again). Fix (core 9212913): the pump
+reconnects (new TrouterSocket::connect_url on the same session URL,
+capped backoff), only an explicit callEnd frame ends the call, and the
+pump watches stop/end so it can't outlive the call. Live-verified: a
+>5min call survived the recycle at 2m13s AND 4m26s, media unaffected
+(UDP is independent), clean hang-up with honest counters (17926 pkts).
+Also: /tmp/received_audio.pcm now writes only under TEAMSFAST_AUDIO_DUMP
+(call audio is user content).
+
+**P0 SCREEN SHARE: both directions end-to-end, vision-verified.**
+pa-shares→pb-renders AND the flip pb-shares→pa-renders: auto-share fires
+on CallMedia (logs CALLQA share=auto with the gate state now), encoder
+re-init 1280x720/3072kbps on the same chain, PLI recovery + 640-cap
+cope, bars render in the remote tile on both rigs (vision 4/4 + pixel
+numpy: video present in-tile, no window-edge bleed). STOP mid-call is
+clean on BOTH legs (caller + answerer): decode CONTINUES at 320x240
+(camera fallback; encoder re-inits down), `share on` returns 720p. The
+one-encoder law holds across mid-call resolution changes both ways.
+New ctl verbs: `share on|off` (headless share start/stop).
+
+**The egui 0.36 Image trap (the "clipped callee stage" was never a
+panel bug):** an `Image` whose source texture is LARGER than the
+ui.add_sized slot paints at ORIGINAL size centered on the slot — a
+640x360-capped share rendered as a slab starting ~143px left of the
+panel and running 142px PAST the window edge (missing header/controls
+read as a collapsed panel; ui.max_rect() stayed healthy in the very
+frames the tile painted at [602..1242] — two instrumented rounds to
+crack). Camera tiles (320x240 < slot) always fit, which is why only
+share rounds broke. Fixed with the local-preview pattern
+(allocate_exact_size + painter().image, aspect baked into the rect);
+RECTLOG probe kept (STAGE-TILE painted= vs max_rect=). Also fixed: the
+QA auto-share latched once per PROCESS (share_auto_fired never reset —
+later calls silently sent camera only, and one "share off" test
+silently tested nothing); now per-call + forensics logs.
+
+**P1 meeting-join video modality (core 8d0ebee):** the MS-shape offer
+(work-tenant/meeting legs) gained the STANDARD a=rtcp-fb ccm fir / nack
+/ nack pli lines on the video m-line — a WebRTC peer answering that
+offer never honors PLIs without them (the exact live consumer-path
+bug; the web's own offers carry them). strip_video_mline extracted
+pure; join-shape pinned by tests (m=video + fb when camera on,
+audio-only when off). LIVE join-path verification BLOCKED: the conv-
+service is wedged on the epconv create+join path TODAY (Phase-2 400 on
+BOTH modalities, BOTH group threads, before and after our changes —
+run-11 wedge pattern; cpconv 1:1 unaffected and re-verified). Consumer
+group video calls take the BUNDLE path regardless. Deferred: one live
+join round when the wedge lifts.
+
+**P2 N-party create (core f3154ac):** participants.to is now an array
+(payload extracted pure + unit-tested: 2/1/0 entries, distinct
+participantIds), the roster resolves ALL non-self members
+(consumer_thread_members), and every callee gets the post-create
+invite (the dial signal). LIVE 2-entry probe (real member +
+unreachable MRI via TEAMSFAST_EXTRA_CALLEE): the CC ACCEPTS the
+multi-entry create (201) and still forks the real member (B rang) —
+but answers the create ITSELF with a placeholder acceptance
+(acceptedCallModalities=[], no media leg): multi-entry creates flip
+the CC into group-call mode. True N-party media needs the group-call
+acknowledgement machinery — honestly deferred to the user's
+3rd-participant round. 1:1 regression: 375/375 pkts both ways.
+
+**P3 hardening (core 09ed4b7 + app 73a78ff):**
+- answer mids echo the OFFER's real mids (align_answer_mids_to_offer;
+  hardcoded 0/1 stays byte-identical for the standard web shape).
+- decompress-at-entry: ensure_plain_sdp at the answer's blob entry —
+  compressed offers can no longer silently degrade the bundle/video
+  helpers to audio-only.
+- PACSI Stream Layout tracks encoder (re)inits (set_stream_layout;
+  720p announces 1280x720/3072k, not the 320x240 default).
+- CallGone identity: the gone-push's /callAgent/<epid>/<callId>/ id is
+  extracted and compared against the ringing invitation's own id — a
+  foreign call's end-push can no longer clear the ring or hang up the
+  live call (missing ids keep the old behavior; nothing captured
+  regresses).
+
+**P4 polish:** top-bar status refreshes on call start ("Calling…") and
+connect ("In a call") — the previous call's end summary used to sit
+there through the next call (vision-caught). Audio-call banner verified
+live: banner-only (no empty stage) + "Show call view" toggle present.
+
+**pairvideo PASS (14/14) on the final binary** — full regression after
+everything above (ring video=true, BUNDLE answered, decode both sides,
+clean hang-up, both-direction counters). Known ops notes: bare `--ctl`
+without TEAMSFAST_PROFILE hits the DEFAULT slot and reads as a dead
+rig (cost ~40min this run — memory file written); rig log timestamps
+are UTC vs local +02:00 (the "log stopped" misread); the rigs still
+capture the HOST webcam on video calls (two rigs = one camera: the
+second gets black — expected).
+
+DEFERRED (honest list): live meeting-join video round (conv-service
+wedge, retry when it lifts); true 3-way N-party media (group-ack
+machinery, user round); browser screen-share mid2 capture + 3rd
+participant (unchanged user-gated items).
