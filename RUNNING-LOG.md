@@ -1083,3 +1083,44 @@ thread id (incoming calls show real names since 548c766); the callee
 stage renders narrow beside an open chat (layout, not data); rigs burn
 ~75% CPU on 720p (openh264 decode at 15fps dominates — fine for QA,
 worth a thread-priority look someday).
+
+### run-14 addendum — BROWSER ROUND (user-gated §5, 2026-10-21 morning)
+
+The user placed three browser→app video calls (Chrome 155 /
+TsCalling 2026.36, camera+mic on). Three findings, three fixes; the
+last fix (PLI) was then verified LIVE on the rigs after the user left.
+
+1. **DTLS close_notify killed both directions** (core commit "DTLS-SRTP:
+   keep the DTLS connection alive"). We closed the DTLS connection right
+   after exporting SRTP keys — Chrome marks the transport
+   dtlsState=closed and then neither encrypts its RTP nor decrypts ours
+   (ICE connected, senders active, ZERO media both ways; the user's
+   webrtc-internals dump showed the closed transport — the decisive
+   evidence). After the fix: **browser↔app audio is BIDIRECTIONAL,
+   live-verified (497/497)** — this also closes the old "recv=0 = muted
+   tab" theory (it was our close, not the tab).
+2. **Our BUNDLE video answer passes real WebRTC**: setRemoteDescription
+   succeeded (signaling stable, 5 sections), and Chrome's video RTP
+   arrives and DECRYPTS (372 pkts in 10 s). Chrome sends standard
+   RFC 6184 with **STAP-A** aggregation (SPS/PPS bundled) which our
+   depacketizer dropped as unimplemented → STAP-A support + rtx-PT
+   exclusion + strict PT routing shipped (commit "Video receive: STAP-A
+   aggregation + strict PT routing").
+3. **The initial SPS/PPS+IDR burst lands before our DTLS keys install**
+   and senders never repeat parameter sets unprompted — every P-slice
+   then fails dsNoParam forever (600+ type-1 NALs, zero type-7/8/5 after
+   the start window). Fix: **RTCP PLI keyframe recovery** — the answerer
+   requests a keyframe every 500 ms until a frame decodes; both video
+   send loops ANSWER PLIs with a forced openH264 IDR. VERIFIED LIVE
+   rig↔rig with the TEAMSFAST_DROP_KEYFRAMES_SECS=5 hook (simulates the
+   missed window): PLIs flowed, the caller forced IDRs, decode recovered
+   to 100% after the window. Clean no-hook regression: 147/147 frames,
+   audio+video both ways, clean hang-up.
+
+State: core at the PLI-loop commit (all run-14 work: cfcacb0..PLI),
+app eeed648 + RUNNING-LOG commit; COMMIT BUT DO NOT PUSH. Rigs pa/pb
+running the final binary. REMAINING for the user's NEXT browser round
+(one call, camera on): confirm browser VIDEO decodes in the app tile
+(audio + answer-acceptance + RTP/decrypt already proven); then the
+screen-share click (mid2 renegotiation capture) and the 3rd-participant
+group round.
