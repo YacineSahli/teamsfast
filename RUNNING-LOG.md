@@ -1240,3 +1240,23 @@ captured web shape); decompress-at-entry for the BUNDLE helpers;
 PACSI stream-layout metadata tracks the real resolution; CallGone is
 identity-free (correlation needs threading call/thread ids through the
 event — the watchdog bounds the damage today).
+
+### run-14 addendum V — ghost ringback fixed (user report, live-verified)
+
+"When calling someone, ringing continues even though the callee already
+has the call." Root cause: the ringback tone loop only exited on
+phase-change / stop-watch / 120s cap — when a placement FAILED (decline,
+timeout, acceptance-without-SDP) the call task returned and dropped the
+phase SENDER, and a tokio watch serves its last value forever after
+sender drop, so the 425Hz tone ghosted up to two minutes with no call UI
+left. The loop now checks sender liveness (wait_ringing always did).
+Live-verified on the rigs: decline round → task return → "ringback:
+stop" within milliseconds (was: +120s). Every declined call did this.
+
+Also learned: the rigs share the host's PulseAudio — all automated
+rounds have been AUDIBLE on the user's speakers (including the ghost
+tones). TEAMSFAST_NO_RINGBACK=1 mutes the tone; rigs now run with it.
+If the caller's phase itself sticks Ringing while media flows (the
+app→browser direction — our offer vs the web callee's answer creation,
+still never verified end-to-end), that is the remaining acceptance-chain
+gap needing one browser round.
