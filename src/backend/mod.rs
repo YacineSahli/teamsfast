@@ -1166,7 +1166,10 @@ async fn start_call_labelled(
     mic: bool,
 ) {
     if !call_slot_free(ses) {
-        let _ = tx.send(Event::CallFailed("a call is already in progress".into()));
+        // NOT the active call's failure: CallFailed would wipe a live
+        // call's UI while its task keeps running (mic open, no hang-up
+        // affordance left). Status surfaces the rejection harmlessly.
+        let _ = tx.send(Event::Status("a call is already in progress".into()));
         return;
     }
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
@@ -1190,7 +1193,10 @@ async fn start_call_labelled(
         // screen share), so a mid-call camera flip or a share from an
         // audio-placed leg still surfaces frames to the stage's monitor
         // tile. With no source the tee simply stays empty.
-        let (media, media_handle) = ost::calling::call_controls(true);
+        // The tee keys the call stage open in the UI — only video calls
+        // get it (audio calls stay on the banner; a full-height "No
+        // video yet" stage on a voice call is noise + a 15fps repaint).
+        let (media, media_handle) = ost::calling::call_controls(video);
         // Pre-join choice: start muted when the user toggled mic off
         // (the gate is a watch channel created true).
         if !mic {
@@ -1228,7 +1234,9 @@ async fn accept_incoming(ses: &mut Session, tx: &Sender<Event>, raw: String) {
         // Ringing on top of an active call: decline politely rather than
         // half-answer; the caller hears the decline immediately.
         decline_incoming(raw).await;
-        let _ = tx.send(Event::CallFailed("declined: a call is already in progress".into()));
+        let _ = tx.send(Event::Status(
+            "declined incoming call: a call is already in progress".into(),
+        ));
         return;
     }
     let Some(notification) = ost::calling::parse_call_notification(&raw) else {
@@ -1253,8 +1261,16 @@ async fn accept_incoming(ses: &mut Session, tx: &Sender<Event>, raw: String) {
     });
     // Video pipes for the answered call: remote frames → call stage,
     // camera/share slots → the send loop. The answer answers video for
-    // real when the offer is BUNDLE (consumer web + our own video calls).
-    let (media, media_handle) = ost::calling::call_controls(true);
+    // real when the offer is BUNDLE (consumer web + our own video calls)
+    // — the tee (and with it the stage) exists only for video calls.
+    let invitation_is_video = notification
+        .call_invitation
+        .as_ref()
+        .and_then(|i| i.media_content.as_ref())
+        .and_then(|m| m.blob.as_ref())
+        .map(|b| b.contains("m=video"))
+        .unwrap_or(false);
+    let (media, media_handle) = ost::calling::call_controls(invitation_is_video);
     let tx_evt = tx.clone();
     tokio::spawn(async move {
         // First statement: Drop marks the slot done when THIS task ends

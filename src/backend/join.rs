@@ -19,15 +19,16 @@ pub async fn resolve_join_target(
     source: &str,
 ) -> Option<(String, String)> {
     let Some(c) = ses.client.as_ref() else {
-        let _ = tx.send(Event::CallFailed("not signed in".into()));
+        let _ = tx.send(Event::Status("join failed: not signed in".into()));
         return None;
     };
     let target = ost::api::parse_join_url(source);
     match target.kind.as_str() {
         "thread" => {
             let Some(tid) = target.thread_id.clone() else {
-                let _ = tx.send(Event::CallFailed(
-                    "That link parsed as a meeting thread but carries no thread id.".into(),
+                let _ = tx.send(Event::Status(
+                    "join failed: that link parsed as a meeting thread but carries no thread id."
+                        .into(),
                 ));
                 return None;
             };
@@ -36,8 +37,8 @@ pub async fn resolve_join_target(
         "meeting" | "meet" => {
             let id = target.meeting_id.clone().unwrap_or_default();
             if id.is_empty() {
-                let _ = tx.send(Event::CallFailed(
-                    "Could not read a meeting ID or thread from that link.".into(),
+                let _ = tx.send(Event::Status(
+                    "join failed: could not read a meeting ID or thread from that link.".into(),
                 ));
                 return None;
             }
@@ -52,8 +53,8 @@ pub async fn resolve_join_target(
                             Some((tid, label))
                         }
                         None => {
-                            let _ = tx.send(Event::CallFailed(format!(
-                                "Resolved the meeting but could not read its thread from {}",
+                            let _ = tx.send(Event::Status(format!(
+                                "join failed: resolved the meeting but could not read its thread from {}",
                                 resolved.join_web_url
                             )));
                             None
@@ -61,29 +62,29 @@ pub async fn resolve_join_target(
                     }
                 }
                 Ok(ost::api::JoinIdResolve::NotFound) => {
-                    let _ = tx.send(Event::CallFailed(
-                        "No meeting found for that ID on this account (you must be invited; \
-                         or open the link in a browser to join as a guest)."
+                    let _ = tx.send(Event::Status(
+                        "join failed: no meeting found for that ID on this account (you must be invited; \
+                         or open the link in a browser to join as a guest)"
                             .into(),
                     ));
                     None
                 }
                 Ok(ost::api::JoinIdResolve::PasscodeMismatch) => {
-                    let _ = tx.send(Event::CallFailed(
-                        "Wrong meeting passcode — check the invite and append ?p=CODE."
+                    let _ = tx.send(Event::Status(
+                        "join failed: wrong meeting passcode — check the invite and append ?p=CODE"
                             .into(),
                     ));
                     None
                 }
                 Err(e) => {
-                    let _ = tx.send(Event::CallFailed(format!("meeting lookup: {e:#}")));
+                    let _ = tx.send(Event::Status(format!("join failed: meeting lookup: {e:#}")));
                     None
                 }
             }
         }
         other => {
-            let _ = tx.send(Event::CallFailed(format!(
-                "Unrecognised join source ({other}): paste the full Teams join link, \
+            let _ = tx.send(Event::Status(format!(
+                "join failed: unrecognised join source ({other}): paste the full Teams join link, \
                  a meeting thread id, or a meet ID."
             )));
             None
