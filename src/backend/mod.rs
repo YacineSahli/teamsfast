@@ -1131,7 +1131,23 @@ async fn start_call(
     video: bool,
     mic: bool,
 ) {
-    let label = if echo { "Echo test".to_string() } else { chat_id.clone() };
+    let label = if echo {
+        "Echo test".to_string()
+    } else {
+        // Banner label: the cached chat's display name beats the raw
+        // thread id (consumer 1:1s are GUID soup the user can't read).
+        ses.archive
+            .as_ref()
+            .and_then(|a| a.load_chats().ok())
+            .and_then(|chats| {
+                chats
+                    .iter()
+                    .find(|c| c.id == chat_id)
+                    .map(|c| c.name.trim().to_string())
+                    .filter(|n| !n.is_empty())
+            })
+            .unwrap_or_else(|| chat_id.clone())
+    };
     start_call_labelled(ses, tx, chat_id, echo, label, video, mic).await;
 }
 
