@@ -133,7 +133,9 @@ pair)
   sleep 2
   step "A hangs up"          [ "$(ctl "$A_P" hangup)" = "ok" ]
   step "A ended"             wait_log "$A_P" "CALLQA phase=ended" 15
-  step "B ended"             wait_log "$B_P" "CALLQA phase=ended" 15
+  # Consumer callees learn of the hang-up via the 30s frozen-recv
+  # watchdog (the CC delivers no call/end) — 50s like pairvideo.
+  step "B ended"             wait_log "$B_P" "CALLQA phase=ended" 50
   echo "== A trace =="; grep -a "CALLQA" "/tmp/tf-$A_P/st/teamsfast/teamsfast.log" | tail -10
   echo "== B trace =="; grep -a "CALLQA" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" | tail -10
   kill_profile "$A_P"; kill_profile "$B_P"

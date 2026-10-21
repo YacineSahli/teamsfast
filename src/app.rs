@@ -1578,14 +1578,21 @@ impl TeamsFastApp {
                     log::info!(
                         "CALLQA phase=ringing caller={caller_name} video={has_video}"
                     );
-                    // A second ring replaces the banner — DECLINE the
-                    // first explicitly (silent replacement left that
-                    // caller ringing to their own timeout).
+                    // A ring from a DIFFERENT caller supersedes the banner
+                    // — decline the old one explicitly (silent replacement
+                    // left that caller ringing to their own timeout). The
+                    // SAME caller re-firing is the consumer stack's
+                    // DOUBLED invitation (two events ~50ms apart, run-13
+                    // evidence): refresh the banner, never decline — the
+                    // decline would kill the very call being rung in
+                    // (live regression 2026-10-21: fork attach 404).
                     if let Some(old) = self.incoming.take() {
-                        log::info!("CALLQA decline superseded ring");
-                        self.cmd
-                            .send(Command::DeclineIncoming(old.raw))
-                            .ok();
+                        if old.mri != caller_mri {
+                            log::info!("CALLQA decline superseded ring");
+                            self.cmd
+                                .send(Command::DeclineIncoming(old.raw))
+                                .ok();
+                        }
                     }
                     self.incoming = Some(IncomingRing {
                         name: caller_name,
