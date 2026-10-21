@@ -1185,3 +1185,58 @@ Follow-on cleanup while awaiting the next browser round:
   alone rather than touching the user's toolchain.
 
 Core 432 (437 video-cam), app 120 tests.
+
+### run-14 addendum IV — adversarial-review campaign (2026-10-21)
+
+Two independent adversarial reviewers (calling stack + app integration)
+over the run-14 code; every finding triaged, the substantive ones fixed
+and live-re-verified. Plus one genuine REMOTE HANG found by my own
+hostile-input test.
+
+**The hang (found before the reviews reported):** a malformed SDP blob
+made raw inflate report Ok forever with zero progress — decompress_sdp's
+grow-loop only resized when output space ran low, so the backend thread
+SPUN with no log output until killed. Any incoming call with a corrupt
+blob could wedge the app remotely. No-progress bail + 8MB cap; 13
+hostile shapes pinned by test (was >60s hang, now 0.00s).
+
+**Core fixes (both reviewers' P1s + P2 batch):**
+- MediaSession OWNS the video-send + PLI tasks now (aborted in
+  stop/Drop) — every answered video call leaked an immortal encoder
+  task (up to 1080p/3.5Mbps forever with a live share).
+- Caller-side PLI recovery: a browser callee's keyframe burst inside
+  our DTLS-keys window would black remote video for the whole call (the
+  answerer's exact live bug). Stall-aware PLI on BOTH sides (the old
+  task exited after first decode — mid-call IDR loss froze video).
+- Inbound PLI takes the blocking lock; caller skips video when the
+  ANSWER rejected the m-line; rtp::decode skips header extensions like
+  full_header_len; is_rtcp_packet covers 200..=207 and gates both recv
+  loops (RTCP-auth on every RTP packet doubled receive crypto);
+  ulaw dump env-gated; conversation keep-alive stops with the call;
+  downscaled covers odd widths (nearest-neighbor fallback).
+
+**App fixes:**
+- P0: busy-rejections and pre-task join failures no longer wipe a LIVE
+  call's UI while its task keeps running (mic open, no hang-up left) —
+  routed to Status.
+- P1 regression: EVERY call (audio included) opened the video stage
+  with a 15fps repaint loop (call_controls(true) unconditional);
+  outgoing gates on the video flag, incoming derives it from the
+  invitation — vision-verified audio calls are banner-only again.
+- A second ring from a DIFFERENT caller now declines the superseded one;
+  the SAME caller's re-fire (consumer DOUBLED invitation) just refreshes
+  — the naive version self-declined every consumer call (live-caught:
+  fork attach 404, both pair flows dead; fixed and re-verified).
+- Late-camera toggle skips when the call holds the pre-spawn capture;
+  HangUp leaves the slot for the done-reaper (no overlapping call
+  tasks); share_note clears on end; the label strip only removes the
+  literal ' — accepting…'; ctl send refuses a mismatched chat_id.
+
+**Live verification on the final binary:** pairvideo PASS (14/14),
+pair PASS (audio E2E), vision: audio-call layout correct. Core 433
+(438 video-cam), app 120. Deferred (documented, not fixed): answer mids
+echo the offer's real mids (currently hardcoded 0/1 — true for every
+captured web shape); decompress-at-entry for the BUNDLE helpers;
+PACSI stream-layout metadata tracks the real resolution; CallGone is
+identity-free (correlation needs threading call/thread ids through the
+event — the watchdog bounds the damage today).
