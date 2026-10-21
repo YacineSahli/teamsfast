@@ -1444,6 +1444,18 @@ impl TeamsFastApp {
                         log::info!("CALLQA mute={on}");
                     }
                 }
+                crate::control::ControlVerb::Share(on) => {
+                    // The stage Share button, headlessly: `share on` under
+                    // TEAMSFAST_SCREENSHARE=1 starts the synthetic source
+                    // mid-call; `share off` exercises the stop fallback
+                    // (slot cleared → camera/black on the same encoder).
+                    if on {
+                        self.begin_screen_share();
+                    } else {
+                        self.stop_screen_share();
+                    }
+                    log::info!("CALLQA share={}", if on { "on" } else { "off" });
+                }
             }
         }
     }

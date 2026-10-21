@@ -42,7 +42,10 @@ pub fn is_control_verb(request: &str) -> bool {
 
 /// Verbs: `ping`, `call <chat_id>`, `videocall <chat_id>`, `echo`
 /// (the sanctioned echo-call QA target), `answer`, `decline`,
-/// `hangup`, `mute on|off`.
+/// `hangup`, `mute on|off`, `share on|off` (the stage Share button —
+/// with TEAMSFAST_SCREENSHARE=1 this starts/stops the synthetic
+/// source, letting headless QA exercise the mid-call share
+/// slot swap and stop-fallback).
 pub fn parse_control_verb(request: &str) -> Option<ControlVerb> {
     let mut parts = request.split_whitespace();
     let head = parts.next()?;
@@ -81,6 +84,11 @@ pub fn parse_control_verb(request: &str) -> Option<ControlVerb> {
             Some("off") => Some(ControlVerb::Mute(false)),
             _ => None,
         },
+        "share" => match arg(&mut parts).as_deref() {
+            Some("on") => Some(ControlVerb::Share(true)),
+            Some("off") => Some(ControlVerb::Share(false)),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -99,6 +107,9 @@ pub enum ControlVerb {
     Decline,
     HangUp,
     Mute(bool),
+    /// Stage Share button: start (synthetic source under
+    /// TEAMSFAST_SCREENSHARE=1) or stop the running share.
+    Share(bool),
 }
 
 /// Queue one verb (called from the claim-handler thread).
@@ -151,12 +162,22 @@ mod tests {
         assert_eq!(parse_control_verb("hangup"), Some(ControlVerb::HangUp));
         assert_eq!(parse_control_verb("mute on"), Some(ControlVerb::Mute(true)));
         assert_eq!(parse_control_verb("mute off"), Some(ControlVerb::Mute(false)));
+        assert_eq!(
+            parse_control_verb("share on"),
+            Some(ControlVerb::Share(true))
+        );
+        assert_eq!(
+            parse_control_verb("share off"),
+            Some(ControlVerb::Share(false))
+        );
         // Unknown or malformed: declined, never queued.
         assert_eq!(parse_control_verb("show"), None);
         assert_eq!(parse_control_verb("rm -rf"), None);
         assert_eq!(parse_control_verb("call"), None);
         assert_eq!(parse_control_verb("mute"), None);
         assert_eq!(parse_control_verb("mute sideways"), None);
+        assert_eq!(parse_control_verb("share"), None);
+        assert_eq!(parse_control_verb("share maybe"), None);
         assert_eq!(parse_control_verb(""), None);
     }
 
