@@ -337,6 +337,9 @@ pub enum Event {
     /// A call-signalling callback announced an end (caller cancelled while
     /// ringing; the accepted-call case is handled conservatively in the UI).
     CallGone,
+    /// The ringing invitation this raw belongs to no longer exists
+    /// (answered/declined elsewhere or cancelled) — stop ITS ring only.
+    RingGone(String),
     /// Live call controls for the call stage UI (mute/camera toggles,
     /// remote + local frame receivers). One per placed call.
     CallMedia(ost::calling::CallControlsHandle),

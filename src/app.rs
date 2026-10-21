@@ -1603,6 +1603,17 @@ impl TeamsFastApp {
                     });
                     self.start_ringer();
                 }
+                Event::RingGone(raw) => {
+                    // Fork-loss: THIS invitation is gone (answered/declined
+                    // elsewhere or cancelled). Clear only ITS banner —
+                    // never touch an active call.
+                    if let Some(ring) = self.incoming.as_ref() {
+                        if ring.raw == raw {
+                            self.incoming = None;
+                            self.stop_ringer();
+                        }
+                    }
+                }
                 Event::CallGone => {
                     log::info!("CALLQA phase=caller_gone");
                     // Caller cancelled while ringing: drop the banner…
