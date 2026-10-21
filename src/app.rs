@@ -1680,6 +1680,10 @@ impl TeamsFastApp {
                     self.join_camera_ok = false;
                 }
                 Event::CallMedia(handle) => {
+                    // The media handle lands ≈ connect: refresh the top
+                    // bar past "Calling…" (the banner owns the live
+                    // phase from here).
+                    self.status = "In a call".into();
                     // Video calls open the stage; voice calls stay on the
                     // banner — a large placeholder tile on an audio call
                     // just reads as an empty video screen. The local-
