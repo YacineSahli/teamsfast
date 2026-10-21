@@ -6,8 +6,9 @@ of the patched `ost` protocol library. Sibling-in-spirit of zapfast and
 spotifast (same architecture, same fastframe crates). Read `FEASIBILITY.md`
 for the full investigation and `README.md` for the user-facing summary.
 
-**Status: Phase 2 in progress — chat client with sections, calls, meeting
-join AND incoming-call ringing.** Chat (send/reply/edit/delete/react/forward/pins,
+**Status: Phase 2 in progress — chat client with sections, calls (audio,
+video, group, screen share), meeting join AND incoming-call ringing.**
+Chat (send/reply/edit/delete/react/forward/pins,
 pending+retry bubbles, seen-by, unread badges, pinned/muted chats,
 per-chat notification levels, contact cards, ghost mode), Adaptive Cards,
 reaction picker with tabs + TENANT custom-emoji reactions (beta custom
@@ -16,12 +17,14 @@ section rail (Chat/Teams+mgmt incl. channel rename-delete/Calendar+join/
 Files incl. per-chat shared files/ToDo/Planner/Shifts/OneNote/Activity),
 quiet hours, Meet now,
 presence with status menu, full Settings window, GUI device-code sign-in,
-notification click→chat, 1:1 audio calls + MEETING JOIN (verified live:
-epconv → call_accepted=true → Call active). Incoming calls ring with an
-accept/decline banner (auto-answer is disabled app-side; audio answer
-verified live end-to-end pipeline, real-payload capture pending — see
-gaps). Offline/local search merged with Graph. Video/screenshare is the
-remaining Phase 2 item.
+notification click→chat. CONSUMER CALLS ARE END-TO-END (run-13/14,
+live-verified on the pa/pb rigs): 1:1 audio (both directions, browser
+AND rig peers), VIDEO (BUNDLE — the web's own shape; rig↔rig fully
+verified incl. decode+render; browser audio+video-RTP verified, browser
+video decode pending one user round), group-thread calls, and screen
+share on the video leg (synthetic source verified; portal path
+user-gated). RTCP PLI keyframe recovery both directions. Offline/local
+search merged with Graph.
 
 ## Repository layout
 
@@ -676,33 +679,34 @@ Teams per-channel unread dots (needs data), checkbox→toggle switch.
 
 ## Known gaps / deferred
 
-- **Incoming-call ringing hardening** — the accept/decline banner ships
-  (auto-answer disabled via `TEAMS_MANUAL_CALLS=1`; audio answer path
-  shared with the CLI's). Still capture-gated: caller-cancel pushes and
-  the accepted-call remote hang-up shape were never seen live (MS rejects
-  self-adds: add returns 202 but no invitation fans out — verified), so
-  `Event::CallGone` only clears a RINGING banner and the ringing banner
-  self-expires after 45 s; an accepted call still ends via Hang-up only.
-  Video invitations are answered audio-only. To capture a real payload:
-  run the app with `RUST_LOG=ost=debug`, receive any call, grep the log
-  for `NGCallManagerWin` frames (`teams-core/examples/self_ring.rs`
-  documents the fan-out experiment).
-- **Video/screenshare** — camera send (chat-header video button) +
-  call-stage panel (remote tile, local preview, mute/camera toggles,
-  hang up) + **SCREENSHARE SHIPPED (2026-10-14)**: stage Share button
-  (video calls — the share rides the existing video leg, no
-  renegotiation), portal ScreenCast via `--features screenshare`, and a
-  synthetic QA source. teams-core: `ScreenShareSlot` on the controls
-  pair, sticky source preference in the send loop (hold last frame
-  between capture ticks — else the encoder flaps 720p↔240p), encoder
-  re-init on resolution change (area-scaled bitrate, 256kbps camera →
-  3.5Mbps cap), screen frames capped to 1920x1080. Live-verified on an
-  echo call (single 1280x720@3072kbps encoder init, bars in the preview
-  tile, vision 5/5). Remaining: interactive portal test against a REAL
-  peer (user-gated), remote-decode verification (echo sends no video),
-  true modality renegotiation (toggles are soft gates), screenshare on
-  MEETING joins (join currently places audio-only legs).
-- **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,
+- **Incoming-call ringing** — fully live on consumer (rig↔rig AND
+  browser callers): evt:107 fork invitations ring with the caller's real
+  display name, accept runs the BUNDLE answer chain, decline is 603.
+  The callee runs a 30s frozen-recv watchdog (the CC delivers no
+  call/end to consumer callees on hang-up; app `Event::CallGone` also
+  hangs up). Work-tenant ringing shares the accept/decline banner.
+- - **Video/screenshare — CONSUMER VIDEO DONE (run-13/14)**. The consumer
+  path is the web's own BUNDLE shape end to end (one transport, DTLS-SRTP,
+  mid1 answered for real, TEAMSFAST_NO_VIDEO_ANSWER=1 A/B-stub escape):
+  rig↔rig verified incl. decode+render+screenshare-on-the-leg; browser
+  round verified audio both ways + browser video RTP arriving/decrypting
+  (one user round pending to confirm in-tile decode after the STAP-A +
+  PLI fixes). LAWS that bit us (each pinned by a test):
+  ONE encoder per stream (two interleaved chains = dsRefLost on every
+  P-slice); skip PACSI(30)/prefix(14) NALs before openh264; STAP-A (24)
+  MUST be unpacked (Chrome bundles SPS/PPS); I420 black needs UV=128
+  (zero chroma renders GREEN); DTLS connection stays OPEN for the call's
+  life (close_notify makes Chrome stop both directions); the initial
+  SPS/PPS burst can land pre-keys — RTCP PLI every 500ms until decode,
+  and senders answer PLIs with a forced IDR. Per-SSRC SRTP rollover
+  tracking (BUNDLE shares one key set). UI textures capped at 640px
+  (720p at 15fps repaint starves software GL). Remaining: browser video
+  decode confirm (user round), true modality renegotiation
+  (newOffer/mediaRenegotiation links declared, shapes uncaptured — fire
+  on mid-call browser camera/screenshare changes), screenshare on
+  MEETING joins (join still places audio-only legs), N-party group
+  create (needs a 3rd participant — user round).
+- - **Adaptive Cards** — basic renderer (TextBlock/FactSet/Image/OpenUrl,
   Submit actions shown disabled). Interactive submits (Input.Text +
   Action.Submit) are CAPTURE-GATED, not mere TODO: the submit wire
   format was never captured, and better-teams ALSO punts (cards with
