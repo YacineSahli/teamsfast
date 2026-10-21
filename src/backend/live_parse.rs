@@ -25,8 +25,10 @@ pub enum Parsed {
         raw: String,
     },
     /// A call-signalling callback announced an end (caller cancelled while
-    /// ringing, or the remote end hung up on the accepted call).
-    CallGone,
+    /// ringing, or the remote end hung up on the accepted call). Carries
+    /// the push's callAgent id when the URL has one, so a stale call's
+    /// gone-push can be told apart from the live call's.
+    CallGone { call_id: Option<String> },
     /// Presence noise, acks — show in the log only.
     Other,
 }
@@ -81,11 +83,58 @@ pub fn parse(raw: &str) -> Parsed {
     if v.get("type").and_then(|t| t.as_str()) == Some("callCallback") {
         if let Some(url) = v.get("url").and_then(|u| u.as_str()) {
             if url.contains("conversationEnd") || url.contains("/call/end") {
-                return Parsed::CallGone;
+                return Parsed::CallGone {
+                    call_id: call_agent_id(url),
+                };
             }
         }
     }
     Parsed::Other
+}
+
+/// The callAgent id from a `…/callAgent/<epid>/<callId>/…` callback URL —
+/// the id the CC scopes every callAgent path of ONE call with (the
+/// invitation's own links carry it too), letting a gone-push be matched
+/// against the call it belongs to.
+pub fn call_agent_id(url: &str) -> Option<String> {
+    let i = url.find("/callAgent/")? + "/callAgent/".len();
+    let rest = &url[i..];
+    let mut it = rest.split('/');
+    let _epid = it.next()?;
+    let id = it.next()?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Scan an invitation raw JSON for any callAgent link and return its id
+/// (invitation links: progress/mediaAnswer/acceptance/… all share the
+/// caller-side callAgent id).
+pub fn call_agent_id_from_invitation(raw: &str) -> Option<String> {
+    fn walk(v: &Value, out: &mut Option<String>) {
+        match v {
+            Value::String(s) => {
+                if out.is_none() {
+                    if let Some(id) = call_agent_id(s) {
+                        *out = Some(id);
+                    }
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    walk(x, out);
+                }
+            }
+            Value::Object(m) => {
+                for x in m.values() {
+                    walk(x, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let v = serde_json::from_str::<Value>(raw).ok()?;
+    let mut id = None;
+    walk(&v, &mut id);
+    id
 }
 
 /// Extract the ringing event from a callInvitation payload (already known
@@ -428,14 +477,44 @@ mod tests {
         let gone = r#"{"type":"callCallback",
             "url":"/v4/f/EP/ab12/conversation/conversationEnd/",
             "body":{"reason":"hangup"}}"#;
-        assert_eq!(parse(gone), Parsed::CallGone);
+        assert_eq!(parse(gone), Parsed::CallGone { call_id: None });
 
         let call_end = r#"{"type":"callCallback","url":"/v4/f/EP/ab12/call/end/","body":null}"#;
-        assert_eq!(parse(call_end), Parsed::CallGone);
+        assert_eq!(parse(call_end), Parsed::CallGone { call_id: None });
 
         // Other call callbacks (roster/progress) stay out of the UI path.
         let roster = r#"{"type":"callCallback","url":"/v4/f/EP/ab12/conversation/rosterUpdate/","body":{}}"#;
         assert_eq!(parse(roster), Parsed::Other);
+    }
+
+    #[test]
+    fn call_gone_carries_callagent_id() {
+        // Real shape (live 2026-10-21): the callback URL is scoped
+        // …/callAgent/<epid>/<callId>/call/end/ — the id that ties a
+        // gone-push to ONE call.
+        let gone = r#"{"type":"callCallback",
+            "url":"/v4/f/FLAG/callAgent/378567d5-afaf-413b-bdd6-477e92750218/a8ba95de/call/end/",
+            "body":null}"#;
+        assert_eq!(
+            parse(gone),
+            Parsed::CallGone {
+                call_id: Some("a8ba95de".into())
+            }
+        );
+        // Extractor edge cases: missing segments, empty id.
+        assert_eq!(call_agent_id("/v4/f/x/callAgent/ep1/zz/"), Some("zz".into()));
+        assert_eq!(call_agent_id("/v4/f/x/callAgent/ep1/"), None);
+        assert_eq!(call_agent_id("/v4/f/x/other/"), None);
+        // The invitation raw carries the same id in its own links —
+        // the correlation key both sides share.
+        let inv = r#"{"callInvitation":{"links":{
+            "acceptance":"https://cc/v4/f/FLAG/callAgent/ep-9/deadbeef/call/acceptance/"},
+            "callModalities":["Audio"]},
+            "participants":{"from":{"id":"8:x","displayName":"A"}}}"#;
+        assert_eq!(call_agent_id_from_invitation(inv), Some("deadbeef".into()));
+        // Invitations without callAgent links correlate on nothing.
+        let bare = r#"{"callInvitation":{"links":{"end":"https://cc/e/1/"},"callModalities":[]}}"#;
+        assert_eq!(call_agent_id_from_invitation(bare), None);
     }
 
     #[test]

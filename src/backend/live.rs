@@ -78,8 +78,8 @@ pub fn start(tx: &Sender<Event>) {
                         return;
                     }
                 }
-                Parsed::CallGone => {
-                    if tx2.send(Event::CallGone).is_err() {
+                Parsed::CallGone { call_id } => {
+                    if tx2.send(Event::CallGone(call_id)).is_err() {
                         return;
                     }
                 }

@@ -538,6 +538,10 @@ pub struct TeamsFastApp {
     lobby_placed_at: Option<Instant>,
     /// Ringing incoming call (banner with Accept/Decline).
     incoming: Option<IncomingRing>,
+    /// The callAgent id of the ringing/active incoming call (from the
+    /// invitation's own links) — lets Event::CallGone tell THIS call's
+    /// gone-pushes from a stale call's.
+    ring_call_agent_id: Option<String>,
     /// Live call controls (mute/camera watches + video frame receivers)
     /// for the call stage UI; one per placed call.
     call_media: Option<ost::calling::CallControlsHandle>,
@@ -1211,6 +1215,7 @@ impl TeamsFastApp {
             lobby: ost::api::LobbyState::Idle,
             lobby_placed_at: None,
             incoming: None,
+            ring_call_agent_id: None,
             call_media: None,
             call_view_open: false,
             image_sizes: HashMap::new(),
@@ -1613,6 +1618,13 @@ impl TeamsFastApp {
                         raw,
                         at: Instant::now(),
                     });
+                    // Identity for Event::CallGone correlation (the
+                    // invitation's own callAgent id; stays set through
+                    // accept so an accepted call's remote hang-up still
+                    // matches).
+                    self.ring_call_agent_id = crate::backend::live_parse::call_agent_id_from_invitation(
+                        self.incoming.as_ref().map(|r| r.raw.as_str()).unwrap_or_default(),
+                    );
                     self.start_ringer();
                 }
                 Event::RingGone(raw) => {
@@ -1626,20 +1638,39 @@ impl TeamsFastApp {
                         }
                     }
                 }
-                Event::CallGone => {
-                    log::info!("CALLQA phase=caller_gone");
-                    // Caller cancelled while ringing: drop the banner…
-                    self.incoming = None;
-                    self.stop_ringer();
-                    // …and if the call was already ACCEPTED, the remote
-                    // hung up (the CC delivers conversationEnd / call-end
-                    // to the callee as well) — stop the active leg so the
-                    // call tears down instead of streaming into the void
-                    // (live 2026-10-20: browser hang-up left the callee
-                    // sending for 8+ minutes with recv frozen). HangUp on
-                    // an idle slot is a no-op.
-                    log::info!("CALLQA action=hangup (remote ended call)");
-                    self.cmd.send(Command::HangUp).ok();
+                Event::CallGone(call_id) => {
+                    // Identity gate: a gone-push whose callAgent id does
+                    // not match the RINGING invitation's own callAgent id
+                    // belongs to another (stale) call on this account —
+                    // it must not clear this ring nor hang up a live
+                    // call. Missing id on either side keeps the previous
+                    // behavior (the frozen-recv watchdog bounds a stale
+                    // ring anyway).
+                    let foreign = matches!(
+                        (self.ring_call_agent_id.as_deref(), call_id.as_deref()),
+                        (Some(active), Some(gone)) if active != gone
+                    );
+                    if foreign {
+                        log::info!(
+                            "CALLQA caller_gone ignored: foreign call (active={:?} gone={:?})",
+                            self.ring_call_agent_id,
+                            call_id
+                        );
+                    } else {
+                        log::info!("CALLQA phase=caller_gone");
+                        // Caller cancelled while ringing: drop the banner…
+                        self.incoming = None;
+                        self.stop_ringer();
+                        // …and if the call was already ACCEPTED, the remote
+                        // hung up (the CC delivers conversationEnd / call-end
+                        // to the callee as well) — stop the active leg so the
+                        // call tears down instead of streaming into the void
+                        // (live 2026-10-20: browser hang-up left the callee
+                        // sending for 8+ minutes with recv frozen). HangUp on
+                        // an idle slot is a no-op.
+                        log::info!("CALLQA action=hangup (remote ended call)");
+                        self.cmd.send(Command::HangUp).ok();
+                    }
                 }
                 Event::JoinPreview(rx) => {
                     self.join_preview = Some(rx);
@@ -1729,6 +1760,7 @@ impl TeamsFastApp {
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
                     self.share_auto_fired = false;
+                    self.ring_call_agent_id = None;
                     self.share_note = None;
                     self.play_end_beep();
                     self.stop_screen_share();
@@ -1748,6 +1780,7 @@ impl TeamsFastApp {
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
                     self.share_auto_fired = false;
+                    self.ring_call_agent_id = None;
                     self.play_end_beep();
                     self.stop_screen_share();
                     self.call = None;
