@@ -1124,3 +1124,38 @@ running the final binary. REMAINING for the user's NEXT browser round
 (audio + answer-acceptance + RTP/decrypt already proven); then the
 screen-share click (mid2 renegotiation capture) and the 3rd-participant
 group round.
+
+### run-14 addendum II — hardening pass (2026-10-21, autonomous)
+
+Test/quality pass over everything run-14 shipped, while awaiting the
+user's next browser round:
+
+- **Regression pins for every live bug** (each failure found on the
+  wire this run): the ONE-encoder law as a CONTRAST assertion
+  (interleaved encoders <=3/6 decoded vs single-encoder >=5/6 on the
+  same frames); I420 black renders dark while the all-zero buffer it
+  replaced is asserted to be exactly RGB(0,135,0); PLI wire roundtrip
+  (+ PSFB FMT!=1 is not a PLI); app apply_frame caps 720p to 640x360.
+- **New coverage**: answer stub generation (all-after-audio vs
+  skip-first-video) + BUNDLE-group insertion; OfferedVideo direction
+  matrix / pm=0 fallback / AV1-only=None; pick_source_frame semantics
+  (latest-wins, gate, screen-over-camera, sticky-between-ticks,
+  disconnected fallthrough+clearing).
+- **Latent bug fixed + pinned**: the rtx-PT exclusion scan could leak
+  past the first m=video section into the screenshare m-line and strip
+  a MAIN payload type (the sections reuse PT numbers for different
+  roles). The regression test builds the exact collision and fails
+  against the old scan.
+- **Outgoing call banners show the peer's name** (cached chat name
+  instead of the raw GUID thread id — vision-verified live: "rico
+  almani — connected 00:04", no @thread.v2 anywhere).
+- **qa_call_e2e.sh pairvideo**: the full consumer video E2E as ONE
+  command (ring video=true → accept → BUNDLE answered → decode on BOTH
+  sides → video counters in the end summary). Live PASS against the
+  rigs; requires the pair thread id as arg 6.
+- AGENTS.md status + call-gaps sections refreshed to the run-13/14
+  truth (consumer audio/video/group/screenshare E2E; the six video
+  "laws" recorded where the next session will read them).
+
+Core: 432 tests (437 with video-cam). App: 119. Rigs on the final
+binary.
