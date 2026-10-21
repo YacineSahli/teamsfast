@@ -5770,3 +5770,31 @@ mod merge_tests {
         assert_eq!(existing[2].content, "resurrected");
     }
 }
+
+#[cfg(test)]
+mod app_tests {
+    use super::*;
+
+    /// Oversized frames are downscaled before texture upload — 720p at
+    /// the stage's 15fps repaint starves software GL (live 2026-10-21:
+    /// callee stage vanished at 86% CPU). Small frames pass untouched.
+    #[test]
+    fn apply_frame_caps_oversized_textures() {
+        let ctx = crate::theme::test_ctx();
+        let big = ost::calling::video::VideoFrame {
+            width: 1280,
+            height: 720,
+            data: ost::calling::codec::black_i420(1280, 720),
+        };
+        let tex = apply_frame(&ctx, None, "test-big", &big);
+        assert_eq!(tex.size(), [640, 360]);
+
+        let small = ost::calling::video::VideoFrame {
+            width: 320,
+            height: 240,
+            data: ost::calling::codec::black_i420(320, 240),
+        };
+        let tex = apply_frame(&ctx, None, "test-small", &small);
+        assert_eq!(tex.size(), [320, 240]);
+    }
+}
