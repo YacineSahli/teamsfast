@@ -31,11 +31,15 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
   pages, append notes), **Activity** feed (mentions and messages)
 - **Presence** — own status with a set-status menu (Available/BRB/Busy/
   DND/Away/Offline)
-- **Calls & meetings** — 1:1 audio calls from any 1:1 chat header, call
-  banner with timer + hang-up, **meeting join** (Join buttons on calendar
-  meetings and a paste-a-link dialog: join URL, thread ID or meeting ID),
-  **Meet now** (instant meeting, created and joined in one click), and an
-  echo-bot test call in Settings
+- **Calls & meetings** — 1:1 **audio and video** calls from any 1:1 chat
+  header (on personal accounts video rides the same WebRTC-compatible
+  transport the web client uses: camera tiles, mute, screen share),
+  **group calls** from group chats, incoming calls ring with an
+  accept/decline banner, call banner with timer + hang-up, **meeting
+  join** (Join buttons on calendar meetings and a paste-a-link dialog:
+  join URL, thread ID or meeting ID), **Meet now** (instant meeting,
+  created and joined in one click), and an echo-bot test call in
+  Settings
 - **Settings** — full window (General/Appearance/Notifications/Account/
   Storage/About): theme picker + zoom, notification rules, start-in-tray,
   close-to-tray, sign-out (keyring wipe), clear local archive
@@ -46,8 +50,6 @@ ICE/TURN/RTP/SRTP calling). No browser engine.
 
 Also: local encrypted archive (SQLCipher), keyring tokens, offline mode,
 user-editable JSON themes.
-
-Video/screenshare is the next milestone.
 
 Agent/architecture hand-off notes live in `AGENTS.md`.
 
