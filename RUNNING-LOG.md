@@ -1159,3 +1159,29 @@ user's next browser round:
 
 Core: 432 tests (437 with video-cam). App: 119. Rigs on the final
 binary.
+
+### run-14 addendum III — cleanup pass (2026-10-21, autonomous)
+
+Follow-on cleanup while awaiting the next browser round:
+- **Zero unused-variable warnings in teams-core across feature combos**
+  (cfg-conditional params get explicit no-op refs; tight cfg(all(...))
+  gating on has_display; planner keeps id validation without the dead
+  binding; get_session_id underscores its unused http param).
+- **Dead code removed**: the legacy private Graph chat module
+  (api/graph.rs — pre-msgapi, zero references), prose_html,
+  thread_member_mris_pub, the setup_media_leg wrapper, write_wav.
+  This-run's code areas are warning-clean; the ~600 remaining warnings
+  are the inherited CLI-era baseline (mostly serde field-never-read on
+  response models) — deliberately left (wholesale churn risks
+  wire-format structs).
+- **call_label extracted + archive-backed test** (name > thread id,
+  blank/unknown/missing fallbacks).
+- **pairvideo re-run PASS on the final binary** after all of the above
+  (14/14 assertions) — the dead-code removal touched call_test, so the
+  live round was the regression gate. Rigs restored on the final binary.
+- **README** updated: audio+video+group calls shipped.
+- NOTE: cargo clippy is broken on this machine (rustup clippy-driver
+  1.98.0 vs Fedora rustc 1.98.1 — E0514 on every shared dep); left
+  alone rather than touching the user's toolchain.
+
+Core 432 (437 video-cam), app 120 tests.
