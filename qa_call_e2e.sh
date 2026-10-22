@@ -24,6 +24,13 @@
 #                                      # <thread> overrides the callee
 #                                      # thread (default: A's sticky 1:1 —
 #                                      # pass the shared pair thread).
+#   qa_call_e2e.sh pairshare <a_prof> <a_upn> <b_prof> <b_upn> <thread>
+#                                      # pairvideo PLUS the share path:
+#                                      # A auto-shares the synthetic
+#                                      # 1280x720 source, B must DECODE
+#                                      # it, A stops + re-shares
+#                                      # mid-call (encoder re-init),
+#                                      # B decodes again, clean hang-up.
 #
 # Every instance runs on its own Xvfb display with per-profile XDG dirs
 # under /tmp/tf-<profile> (files) + TEAMSFAST_PROFILE (keyring slots).
@@ -52,8 +59,8 @@ wait_log() { # wait_log <profile> <pattern> <timeout_s>
   return 1
 }
 
-launch() { # launch <profile> <display>
-  local p="$1" disp="$2"
+launch() { # launch <profile> <display> [extra env assignments...]
+  local p="$1" disp="$2"; shift 2
   local dir="/tmp/tf-$p"
   mkdir -p "$dir/cfg" "$dir/st" "$dir/data"
   Xvfb ":$disp" -screen 0 1100x760x24 >/dev/null 2>&1 &
@@ -61,7 +68,7 @@ launch() { # launch <profile> <display>
   env -u WAYLAND_DISPLAY DISPLAY=":$disp" \
     TEAMSFAST_PROFILE="$p" \
     XDG_CONFIG_HOME="$dir/cfg" XDG_STATE_HOME="$dir/st" XDG_DATA_HOME="$dir/data" \
-    $BIN >/dev/null 2>&1 &
+    "$@" $BIN >/dev/null 2>&1 &
   eval "APP_$p=\$!"
 }
 
@@ -181,6 +188,50 @@ pairvideo)
   echo "== B video =="; grep -aE "BUNDLE video answered|Recv video frame decoded|Audio stats" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" | tail -6
   kill_profile "$A_P"; kill_profile "$B_P"
   [ $fail -eq 0 ] && echo "PAIRVIDEO PASS" || echo "PAIRVIDEO FAIL"
+  exit $fail
+  ;;
+pairshare)
+  # A videocalls B with the synthetic screen source (caller only —
+  # the callee launches WITHOUT the env so decode assertions stay
+  # unambiguous): the auto-share fires at call start, B must decode
+  # the 1280x720 share, then A stops and RE-starts the share mid-call
+  # (encoder re-init + second IDR), B decodes again, clean hang-up.
+  A_P="${2:?a profile}" A_UPN="${3:?a upn}" B_P="${4:?b profile}" B_UPN="${5:?b upn}"
+  THREAD="${6:?pair 1:1 thread id}"
+  launch "$A_P" 81 TEAMSFAST_SCREENSHARE=1 TEAMSFAST_NO_RINGBACK=1
+  launch "$B_P" 82 TEAMSFAST_NO_RINGBACK=1
+  echo "== waiting for both instances =="
+  sleep 10
+  fail=0
+  step() { echo "== $1 =="; shift; "$@" || fail=1; }
+  step "A alive" alive "$A_P"
+  step "B alive" alive "$B_P"
+  step "A video-calls B"   [ "$(ctl "$A_P" "videocall $THREAD")" = "ok" ]
+  step "B rings (video)"   wait_log "$B_P" "CALLQA phase=ringing caller=.* video=true" 30
+  step "B answers"         [ "$(ctl "$B_P" answer)" = "ok" ]
+  step "B accepted"        wait_log "$B_P" "CALLQA action=accept" 5
+  step "A connected"       wait_log "$A_P" "CALLQA phase=connected" 45
+  step "B connected"       wait_log "$B_P" "CALLQA phase=connected" 45
+  step "A auto-shares"     wait_log "$A_P" "CALLQA share=auto (" 15
+  step "B decodes 720p share" wait_log "$B_P" "Recv video frame decoded: 1280x720" 30
+  before=$(grep -ac "Recv video frame decoded: 1280x720" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" 2>/dev/null || echo 0)
+  step "A stops share"     [ "$(ctl "$A_P" 'share off')" = "ok" ]
+  step "A share off logged" wait_log "$A_P" "CALLQA share=off" 5
+  sleep 3   # let the leg settle back on camera frames
+  step "A re-shares mid-call" [ "$(ctl "$A_P" 'share on')" = "ok" ]
+  step "A share on logged"  wait_log "$A_P" "CALLQA share=on" 5
+  sleep 8   # encoder re-init + IDR + PLI recovery window
+  after=$(grep -ac "Recv video frame decoded: 1280x720" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" 2>/dev/null || echo 0)
+  echo "== B 720p decodes: $before -> $after =="
+  step "B decodes 720p again" [ "$after" -gt "$before" ]
+  step "A hangs up"        [ "$(ctl "$A_P" hangup)" = "ok" ]
+  step "A ended"           wait_log "$A_P" "CALLQA phase=ended" 15
+  step "A audio+video"     wait_log "$A_P" "video [1-9][0-9]* sent / [1-9][0-9]* received" 5
+  step "B ended"           wait_log "$B_P" "CALLQA phase=ended" 50
+  echo "== A trace =="; grep -a "CALLQA" "/tmp/tf-$A_P/st/teamsfast/teamsfast.log" | tail -10
+  echo "== B share =="; grep -aE "1280x720|share" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" | tail -6
+  kill_profile "$A_P"; kill_profile "$B_P"
+  [ $fail -eq 0 ] && echo "PAIRSHARE PASS" || echo "PAIRSHARE FAIL"
   exit $fail
   ;;
 *)

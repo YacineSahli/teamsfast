@@ -1643,3 +1643,19 @@ it. Now shipped in teams-core 8ce9f3e (PUSHED):
   regression and are currently DOWN (session hit a memory cap —
   concurrent cargo invocations; builds now run sequential `-j2`).
   Relaunch Xvfb :81/:82 first, then the apps (run-15 protocol).
+
+**run-16e live addendum**: the FIRST pairshare run upgraded the
+verification — when A stopped its share, the remote peer sent a REAL
+stop-share renegotiation offer (30215 bytes) to the CALLER, and the
+new drain answered it successfully (renegotiation=received →
+answered, call continued through a re-share + clean hang-up). So
+caller-side answering is LIVE-VERIFIED against a real peer (rig), and
+the "stop-share offer never live-observed" item from run-16d is closed
+(observed + answered + recovered). Remaining live gap is only the
+Chrome-specific round (rig places call → BROWSER shares).
+
+Also shipped: `qa_call_e2e.sh pairshare` — the run-15 manual share
+regression as one command (A auto-shares synthetic 720p → B decodes →
+A stop → A re-share mid-call (encoder re-init) → B decodes again →
+clean hang-up with counters). First run PASS (720p decodes 1→6 on the
+re-share; audio 628/628, video 690/566).
