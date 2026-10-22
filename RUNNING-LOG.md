@@ -1504,3 +1504,34 @@ DEFERRED: call_after_create identity (QA-only race; harness never
 interleaves), the share-thread-panic Starting edge (catch_unwind
 someday), caller-end wire shape (browser HAR ask above), browser
 mid2 screenshare capture + 3rd participant (standing user rounds).
+
+## run-16b — leak verification + 55-min soak (2026-10-22)
+
+**The leak verification found a REAL one past the adversarial fixes:
++1 UDP socket per connected call, both sides.** Isolation: decline
+rounds leaked ZERO (no media session) → the holder lived in the
+connected-media phase → the run-14 DTLS keep-alive fix's
+std::mem::forget(dc) pinned the media socket forever (the forgotten
+connection holds a strong Arc; the run-14 comment claimed "leaks
+nothing but the object" — wrong by one socket). QueueConn now holds a
+WEAK handle (strong refs exist for the whole handshake; the conn is
+idle post-export). VERIFIED: 5 connected calls in one process, socket
+count flat (was +1/call). Core a82a947.
+
+**55-minute soak (the longest call ever run on this stack): 3300s
+duration cap, auto-shared 720p bars pa→pb, camera pb→pa.**
+- Caller survived **38 dedicated-socket recycles** (one every ~87s)
+  with ZERO media interruption — the reconnect pump holds under
+  sustained recycling.
+- Audio 164,992/164,993 packets (mirrored both sides), video
+  171,020/147,755 — decode counts matched frame-for-frame the whole
+  hour (45,376+ frames each side at the 50-min mark).
+- Zero watchdog misfires, zero PLI stalls, memory flat (298MB caller
+  w/ 720p encode+decode+share, 253MB callee), sockets flat (the DTLS
+  fix holds across the hour too).
+- Clean cap-out end on both sides with honest summaries.
+
+Also prepared (docs/drafts/upstream-bundle/, local): four-patch bundle
+for better-teams (presence-with-client, login_with_code_sink,
+run_call_with_stop, planner-with-client) with per-pitch write-ups —
+NOT posted, awaiting user review.
