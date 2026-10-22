@@ -34,6 +34,13 @@ pub enum Parsed {
     RenegotiationOffer {
         media_answer: String,
         blob: String,
+        /// The offer's callAgent id — the app gates against the ACTIVE
+        /// call's id (trouter REDELIVERS stale offers from previous
+        /// calls on reconnect; answering one against the live session
+        /// poisons the account's negotiation state — live 2026-10-22:
+        /// after a stale answer, the next browser call's video never
+        /// decoded and its share offer never even arrived).
+        call_id: Option<String>,
     },
     /// Presence noise, acks — show in the log only.
     Other,
@@ -108,7 +115,11 @@ pub fn parse(raw: &str) -> Parsed {
                     .unwrap_or_default()
                     .to_string();
                 if !media_answer.is_empty() && !blob.is_empty() {
-                    return Parsed::RenegotiationOffer { media_answer, blob };
+                    return Parsed::RenegotiationOffer {
+                        media_answer,
+                        blob,
+                        call_id: call_agent_id(url),
+                    };
                 }
             }
         }
@@ -602,7 +613,8 @@ mod renegotiation_tests {
               "mediaContent":{"blob":"v=0\r\nm=audio 1 RTP/SAVP 0\r\n","newOffer":false,"negotiationTag":"synpid;ss_1"},
               "sender":{"id":"8:live:.cid.synthetic","displayName":"Syn Name"}}}}"#;
         match parse(frame) {
-            Parsed::RenegotiationOffer { media_answer, blob } => {
+            Parsed::RenegotiationOffer { media_answer, blob, call_id } => {
+                assert_eq!(call_id.as_deref(), Some("synid1"));
                 assert_eq!(media_answer, "https://cc.example/answer?i=1");
                 assert!(blob.starts_with("v=0"));
                 assert!(blob.contains("m=audio"));

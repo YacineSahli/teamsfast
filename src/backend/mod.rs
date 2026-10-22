@@ -341,7 +341,11 @@ pub enum Event {
     CallGone(Option<String>),
     /// Mid-call renegotiation offer (peer screen share / camera flip):
     /// the App forwards it to the active call's answer loop.
-    RenegotiationOffer { media_answer: String, blob: String },
+    RenegotiationOffer {
+        media_answer: String,
+        blob: String,
+        call_id: Option<String>,
+    },
     /// The ringing invitation this raw belongs to no longer exists
     /// (answered/declined elsewhere or cancelled) — stop ITS ring only.
     RingGone(String),

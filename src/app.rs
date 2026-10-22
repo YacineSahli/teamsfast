@@ -1687,10 +1687,32 @@ impl TeamsFastApp {
                         }
                     }
                 }
-                Event::RenegotiationOffer { media_answer, blob } => {
-                    // Forward to the active call's answer loop (no call
-                    // = stale delivery, drop it).
-                    if let Some(media) = self.call_media.as_ref() {
+                Event::RenegotiationOffer {
+                    media_answer,
+                    blob,
+                    call_id,
+                } => {
+                    // Forward to the active call's answer loop — but
+                    // ONLY if the offer belongs to THIS call: trouter
+                    // redelivers stale offers from previous calls on
+                    // reconnect, and answering one against the live
+                    // session poisons the account's negotiation state
+                    // (live 2026-10-22: after answering a redelivered
+                    // offer mid-sanity-call, the next browser call's
+                    // video never decoded and its share offers never
+                    // arrived). Same callAgent-id correlation as
+                    // CallGone.
+                    let foreign = matches!(
+                        (self.ring_call_agent_id.as_deref(), call_id.as_deref()),
+                        (Some(active), Some(offer)) if active != offer
+                    );
+                    if foreign {
+                        log::info!(
+                            "CALLQA renegotiation=dropped foreign offer (active={:?} offer={:?})",
+                            self.ring_call_agent_id,
+                            call_id
+                        );
+                    } else if let Some(media) = self.call_media.as_ref() {
                         let _ = media.renegotiations.try_send((media_answer, blob));
                     }
                 }
