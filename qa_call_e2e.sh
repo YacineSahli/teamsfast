@@ -22,15 +22,21 @@
 #                                      # both connected + VIDEO decoded on
 #                                      # both sides → A hangs up → ended.
 #                                      # <thread> overrides the callee
-#                                      # thread (default: A's sticky 1:1 —
-#                                      # pass the shared pair thread).
-#   qa_call_e2e.sh pairshare <a_prof> <a_upn> <b_prof> <b_upn> <thread>
+#                                      # thread (default: auto-resolved —
+#                                      # the newest 1:1 BOTH archives
+#                                      # carry; falls back to explicit).
+#   qa_call_e2e.sh pairshare <a_prof> <a_upn> <b_prof> <b_upn> [<thread>]
 #                                      # pairvideo PLUS the share path:
 #                                      # A auto-shares the synthetic
 #                                      # 1280x720 source, B must DECODE
 #                                      # it, A stops + re-shares
 #                                      # mid-call (encoder re-init),
 #                                      # B decodes again, clean hang-up.
+#   qa_call_e2e.sh pairdecline <a_prof> <a_upn> <b_prof> <b_upn>
+#                                      # A calls B → B declines (603) →
+#                                      # A ends on the decline → A is
+#                                      # immediately re-callable (slot
+#                                      # hygiene + ring-dedupe guard).
 #
 # Every instance runs on its own Xvfb display with per-profile XDG dirs
 # under /tmp/tf-<profile> (files) + TEAMSFAST_PROFILE (keyring slots).
@@ -59,6 +65,23 @@ wait_log() { # wait_log <profile> <pattern> <timeout_s>
   return 1
 }
 
+count_log() { # count_log <profile> <pattern> — matching lines in the rig log
+  local n
+  n=$(grep -ac "$2" "/tmp/tf-$1/st/teamsfast/teamsfast.log" 2>/dev/null) || true
+  echo "${n:-0}"
+}
+
+wait_count_gt() { # wait_count_gt <profile> <pattern> <baseline> <timeout_s>
+  local p="$1" pat="$2" base="$3" tmo="${4:-30}" waited=0 n
+  while [ "$waited" -lt "$tmo" ]; do
+    n=$(count_log "$p" "$pat")
+    [ "$n" -gt "$base" ] && return 0
+    sleep 1; waited=$((waited+1))
+  done
+  echo "TIMEOUT waiting for '$pat' count > $base in /tmp/tf-$p log (${tmo}s)"
+  return 1
+}
+
 launch() { # launch <profile> <display> [extra env assignments...]
   local p="$1" disp="$2"; shift 2
   local dir="/tmp/tf-$p"
@@ -79,6 +102,28 @@ kill_profile() { # kill_profile <profile>
 
 alive() { # alive <profile> — ctl ping reachable
   [ "$(ctl "$1" ping)" = "ok" ]
+}
+
+# Shared 1:1 threads of two profiles, newest first (intersection of the
+# two encrypted archives; falls back to explicit <thread> args when the
+# keyring keys or sqlcipher are unavailable). Emits "time id" lines.
+pair_chats() { # pair_chats <profile>
+  local p="$1" key
+  local db="/tmp/tf-$p/st/teamsfast/archive.db"
+  [ -r "$db" ] || return 0
+  key=$(secret-tool lookup service teamsfast username "archive-key-$p" 2>/dev/null)
+  [ -n "$key" ] || return 0
+  # NOTE: sqlcipher prints "ok" before result rows and uses "|" as the
+  # column separator — drop the former, translate the latter (thread
+  # ids contain neither).
+  sqlcipher "$db" "PRAGMA key=\"$key\"; SELECT last_message_time, id FROM chats WHERE is_group=0;" 2>/dev/null \
+    | grep -v '^ok$' | tr '|' ' '
+}
+
+resolve_pair_thread() { # resolve_pair_thread <a_prof> <b_prof> — newest thread id BOTH archives carry
+  # pair_chats emits "time id"; join -j 2 re-orders to "id time_a time_b"
+  join -j 2 <(pair_chats "$1" | sort -k2,2) <(pair_chats "$2" | sort -k2,2) 2>/dev/null \
+    | sort -k2,2r | head -1 | cut -d' ' -f1
 }
 
 case "$MODE" in
@@ -153,12 +198,13 @@ pairvideo)
   A_P="${2:?a profile}" A_UPN="${3:?a upn}" B_P="${4:?b profile}" B_UPN="${5:?b upn}"
   THREAD="${6:-}"
   if [ -z "$THREAD" ]; then
-    # A's sticky 1:1 with B (created by the first `calluser`): resolve it
-    # from A's archive once the app is up — until then, require it
-    # explicitly. Simplest robust default: the known pair thread from the
-    # rig documentation; callers SHOULD pass it.
-    echo "NOTE: no <thread> passed — pass the pair's 1:1 thread id for stability"
-    exit 2
+    THREAD=$(resolve_pair_thread "$A_P" "$B_P")
+    if [ -n "$THREAD" ]; then
+      echo "NOTE: auto-resolved pair thread from both archives"
+    else
+      echo "NOTE: thread auto-resolve unavailable (keyring/sqlcipher/archive) — pass the pair 1:1 thread id"
+      exit 2
+    fi
   fi
   launch "$A_P" 81; launch "$B_P" 82
   echo "== waiting for both instances =="
@@ -197,7 +243,11 @@ pairshare)
   # the 1280x720 share, then A stops and RE-starts the share mid-call
   # (encoder re-init + second IDR), B decodes again, clean hang-up.
   A_P="${2:?a profile}" A_UPN="${3:?a upn}" B_P="${4:?b profile}" B_UPN="${5:?b upn}"
-  THREAD="${6:?pair 1:1 thread id}"
+  THREAD="${6:-$(resolve_pair_thread "$A_P" "$B_P")}"
+  if [ -z "$THREAD" ]; then
+    echo "NOTE: thread auto-resolve unavailable — pass the pair 1:1 thread id"
+    exit 2
+  fi
   launch "$A_P" 81 TEAMSFAST_SCREENSHARE=1 TEAMSFAST_NO_RINGBACK=1
   launch "$B_P" 82 TEAMSFAST_NO_RINGBACK=1
   echo "== waiting for both instances =="
@@ -232,6 +282,42 @@ pairshare)
   echo "== B share =="; grep -aE "1280x720|share" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" | tail -6
   kill_profile "$A_P"; kill_profile "$B_P"
   [ $fail -eq 0 ] && echo "PAIRSHARE PASS" || echo "PAIRSHARE FAIL"
+  exit $fail
+  ;;
+pairdecline)
+  # A calls B (calluser — CreateOneToOne, no thread needed) → B rings →
+  # B DECLINES (603 chain) → A's call ends on the decline, B's ring
+  # clears → A is immediately re-callable → mid-ring hang-up also
+  # clears B's ring. Regression for the ring-dedupe self-decline bug
+  # class. NOTE: B never HAS a call task (it declines while ringing),
+  # so B's terminal evidence is ring_gone — never "phase=ended".
+  A_P="${2:?a profile}" A_UPN="${3:?a upn}" B_P="${4:?b profile}" B_UPN="${5:?b upn}"
+  launch "$A_P" 81 TEAMSFAST_NO_RINGBACK=1; launch "$B_P" 82 TEAMSFAST_NO_RINGBACK=1
+  echo "== waiting for both instances =="
+  sleep 10
+  fail=0
+  step() { echo "== $1 =="; shift; "$@" || fail=1; }
+  step "A alive" alive "$A_P"
+  step "B alive" alive "$B_P"
+  step "A calls B (calluser)" [ "$(ctl "$A_P" "calluser $B_UPN")" = "ok" ]
+  step "B rings"             wait_log "$B_P" "CALLQA phase=ringing" 30
+  step "B declines"          [ "$(ctl "$B_P" decline)" = "ok" ]
+  step "B decline logged"    wait_log "$B_P" "CALLQA action=decline" 5
+  step "B ring clears"       wait_log "$B_P" "CALLQA ring_gone" 20
+  # The caller learns of the decline through the CC (run-12 chain).
+  step "A ended on decline"  wait_log "$A_P" "CALLQA phase=ended" 30
+  ring1=$(count_log "$B_P" "CALLQA phase=ringing")
+  end1=$(count_log "$A_P" "CALLQA phase=ended")
+  gone1=$(count_log "$B_P" "CALLQA ring_gone")
+  step "A re-callable"       [ "$(ctl "$A_P" "calluser $B_UPN")" = "ok" ]
+  step "B rings again"       wait_count_gt "$B_P" "CALLQA phase=ringing" "$ring1" 30
+  step "cleanup hangup A"    [ "$(ctl "$A_P" hangup)" = "ok" ]
+  step "A ended 2nd"         wait_count_gt "$A_P" "CALLQA phase=ended" "$end1" 20
+  step "B ring clears 2nd"   wait_count_gt "$B_P" "CALLQA ring_gone" "$gone1" 30
+  echo "== A trace =="; grep -a "CALLQA" "/tmp/tf-$A_P/st/teamsfast/teamsfast.log" | tail -8
+  echo "== B trace =="; grep -a "CALLQA" "/tmp/tf-$B_P/st/teamsfast/teamsfast.log" | tail -8
+  kill_profile "$A_P"; kill_profile "$B_P"
+  [ $fail -eq 0 ] && echo "PAIRDECLINE PASS" || echo "PAIRDECLINE FAIL"
   exit $fail
   ;;
 *)
