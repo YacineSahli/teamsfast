@@ -1574,3 +1574,34 @@ link) + accept new mids on the BUNDLE transport.
 Also this round: browser→app video re-verified on the newest build
 (decode 640x360, 301+ frames) and the caller's renegotiation link set
 harvest-hinted by the acceptance frame confirmed.
+
+## run-16d — MID-CALL SCREEN SHARE FROM A REAL BROWSER: WORKING (2026-10-22)
+
+Live acceptance round (user browser → rig pa, camera + share):
+
+- **Camera video decoded normally** (640x360, the wedged state from the
+  previous round had cleared; see the stale-offer gate below).
+- **Share click → offer received (6009 bytes) → answered → 202
+  Accepted → the share DECODED at 960x540 (651 frames)** — a distinct
+  stream from the camera on the new mid, riding the same BUNDLE
+  transport. The browser showed no share error. Clean hang-up after.
+
+This closes the last capture-gated call feature: true modality
+renegotiation (callee side) is LIVE against real Chrome.
+
+**The earlier failed round root-caused to a stale-offer poisoning:**
+trouter REDELIVERS unacked indicators on reconnect — a morning-call
+offer arrived during an unrelated sanity call and the (then ungated)
+answering posted a live-session answer to it (2xx); the NEXT browser
+call on the account showed the wedged state (video RTP arriving with
+zero decode all call; the share click produced no offer delivery at
+all). Guard shipped (61f2c64): offers carry their callAgent id and the
+app drops foreign ids (CallGone-style correlation) — after which the
+account state had recovered and the acceptance round passed.
+
+Remaining in the renegotiation area (smaller, follow-ups): caller-side
+answering (rig-placed calls receiving browser shares), the stop-share
+offer (ss_2 camera-off shape) is unit-tested but not yet
+live-observed, and the share's video is not yet rendered as a SEPARATE
+tile (it takes over the remote tile — same SSRC-space stream, distinct
+resolution; a proper share-tile UI is polish).
