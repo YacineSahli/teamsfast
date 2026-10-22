@@ -1687,6 +1687,13 @@ impl TeamsFastApp {
                         }
                     }
                 }
+                Event::RenegotiationOffer { media_answer, blob } => {
+                    // Forward to the active call's answer loop (no call
+                    // = stale delivery, drop it).
+                    if let Some(media) = self.call_media.as_ref() {
+                        let _ = media.renegotiations.try_send((media_answer, blob));
+                    }
+                }
                 Event::CallGone(call_id) => {
                     // Identity gate: a gone-push whose callAgent id does
                     // not match the RINGING invitation's own callAgent id

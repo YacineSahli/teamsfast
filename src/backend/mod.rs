@@ -339,6 +339,9 @@ pub enum Event {
     /// A call-signalling callback announced an end (caller cancelled while
     /// ringing; the accepted-call case is handled conservatively in the UI).
     CallGone(Option<String>),
+    /// Mid-call renegotiation offer (peer screen share / camera flip):
+    /// the App forwards it to the active call's answer loop.
+    RenegotiationOffer { media_answer: String, blob: String },
     /// The ringing invitation this raw belongs to no longer exists
     /// (answered/declined elsewhere or cancelled) — stop ITS ring only.
     RingGone(String),

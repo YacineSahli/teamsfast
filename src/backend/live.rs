@@ -83,6 +83,14 @@ pub fn start(tx: &Sender<Event>) {
                         return;
                     }
                 }
+                Parsed::RenegotiationOffer { media_answer, blob } => {
+                    if tx2
+                        .send(Event::RenegotiationOffer { media_answer, blob })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
                 Parsed::Other => {}
             }
         }

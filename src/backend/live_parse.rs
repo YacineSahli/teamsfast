@@ -29,6 +29,12 @@ pub enum Parsed {
     /// the push's callAgent id when the URL has one, so a stale call's
     /// gone-push can be told apart from the live call's.
     CallGone { call_id: Option<String> },
+    /// A mid-call renegotiation offer (peer screen share / camera
+    /// flip): the mediaAnswer URL to answer at + the offer SDP blob.
+    RenegotiationOffer {
+        media_answer: String,
+        blob: String,
+    },
     /// Presence noise, acks — show in the log only.
     Other,
 }
@@ -86,6 +92,24 @@ pub fn parse(raw: &str) -> Parsed {
                 return Parsed::CallGone {
                     call_id: call_agent_id(url),
                 };
+            }
+            // Renegotiation offer (mediaNegotiation body): the peer
+            // started a screen share / flipped the camera mid-call.
+            if url.contains("/call/mediaRenegotiation/") {
+                let mn = v.get("body");
+                let media_answer = mn
+                    .and_then(|b| b.pointer("/mediaNegotiation/links/mediaAnswer"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let blob = mn
+                    .and_then(|b| b.pointer("/mediaNegotiation/mediaContent/blob"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if !media_answer.is_empty() && !blob.is_empty() {
+                    return Parsed::RenegotiationOffer { media_answer, blob };
+                }
             }
         }
     }
@@ -559,5 +583,34 @@ mod hostile_tests {
             call_agent_id_from_invitation(&wide),
             Some("callid99".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod renegotiation_tests {
+    use super::*;
+
+    /// A mediaRenegotiation callCallback envelope (shape from the live
+    /// 2026-10-22 browser share capture, identifiers scrubbed).
+    #[test]
+    fn renegotiation_envelope_parses() {
+        let frame = r#"{"type":"callCallback",
+            "url":"/v4/f/SYNTHFLAG/callAgent/00000000-aaaa-bbbb-cccc-111111111111/synid1/call/mediaRenegotiation/",
+            "body":{"mediaNegotiation":{
+              "callModalities":["audio","video","screenSharer"],
+              "links":{"mediaAnswer":"https://cc.example/answer?i=1","rejection":"https://cc.example/reject?i=1"},
+              "mediaContent":{"blob":"v=0\r\nm=audio 1 RTP/SAVP 0\r\n","newOffer":false,"negotiationTag":"synpid;ss_1"},
+              "sender":{"id":"8:live:.cid.synthetic","displayName":"Syn Name"}}}}"#;
+        match parse(frame) {
+            Parsed::RenegotiationOffer { media_answer, blob } => {
+                assert_eq!(media_answer, "https://cc.example/answer?i=1");
+                assert!(blob.starts_with("v=0"));
+                assert!(blob.contains("m=audio"));
+            }
+            other => panic!("expected RenegotiationOffer, got {other:?}"),
+        }
+        // Missing links/blob falls back to Other (never a crash).
+        let bare = r#"{"type":"callCallback","url":"/v4/f/X/callAgent/e/i/call/mediaRenegotiation/","body":{}}"#;
+        assert!(matches!(parse(bare), Parsed::Other));
     }
 }
