@@ -99,8 +99,12 @@ pub type ShareStop = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// Outcome of a share-start thread (drained on a later frame).
 pub enum ShareEvent {
-    Started(ShareStop),
-    Failed(String),
+    /// The share source thread finished starting; `gen` is the call
+    /// generation it was started FOR (a stale generation is dropped —
+    /// the portal dialog can block so long that the call ended and a
+    /// NEW call began before Started lands).
+    Started(ShareStop, u64),
+    Failed(String, u64),
 }
 
 /// Drain a frame channel, keeping only the newest frame (live video is
@@ -542,6 +546,10 @@ pub struct TeamsFastApp {
     /// invitation's own links) — lets Event::CallGone tell THIS call's
     /// gone-pushes from a stale call's.
     ring_call_agent_id: Option<String>,
+    /// Monotonic call generation: bumped on every call teardown so
+    /// async completions (share starts) can detect they belong to a
+    /// dead call.
+    call_generation: u64,
     /// Live call controls (mute/camera watches + video frame receivers)
     /// for the call stage UI; one per placed call.
     call_media: Option<ost::calling::CallControlsHandle>,
@@ -1029,6 +1037,7 @@ impl TeamsFastApp {
         let (tx_frames, rx_frames) =
             std::sync::mpsc::sync_channel::<ost::calling::video::VideoFrame>(4);
         let tx_ev = self.share_events.0.clone();
+        let start_gen = self.call_generation;
         self.screen_share = ScreenShare::Starting;
         self.share_note = None;
         let spawned = std::thread::Builder::new()
@@ -1054,10 +1063,10 @@ impl TeamsFastApp {
                         if let Ok(mut guard) = slot.lock() {
                             *guard = Some(rx_frames);
                         }
-                        let _ = tx_ev.send(ShareEvent::Started(stop));
+                        let _ = tx_ev.send(ShareEvent::Started(stop, start_gen));
                     }
                     Err(e) => {
-                        let _ = tx_ev.send(ShareEvent::Failed(e));
+                        let _ = tx_ev.send(ShareEvent::Failed(e, start_gen));
                     }
                 }
             });
@@ -1216,6 +1225,7 @@ impl TeamsFastApp {
             lobby_placed_at: None,
             incoming: None,
             ring_call_agent_id: None,
+            call_generation: 0,
             call_media: None,
             call_view_open: false,
             image_sizes: HashMap::new(),
@@ -1388,7 +1398,13 @@ impl TeamsFastApp {
             let Some(parsed) = crate::control::parse_control_verb(&verb) else {
                 continue;
             };
-            log::info!("CALLQA verb={verb}");
+            // Metadata only: the raw verb carries `send` message text
+            // and group topics/UPNs — log the head word (the per-arm
+            // markers carry the structured details).
+            log::info!(
+                "CALLQA verb={}",
+                verb.split_whitespace().next().unwrap_or("?")
+            );
             match parsed {
                 crate::control::ControlVerb::Ping => {}
                 crate::control::ControlVerb::Call { chat_id, video } => {
@@ -1484,8 +1500,23 @@ impl TeamsFastApp {
         // Share-thread completions first: a Started that races a call-end
         // in the same frame must not leave a stop hook behind.
         while let Ok(ev) = self.share_events.1.try_recv() {
+            // Stale generation = the call this share started for is gone
+            // (portal dialog outlived it); NEVER attach it to whatever
+            // call is live now.
+            let ev = match ev {
+                ShareEvent::Started(stop, generation) if generation != self.call_generation => {
+                    log::info!("dropping stale share start (gen {generation})");
+                    stop();
+                    continue;
+                }
+                ShareEvent::Failed(_, generation) if generation != self.call_generation => {
+                    continue;
+                }
+                ShareEvent::Started(stop, generation) => ShareEvent::Started(stop, generation),
+                ShareEvent::Failed(e, generation) => ShareEvent::Failed(e, generation),
+            };
             match ev {
-                ShareEvent::Started(stop) => {
+                ShareEvent::Started(stop, _) => {
                     // The call may have ended while the portal dialog was
                     // open — stop immediately in that case.
                     if self.call_media.is_some() {
@@ -1495,7 +1526,7 @@ impl TeamsFastApp {
                         stop();
                     }
                 }
-                ShareEvent::Failed(e) => {
+                ShareEvent::Failed(e, _) => {
                     self.screen_share = ScreenShare::Off;
                     self.share_note = Some(e);
                 }
@@ -1645,10 +1676,13 @@ impl TeamsFastApp {
                 Event::RingGone(raw) => {
                     // Fork-loss: THIS invitation is gone (answered/declined
                     // elsewhere or cancelled). Clear only ITS banner —
-                    // never touch an active call.
+                    // never touch an active call. The correlation id dies
+                    // with the ring (a stale id could otherwise route a
+                    // LATER gone-push into Command::HangUp).
                     if let Some(ring) = self.incoming.as_ref() {
                         if ring.raw == raw {
                             self.incoming = None;
+                            self.ring_call_agent_id = None;
                             self.stop_ringer();
                         }
                     }
@@ -1697,8 +1731,13 @@ impl TeamsFastApp {
                 Event::CallMedia(handle) => {
                     // The media handle lands ≈ connect: refresh the top
                     // bar past "Calling…" (the banner owns the live
-                    // phase from here).
-                    self.status = "In a call".into();
+                    // phase from here). Meeting joins land on the LOBBY
+                    // leg — keep the joining wording until admitted.
+                    self.status = if self.call_is_meeting {
+                        "Joining meeting…".into()
+                    } else {
+                        "In a call".into()
+                    };
                     // Video calls open the stage; voice calls stay on the
                     // banner — a large placeholder tile on an audio call
                     // just reads as an empty video screen. The local-
@@ -1785,6 +1824,7 @@ impl TeamsFastApp {
                     self.call_camera_swap_attempted = false;
                     self.share_auto_fired = false;
                     self.ring_call_agent_id = None;
+                    self.call_generation += 1;
                     self.share_note = None;
                     self.play_end_beep();
                     self.stop_screen_share();
@@ -1801,10 +1841,12 @@ impl TeamsFastApp {
                 }
                 Event::CallFailed(e) => {
                     log::info!("CALLQA phase=failed error={e:?}");
+                    self.status = "call failed".into();
                     self.call_has_camera = false;
                     self.call_camera_swap_attempted = false;
                     self.share_auto_fired = false;
                     self.ring_call_agent_id = None;
+                    self.call_generation += 1;
                     self.play_end_beep();
                     self.stop_screen_share();
                     self.call = None;
@@ -2358,6 +2400,13 @@ impl TeamsFastApp {
                         chat.id,
                         chat.is_group
                     );
+                    // A re-run create returns the SAME derived thread —
+                    // insert only when absent (the list merge dedupes at
+                    // the next refresh; until then the sidebar showed
+                    // one duplicate row per run).
+                    if self.chats.iter().any(|c| c.id == chat.id) {
+                        return;
+                    }
                     let mut row = ost::api::ChatInfo {
                         id: chat.id.clone(),
                         name: chat.name.clone(),
@@ -3324,6 +3373,7 @@ impl TeamsFastApp {
             Action::DeclineIncoming => {
                 log::info!("CALLQA action=decline");
                 self.stop_ringer();
+                self.ring_call_agent_id = None;
                 if let Some(ring) = self.incoming.take() {
                     self.cmd.send(Command::DeclineIncoming(ring.raw)).ok();
                 }
@@ -4076,6 +4126,7 @@ impl eframe::App for TeamsFastApp {
             // banner self-expires past the ring window.
             if ring.at.elapsed() > RING_TIMEOUT {
                 self.incoming = None;
+                self.ring_call_agent_id = None;
                 self.stop_ringer();
             } else {
                 let busy = self.call.is_some();
@@ -4563,6 +4614,13 @@ impl eframe::App for TeamsFastApp {
                             Some(tex) => {
                                 let size = tex.size_vec2();
                                 let h = (avail_w * size.y / size.x).min(tile_h);
+                                // Aspect-preserving fit: when the height
+                                // cap binds (portrait/square shares), the
+                                // WIDTH shrinks too — painting the full
+                                // avail_w would squash the frame (the
+                                // old Image path overflowed instead; both
+                                // were wrong for tall sources).
+                                let w = h * size.x / size.y;
                                 // Explicit allocation + painter image — NOT
                                 // `ui.add_sized([avail_w, h], Image)`: an
                                 // egui 0.36 Image whose source texture is
@@ -4579,9 +4637,15 @@ impl eframe::App for TeamsFastApp {
                                     egui::vec2(avail_w, h),
                                     egui::Sense::hover(),
                                 );
+                                // Center the fitted tile in the slot.
+                                let tile_rect = egui::Rect::from_min_size(
+                                    rect.left_top()
+                                        + egui::vec2((avail_w - w) * 0.5, 0.0),
+                                    egui::vec2(w, h),
+                                );
                                 ui.painter().image(
                                     tex.id(),
-                                    rect,
+                                    tile_rect,
                                     egui::Rect::from_min_max(
                                         egui::pos2(0.0, 0.0),
                                         egui::pos2(1.0, 1.0),
@@ -4595,7 +4659,7 @@ impl eframe::App for TeamsFastApp {
                                     );
                                 }
                                 ui.painter().rect_stroke(
-                                    rect,
+                                    tile_rect,
                                     8,
                                     egui::Stroke::new(1.0, Color32::from_black_alpha(90)),
                                     egui::StrokeKind::Inside,
