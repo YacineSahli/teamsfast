@@ -227,6 +227,29 @@ mod tests {
     }
 
     #[test]
+    fn open_and_send_verbs_parse() {
+        // open: exactly one chat-id arg.
+        assert_eq!(
+            parse_control_verb("open 19:abc@thread.v2"),
+            Some(ControlVerb::Open {
+                chat_id: "19:abc@thread.v2".into()
+            })
+        );
+        assert_eq!(parse_control_verb("open"), None);
+        // send: chat id + rest-of-line body rejoined with spaces.
+        assert_eq!(
+            parse_control_verb("send 19:abc@thread.v2 hello  there"),
+            Some(ControlVerb::Send {
+                chat_id: "19:abc@thread.v2".into(),
+                text: "hello there".into()
+            })
+        );
+        // Empty body must be rejected, never queued.
+        assert_eq!(parse_control_verb("send 19:abc@thread.v2"), None);
+        assert_eq!(parse_control_verb("send 19:abc@thread.v2 "), None);
+    }
+
+    #[test]
     fn profile_suffix_defaults_to_empty() {
         // No env set in tests: the default profile must keep historical
         // identifiers ("teamsfast", "archive-key") byte-for-byte.

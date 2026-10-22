@@ -2888,6 +2888,9 @@ mod markdown_image_tests {
         assert!(!super::custom_emoji_entries().iter().any(|(n, _)| n == "fake"));
     }
 
+    // Revived 2026-10-22: this battery shipped WITHOUT its #[test]
+    // attribute and silently never ran (coverage-sweep find).
+    #[test]
     fn image_markup_collapses_to_alt() {
         // The real Jira shape (run-8 battery crops).
         assert_eq!(
@@ -2926,6 +2929,29 @@ mod markdown_image_tests {
         assert_eq!(
             plains("!Audio settings (359d8a2d).png|width=568!").join(""),
             "Audio settings (359d8a2d).png"
+        );
+    }
+
+    #[test]
+    fn link_text_shortening_is_char_safe() {
+        // ≤48 chars: byte-identical (both the byte and char guards).
+        assert_eq!(super::shorten_link_text("short"), "short");
+        let exact: String = "a".repeat(48);
+        assert_eq!(super::shorten_link_text(&exact), exact);
+        // 40 é chars = 80 bytes but ≤48 CHARS: unchanged (the byte
+        // guard alone must not trigger truncation).
+        let wide: String = "é".repeat(40);
+        assert_eq!(super::shorten_link_text(&wide), wide);
+        // >48 chars: first 30 + ellipsis + last 16, char boundaries.
+        let long: String = "b".repeat(60);
+        assert_eq!(
+            super::shorten_link_text(&long),
+            format!("{}…{}", "b".repeat(30), "b".repeat(16))
+        );
+        let multibyte: String = "é".repeat(60);
+        assert_eq!(
+            super::shorten_link_text(&multibyte),
+            format!("{}…{}", "é".repeat(30), "é".repeat(16))
         );
     }
 }
