@@ -1461,6 +1461,21 @@ impl TeamsFastApp {
                     }
                     log::info!("CALLQA share={}", if on { "on" } else { "off" });
                 }
+                crate::control::ControlVerb::Group { topic, members } => {
+                    // Fresh group thread for E2E (a roster that actually
+                    // contains the peer); the id lands in the log via
+                    // Event::CreateChatOk.
+                    self.cmd
+                        .send(crate::backend::Command::CreateGroup { topic, members })
+                        .ok();
+                }
+                crate::control::ControlVerb::GroupFrom { source, topic } => {
+                    // Consumer variant: members lifted from the source
+                    // thread's roster (MRI forms preserved).
+                    self.cmd
+                        .send(crate::backend::Command::CreateGroupFromThread { source, topic })
+                        .ok();
+                }
             }
         }
     }
@@ -2336,6 +2351,13 @@ impl TeamsFastApp {
                     }
                 }
                 Event::CreateChatOk(chat) => {
+                    // CALLQA marker: the E2E harness greps the new
+                    // thread id from the rig log (group-create flow).
+                    log::info!(
+                        "CALLQA chat_created id={} group={}",
+                        chat.id,
+                        chat.is_group
+                    );
                     let mut row = ost::api::ChatInfo {
                         id: chat.id.clone(),
                         name: chat.name.clone(),

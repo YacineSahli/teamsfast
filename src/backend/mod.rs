@@ -78,6 +78,8 @@ pub enum Command {
     DownloadFile { url: String, name: String },
     CreateOneToOne(String),
     CreateGroup { topic: String, members: Vec<String> },
+    /// Consumer group create: members lifted from a source thread roster.
+    CreateGroupFromThread { source: String, topic: String },
     StartTrouter,
     /// Wipe tokens (keyring + file) and disconnect — the UI returns to the
     /// sign-in screen.
@@ -837,6 +839,9 @@ async fn worker(mut rx: UnboundedReceiver<Command>, tx: Sender<Event>) {
             }
             Command::CreateGroup { topic, members } => {
                 directory::create_group(&ses, &tx, &topic, &members).await;
+            }
+            Command::CreateGroupFromThread { source, topic } => {
+                directory::create_group_from_thread(&ses, &tx, &source, &topic).await;
             }
             Command::StartTrouter => {
                 if trouter_started {

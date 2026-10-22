@@ -89,6 +89,29 @@ pub fn parse_control_verb(request: &str) -> Option<ControlVerb> {
             Some("off") => Some(ControlVerb::Share(false)),
             _ => None,
         },
+        "group" => {
+            // group <topic> <member-upn>... — mint a fresh group chat
+            // (E2E: a group thread whose roster actually contains the
+            // peer, unlike the stale QA threads).
+            let topic = arg(&mut parts)?;
+            let members: Vec<String> = parts.map(str::to_string).collect();
+            if members.is_empty() {
+                None
+            } else {
+                Some(ControlVerb::Group { topic, members })
+            }
+        }
+        "groupfrom" => {
+            // groupfrom <source-thread> <topic...> — consumer group
+            // create with members lifted from a thread roster (MRI
+            // forms preserved; no AAD on consumer).
+            let source = arg(&mut parts)?;
+            let topic: String = parts.collect::<Vec<_>>().join(" ");
+            Some(ControlVerb::GroupFrom {
+                source,
+                topic: topic.trim().to_string(),
+            })
+        }
         _ => None,
     }
 }
@@ -110,6 +133,11 @@ pub enum ControlVerb {
     /// Stage Share button: start (synthetic source under
     /// TEAMSFAST_SCREENSHARE=1) or stop the running share.
     Share(bool),
+    /// Create a group chat (topic + member UPNs); the new thread id
+    /// lands in the rig log via Event::CreateChatOk.
+    Group { topic: String, members: Vec<String> },
+    /// Consumer group create from a source thread's roster.
+    GroupFrom { source: String, topic: String },
 }
 
 /// Queue one verb (called from the claim-handler thread).
@@ -170,6 +198,13 @@ mod tests {
             parse_control_verb("share off"),
             Some(ControlVerb::Share(false))
         );
+        assert_eq!(
+            parse_control_verb("group qa fresh@example.com other@example.com"),
+            Some(ControlVerb::Group {
+                topic: "qa".into(),
+                members: vec!["fresh@example.com".into(), "other@example.com".into()]
+            })
+        );
         // Unknown or malformed: declined, never queued.
         assert_eq!(parse_control_verb("show"), None);
         assert_eq!(parse_control_verb("rm -rf"), None);
@@ -178,6 +213,16 @@ mod tests {
         assert_eq!(parse_control_verb("mute sideways"), None);
         assert_eq!(parse_control_verb("share"), None);
         assert_eq!(parse_control_verb("share maybe"), None);
+        assert_eq!(parse_control_verb("group"), None);
+        assert_eq!(parse_control_verb("group onlytopic"), None);
+        assert_eq!(
+            parse_control_verb("groupfrom 19:abc@thread.v2 fresh topic"),
+            Some(ControlVerb::GroupFrom {
+                source: "19:abc@thread.v2".into(),
+                topic: "fresh topic".into()
+            })
+        );
+        assert_eq!(parse_control_verb("groupfrom"), None);
         assert_eq!(parse_control_verb(""), None);
     }
 

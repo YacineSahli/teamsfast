@@ -153,6 +153,28 @@ pub async fn create_group(ses: &Session, tx: &Sender<Event>, topic: &str, member
     }
 }
 
+/// `Command::CreateGroupFromThread` — consumer group chat create with
+/// members lifted from another thread's roster (MRI forms preserved;
+/// AAD resolution does not exist on consumer).
+pub async fn create_group_from_thread(
+    ses: &Session,
+    tx: &Sender<Event>,
+    source_thread: &str,
+    topic: &str,
+) {
+    let Some(c) = ses.client.as_ref() else {
+        return;
+    };
+    match ost::api::create_group_from_thread_personal(c, source_thread, Some(topic)).await {
+        Ok(chat) => {
+            let _ = tx.send(Event::CreateChatOk(chat));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("new group: {e:#}")));
+        }
+    }
+}
+
 /// `Command::SetChatMuted` — server-side mute toggle.
 pub async fn set_muted(ses: &Session, tx: &Sender<Event>, chat_id: &str, muted: bool) {
     let Some(c) = ses.client.as_ref() else {
