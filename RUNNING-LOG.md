@@ -1535,3 +1535,42 @@ Also prepared (docs/drafts/upstream-bundle/, local): four-patch bundle
 for better-teams (presence-with-client, login_with_code_sink,
 run_call_with_stop, planner-with-client) with per-pitch write-ups —
 NOT posted, awaiting user review.
+
+## run-16c — BROWSER ROUND: caller hang-up FIXED + renegotiation shapes CAPTURED (2026-10-22)
+
+The user placed a browser video call to rig pa, screen-shared, hit the
+expected share-error (we don't answer renegotiations yet), hung up
+cleanly, and exported the HAR (~/Downloads/teams.live.com.har — parsed
+locally, never committed; wire shapes extracted only).
+
+**THE CALLER HANG-UP CHAIN IS FIXED (core bbfd771, pushed):** the
+browser ends a consumer call by POSTing the conversation leave link
+with a REQUIRED 442-byte body — participants.from (MRI, displayName,
+REGISTERED endpointId, participantId) + conversationTransactionEnd +
+callTransactionEnd blocks. Our empty {} body had 400'd on every
+consumer call since the beginning. With the HAR shape the leave
+returns 204 — verified live TWICE (audio + video caller hang-ups), and
+the callee now tears down in 63ms (the CC always delivered the end;
+our broken leave hid it behind the watchdog). Closes the 2h-history /
+stuck-reconnect-screen class for app-placed calls.
+
+**Modality renegotiation wire shapes CAPTURED (both directions, saved
+to gitignored docs/drafts/captures/):**
+- CALLEE view (trouter mediaRenegotiation POSTs to our callAgent):
+  mediaNegotiation {callModalities, links{mediaAnswer,rejection},
+  mediaContent{blob=new offer SDP, newOffer:false,
+  negotiationTag:"<participantId>;ss_N"}}. The SHARE START offer adds
+  a NEW m=video section with a FRESH mid (4, then 5 on re-fire),
+  a=sendonly, a=label:applicationsharing-video; the second frame
+  (ss_2) flips mid:1 to recvonly (camera stopped). NOT the original
+  mid2 — each renegotiation mints new mids.
+- CALLER view (browser POSTs, 202s): startOutgoingNegotiation link
+  with {mediaNegotiation:{callModalities:["Audio","Video",
+  "ScreenSharer"], sender:{...}}} — the send-side of the same flow.
+The acceptance's links (callLeg/renegotiate/updateCallState/hold/…)
+were also confirmed live. NEXT FEATURE = answer these offers (mediaAnswer
+link) + accept new mids on the BUNDLE transport.
+
+Also this round: browser→app video re-verified on the newest build
+(decode 640x360, 301+ frames) and the caller's renegotiation link set
+harvest-hinted by the acceptance frame confirmed.
