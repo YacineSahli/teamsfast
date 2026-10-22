@@ -1410,3 +1410,97 @@ DEFERRED (honest list): live meeting-join video round (conv-service
 wedge, retry when it lifts); true 3-way N-party media (group-ack
 machinery, user round); browser screen-share mid2 capture + 3rd
 participant (unchanged user-gated items).
+
+## run-16 — join-rewrite, browser group round, adversarial campaign, caller watchdog (2026-10-22)
+
+Autonomous session ("everything that doesn't need the user"). ALL
+PUSHED: app 24d6d88..4449dda (7), core 09ed4b7..9b0f27a (6). Final:
+core 460 tests, app 122; pairvideo PASS on the final binary; rigs
+pa/pb RUNNING on it (muted).
+
+**The "wedge" was never a cooldown — the SERVICE changed its consumer
+controller responses.** Overnight retries still 400'd; the epconv
+create (consumer skype proxy, 201) now returns controllers/links on
+the WORK proxy (flightproxy.teams.microsoft.com/api/v2/ep/conv-…)
+which rejects our X-Skypetoken join outright. A/B probe: host-swap
+alone 400s; host+ep/→cp/ path swap to flightproxy.skype.com 201s —
+but only on ~1/5 clusters (euwe-03 accepted; euno/frce/swce 400).
+consumerize_conv_urls now rewrites the controller AND the whole
+response body at Phase 1 for consumer. NOTE: the two-phase join is
+still the WRONG consumer group flow — see next item.
+
+**Consumer group calls belong on the roster→cpconv path, and the QA
+group threads were stale.** The old stream01 threads' rosters no
+longer contain B (empty callee list → the two-phase fallback → the
+400s above). Shipped: consumer_thread_members (plural roster dial),
+new ctl verbs `group <topic> <upn>…` and `groupfrom <thread> <topic>`
+(consumer group-chat create lifting members from a source roster —
+MRI forms verbatim; the AAD resolution of the work-tenant create
+silently died on consumer), CALLQA chat_created marker. LIVE: minted
+a fresh A+B group from the pair 1:1.
+
+**UNPLANNED BROWSER ROUND (the user answered a fresh-group video call
+from their browser): full E2E VERIFIED** — connected, DTLS server
+role, audio 5981/5980 BOTH ways, browser camera decoded 626+ frames.
+The fresh-group video path through roster→cpconv works against real
+Chrome.
+
+**Caller hang-up chain: root-caused to "always broken, never
+verified".** Every caller termination link fails on consumer
+(acceptance /active/../end 404; synthesized callLeg/end 404; leave 400
+with fresh e= AND full conv headers). The addendum-VI verification
+round timed out UNANSWERED (missed calls were the clean path) — no
+CONNECTED caller hang-up ever succeeded. Groundwork shipped
+(latest-wins link harvest from the late acceptance frame's FULL set +
+conversationUpdate frames, full conv-service headers on end/leave
+POSTs). COMPENSATION VERIFIED: the CALLEE's invitation end
+(fork-reject DELETE) returns 202 — rig↔rig sessions terminate through
+the peer. The leak bites only peers that never hang up (the user's
+browser sat on the reconnect screen; they can Leave from the browser
+UI). NEXT CAPTURE ASK: a browser-CALLER HAR (user places a call from
+the browser, hangs up from the browser, exports HAR) — that end POST
+is the missing wire shape.
+
+**Adversarial campaign (2 reviewers + own hostile tests) — every
+substantive finding fixed and live-verified:**
+- CORE P0: the reconnect pump could outlive the call forever (nobody
+  signals it on duration-cap exits; a dropped stop sender serves its
+  last value forever) — one leaked reconnecting WebSocket per call.
+  Main loop signals end; closed channel stops.
+- CORE P1: remote-end detection was a substring — "callEndReason"
+  contains "callEnd", so benign frames could tear down healthy calls.
+  Parsed (check_call_end) + exact delivery-URL suffix; single parse
+  per frame.
+- CORE P1: &body[..min(2000)] UTF-8 byte-slice panics (the éé
+  precedent) — chars().take() ×4. P1: PACSI set_stream_layout missing
+  on the CALLER's loop (720p shares announced 320x240). P1: consumer
+  roster failures fell silently to the broken two-phase path (now a
+  clear error).
+- CORE P2: mid alignment once for mediaAnswer AND the embedded
+  acceptance SDP; add_participant_url consumerized; harvest accepts
+  https only; gzip frame decompression capped 8MB; /end synthesis
+  edge cases.
+- APP P1: ring_call_agent_id outlived its ring on decline/timeout/
+  fork-loss — a stale match could hang up an UNRELATED live call
+  (cleared with the ring now). P2: CALLQA verb logs the head word
+  only (it carried `send` message TEXT and group topics/UPNs — a
+  standing privacy violation); CallFailed resets the top-bar status;
+  remote tile letterboxes when the height cap binds (portrait shares
+  squashed); share starts generation-tagged (a portal start that
+  outlives its call can't attach to the next); CreateChatOk dedupes;
+  empty LOCATION ids rejected; lobby wording.
+- Hostile pins: consumerize/strip/mid shapes, serde-bounded JSON walk.
+
+**THE LIVE FINDING THE REVIEWS DIDN'T HAVE: the caller had NO
+frozen-recv watchdog.** While verifying the review fixes, a trouter
+recycle dropped server-side messages (message_loss frame) — pb's
+hangup end-delivery never reached pa, which stayed "connected
+05:52" streaming into the void toward the 55min cap (the answerer
+has had a 30s watchdog all along). Shipped + LIVE-VERIFIED: caller
+watchdog (45s frozen recv after media flowed) — peer hangup 08:50:58
+→ fired 08:51:44 → clean end.
+
+DEFERRED: call_after_create identity (QA-only race; harness never
+interleaves), the share-thread-panic Starting edge (catch_unwind
+someday), caller-end wire shape (browser HAR ask above), browser
+mid2 screenshare capture + 3rd participant (standing user rounds).
