@@ -1605,3 +1605,41 @@ offer (ss_2 camera-off shape) is unit-tested but not yet
 live-observed, and the share's video is not yet rendered as a SEPARATE
 tile (it takes over the remote tile — same SSRC-space stream, distinct
 resolution; a proper share-tile UI is polish).
+
+## run-16e — CALLER-SIDE RENEGOTIATION ANSWERING SHIPPED (2026-10-22)
+
+Closes the renegotiation asymmetry left by run-16d: when the RIG
+PLACES a call and a real web peer (callee) shares mid-call, the
+renegotiation offer is delivered to the caller — and nothing answered
+it. Now shipped in teams-core 8ce9f3e (PUSHED):
+
+- `sdp::build_renegotiation_answer_as_caller(offer, our_offer)` — the
+  caller never sent an answer, so the template is the OFFER WE SENT:
+  our ICE/DTLS creds verbatim, every `a=setup:` rewritten to `passive`
+  (our offer said actpass, their acceptance answered `active` → we are
+  the DTLS server; a renegotiation must not restart or flip roles),
+  directions mirrored, NEW sendonly share sections accepted recvonly
+  on the same transport with their fresh mid (live-captured: each
+  share gets a NEW mid — 4, then 5; stopped mids never return),
+  port-0/x-data rejected, exactly ONE group line (the callee variant's
+  duplicate-group output was live-accepted by Chrome, but the caller
+  path emits a single one).
+- The caller main loop (run_call_with_controls) drains
+  `CallControls::renegotiations` — the app-side forwarding
+  (Event::RenegotiationOffer → call_media handle) was already
+  direction-agnostic, so NO app change was needed. Send trap: the
+  channel is drained into a Vec BEFORE awaiting — holding the mpsc
+  Receiver's borrow across an await makes the tokio::spawn'd task
+  !Send (Receiver is Send but not Sync).
+- Verified: 2 new unit tests (share-start + camera-off shapes,
+  synthetic creds 198.51.100.4, incl. the caller-side trap assert —
+  the offer's creds must never leak into the answer), core suite 464
+  green, app 123 green, rig↔rig pairvideo PASS on the new code
+  (ring→answer→video both ways→clean hang-up). LIVE browser round
+  (rig places call → browser shares) still pending — that needs the
+  user; rig↔rig share never triggers this path (our share rides the
+  existing video m-line via stream layout).
+- Housekeeping: rigs pa/pb were cycled onto the new binary during the
+  regression and are currently DOWN (session hit a memory cap —
+  concurrent cargo invocations; builds now run sequential `-j2`).
+  Relaunch Xvfb :81/:82 first, then the apps (run-15 protocol).
