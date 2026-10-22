@@ -533,3 +533,31 @@ mod tests {
         assert_eq!(strip_html("<img src=\"x\"> pic"), "pic");
     }
 }
+
+#[cfg(test)]
+mod hostile_tests {
+    use super::*;
+
+    /// Deeply-nested invitation JSON cannot blow the recursive
+    /// call_agent_id_from_invitation walk: serde_json's default depth
+    /// limit (128) rejects the parse before the walk ever runs.
+    #[test]
+    fn deep_nesting_is_bounded_by_serde() {
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        assert!(serde_json::from_str::<serde_json::Value>(&deep).is_err());
+        assert_eq!(call_agent_id_from_invitation(&deep), None);
+        // A flat-but-wide invitation (200 links) walks fine and finds
+        // the id wherever it sits.
+        let links: Vec<String> = (0..200)
+            .map(|i| format!("\"l{i}\":\"https://cc/x/{i}/\""))
+            .collect();
+        let wide = format!(
+            "{{\"links\":{{{}}},\"deep\":\"https://cc/callAgent/ep1/callid99/call/end/\"}}",
+            links.join(",")
+        );
+        assert_eq!(
+            call_agent_id_from_invitation(&wide),
+            Some("callid99".into())
+        );
+    }
+}
