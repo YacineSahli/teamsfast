@@ -4416,17 +4416,25 @@ impl eframe::App for TeamsFastApp {
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Same 96x30 + 8px window margin as the ring
-                            // banner buttons.
+                            // banner buttons. While the stage is OPEN it
+                            // owns hang-up/mic/camera/share — the banner
+                            // keeps identity + timer + the stage toggle
+                            // only (vision-audit 2026-10-22: duplicated
+                            // divergently-styled controls read as two
+                            // conflicting control surfaces).
                             ui.add_space(8.0);
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Hang up").small().color(Color32::WHITE),
+                            if !self.call_view_open
+                                && ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Hang up")
+                                                .small()
+                                                .color(Color32::WHITE),
+                                        )
+                                        .fill(self.palette.danger)
+                                        .min_size(egui::vec2(96.0, 30.0)),
                                     )
-                                    .fill(self.palette.danger)
-                                    .min_size(egui::vec2(96.0, 30.0)),
-                                )
-                                .clicked()
+                                    .clicked()
                             {
                                 self.cmd.send(Command::HangUp).ok();
                             }
@@ -4443,35 +4451,41 @@ impl eframe::App for TeamsFastApp {
                             }
                             // Mute from the banner too — voice calls may
                             // never open the stage.
-                            if let Some(media) = self.call_media.as_ref() {
-                                let mic_on = *media.mic_on.borrow();
-                                let mic = ui
-                                    .add(
-                                        egui::Button::new(
-                                            crate::theme::Icon::Mic.image(
-                                                if mic_on {
-                                                    self.palette.text
-                                                } else {
-                                                    self.palette.danger
-                                                },
-                                                15.0,
-                                            ),
-                                        )
-                                        .fill(if mic_on {
-                                            Color32::TRANSPARENT
-                                        } else {
-                                            egui::Color32::from_rgba_unmultiplied(
-                                                self.palette.danger.r(),
-                                                self.palette.danger.g(),
-                                                self.palette.danger.b(),
-                                                60,
+                            if !self.call_view_open {
+                                if let Some(media) = self.call_media.as_ref() {
+                                    let mic_on = *media.mic_on.borrow();
+                                    let mic = ui
+                                        .add(
+                                            egui::Button::new(
+                                                crate::theme::Icon::Mic.image(
+                                                    if mic_on {
+                                                        self.palette.text
+                                                    } else {
+                                                        self.palette.danger
+                                                    },
+                                                    15.0,
+                                                ),
                                             )
-                                        })
-                                        .min_size(egui::vec2(30.0, 30.0)),
-                                    )
-                                    .on_hover_text(if mic_on { "Mute" } else { "Unmute (muted)" });
-                                if mic.clicked() {
-                                    let _ = media.mic_on.send(!mic_on);
+                                            .fill(if mic_on {
+                                                Color32::TRANSPARENT
+                                            } else {
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    self.palette.danger.r(),
+                                                    self.palette.danger.g(),
+                                                    self.palette.danger.b(),
+                                                    60,
+                                                )
+                                            })
+                                            .min_size(egui::vec2(30.0, 30.0)),
+                                        )
+                                        .on_hover_text(if mic_on {
+                                            "Mute"
+                                        } else {
+                                            "Unmute (muted)"
+                                        });
+                                    if mic.clicked() {
+                                        let _ = media.mic_on.send(!mic_on);
+                                    }
                                 }
                             }
                         });
@@ -4768,6 +4782,11 @@ impl eframe::App for TeamsFastApp {
                                         egui::Stroke::new(1.0, Color32::from_black_alpha(90)),
                                         egui::StrokeKind::Inside,
                                     );
+                                    // Self-view is identifiable — an
+                                    // unlabeled black tile reads as an
+                                    // unknown participant (vision-audit
+                                    // 2026-10-22).
+                                    ui.label(RichText::new("You").weak().small());
                                 }
                                 None => {
                                     let (rect, _) = ui.allocate_exact_size(
@@ -4790,6 +4809,7 @@ impl eframe::App for TeamsFastApp {
                                         egui::FontId::proportional(11.0),
                                         self.palette.secondary,
                                     );
+                                    ui.label(RichText::new("You").weak().small());
                                 }
                             }
                         }

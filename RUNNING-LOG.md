@@ -1659,3 +1659,53 @@ regression as one command (A auto-shares synthetic 720p → B decodes →
 A stop → A re-share mid-call (encoder re-init) → B decodes again →
 clean hang-up with counters). First run PASS (720p decodes 1→6 on the
 re-share; audio 628/628, video 690/566).
+
+## run-16f — HARNESS + TESTS + UI AUDIT ROUND (2026-10-22)
+
+**Real bug found by the new harness**: qa_call_e2e.sh pairdecline round
+2 caught a caller hang-up-while-RINGING wedge — the acceptance wait
+never observed the stop watch, so the call slot stayed latched to the
+60s timeout, no teardown POST ran, and the CALLEE kept ringing into
+its own timeout (30s+ past the hang-up). Fixed in teams-core 501a162:
+the wait takes the stop watch (250ms tick arm) and a new
+cancel_ringing_call POSTs the fresh conversationUpdate leave link
+(live-verified path), then end, then the create-response leave. Live:
+hang-up → ended in 224ms (was 60s+), callee ring clears 4.2s later via
+the fresh leave link. Pairdecline + pairvideo both PASS after.
+
+**Harness**: pairdecline mode (decline → A ends on the decline →
+re-callable → mid-ring hang-up clears B's ring; B's terminal evidence
+is ring_gone, NEVER phase=ended — a decliner has no call task).
+resolve_pair_thread: the pair's 1:1 from the INTERSECTION of both
+encrypted archives (newest shared wins) — pairvideo/pairshare need no
+manual thread id (sqlcipher traps handled: leading 'ok' row, '|'
+separator). count_log/wait_count_gt: second-occurrence assertions must
+be count-based — wait_log greps the whole log and matched round-1
+lines instantly, firing cleanup mid-flow. launch() takes extra env.
+
+**Tests (coverage-sweep finds)**: image_markup_collapses_to_alt had
+shipped WITHOUT #[test] — 8 assertions silently never ran (all pass).
+open/send ctl verbs + shorten_link_text (char-safety pinned: the byte
+guard must not truncate <48-CHAR multibyte strings). 126 app tests.
+
+**UI (vision audit, native-Teams rubric, live share call)**: shipped —
+self-view tiles captioned "You" (was: unlabeled black tiles); the top
+banner keeps identity+timer+stage-toggle ONLY while the stage is open
+(was: duplicated, divergently-styled hang-up/mic in two places).
+Vision re-verified 3/3 PASS, no regressions. RECORDED as roadmap:
+(1) P1 the call stage is a 340px right panel — with no chat open the
+window's focus is an empty state while the share renders at ~6% of the
+window; the stage should take the central panel when no chat is open
+(side-by-side stays when a chat IS open) — deferred deliberately, the
+panel block is borrow-tangled and deserves its own session;
+(2) P1 received shares are indistinguishable from camera tiles — needs
+SSRC→stream-type plumbing from the PACSI layout in core (frames carry
+no identity today); (3) P2 a 1px brightened row at ~89% height on
+decoded shares — downscale exonerated (exact 2:1 box filter), suspect
+decoder slice boundary; deferred. Also dismissed with evidence: "4:3
+camera tiles" — rig cameras ARE 320x240 native.
+
+**Noted**: GitHub reports 1 LOW dependabot alert on teams-core default
+branch (uninspected this session).
+
+Heads: app bfbbcdc+ / core 501a162, both PUSHED.
